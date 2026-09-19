@@ -969,9 +969,11 @@ function installFirstScript(install: string): string {
  *
  * The verified Node archive provisioned by `harness start` includes npm, but the daemon deliberately
  * does not mutate the user's PATH. A tmux login shell can therefore have neither `node` nor `npm`
- * even though the runtime executing Harness has both. Prefer any npm the user already configured;
- * otherwise prepend the managed runtime's bin directory for this pane only. This is portable across
- * macOS and Linux and avoids an interactive/root package-manager install in an agent launch.
+ * even though the runtime executing Harness has both. npm is only usable together with node: WSL can
+ * inherit Windows' `npm` shim through interop while having no Linux `node`, and that shim then fails with
+ * `exec: node: not found`. Prefer a complete user-configured pair; otherwise prepend the managed
+ * runtime's bin directory for this pane only. This is portable across macOS and Linux and avoids an
+ * interactive/root package-manager install in an agent launch.
  */
 function npmRuntimePrelude(recipe: EngineInstallRecipe, runtimeNode: string): string {
   if (!recipe.executable.npmGlobal) return ''
@@ -1266,7 +1268,7 @@ export function buildEngineInstallationArgv(engine: AgentEngine, recipe: EngineI
   return engineShellArgv(shell, [body, 'harness-native-install', engineBin(engine)])
 }
 
-function availabilityScript(recipe: EngineInstallRecipe | undefined): string {
+function availabilityScript(recipe: EngineInstallRecipe | undefined, runtimeNode: string): string {
   const names = recipe?.executable.names.map(shellSingleQuote).join(' ') ?? ''
   const paths = recipe ? engineInstallPaths(recipe).map(shellSingleQuote).join(' ') : ''
   const candidates = [names, paths].filter(Boolean).join(' ')
@@ -1277,7 +1279,9 @@ function availabilityScript(recipe: EngineInstallRecipe | undefined): string {
     '    */*) resolved="$candidate" ;;',
     '    *) resolved="$(command -v "$candidate" 2>/dev/null)" || true ;;',
     '  esac',
-    '  if [ -n "$resolved" ] && [ -f "$resolved" ] && [ -x "$resolved" ]; then exit 0; fi',
+    '  if [ -z "$resolved" ] || [ "$resolved" = "$previous_resolved" ]; then continue; fi',
+    '  previous_resolved="$resolved"',
+    '  if [ -f "$resolved" ] && [ -x "$resolved" ] && probe_engine "$resolved"; then exit 0; fi',
     'done',
     ...(recipe?.executable.npmGlobal ? [
       'npm_prefix="$(npm prefix -g 2>/dev/null)" || true',
