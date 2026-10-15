@@ -652,40 +652,23 @@ describe('PtyHostBackend on Windows: the process table and the agent signaller',
     expect(setAgentSignaller).not.toHaveBeenCalled()
   })
 
-  it('ends a pane root through the host: after the grace for SIGTERM, at once for SIGKILL', async () => {
+  it('ends every pid with taskkill /T /F, a pane root too, and never closes the pane', async () => {
     const taskkill = vi.fn(async () => 'sent' as const)
     const { calls } = await ready({ inventory: inventory([{ pane: '%3', rootPid: 900 }]) }, { platform: 'win32', taskkill })
-    signalAgentProcess(900, 'SIGTERM')
-    await vi.waitFor(() => expect(calls).toContainEqual({ op: 'kill', pane: '%3', graceMs: 2000 }))
-    signalAgentProcess(900, 'SIGKILL')
-    await vi.waitFor(() => expect(calls).toContainEqual({ op: 'kill', pane: '%3', graceMs: 0 }))
-    expect(taskkill).not.toHaveBeenCalled()
+    // The root of a pane (a restart's held pane must survive its engine) and any other process alike.
+    for (const [pid, signal] of [[900, 'SIGTERM'], [900, 'SIGKILL'], [905, 'SIGTERM'], [905, 'SIGKILL']] as const) {
+      taskkill.mockClear()
+      signalAgentProcess(pid, signal)
+      await vi.waitFor(() => expect(taskkill).toHaveBeenCalledExactlyOnceWith(pid, true))
+    }
+    expect(calls.some((op) => op.op === 'kill' || op.op === 'inventory')).toBe(false)
   })
 
-  it('ends any other process with taskkill: not a root, a dead pane\'s last pid, or the host not answering', async () => {
-    const taskkill = vi.fn(async () => 'sent' as const)
-    let listing: unknown = inventory([{ pane: '%3', rootPid: 900 }, { pane: '%4', rootPid: 901, dead: true }])
-    const { calls } = await ready({ inventory: () => listing }, { platform: 'win32', taskkill })
-    signalAgentProcess(905, 'SIGTERM')
-    await vi.waitFor(() => expect(taskkill).toHaveBeenLastCalledWith(905, false))
-    signalAgentProcess(901, 'SIGKILL')
-    await vi.waitFor(() => expect(taskkill).toHaveBeenLastCalledWith(901, true))
-    listing = { state: 'unknown', dispatch: 'possibly_executed', reason: 't' }
-    signalAgentProcess(900, 'SIGKILL')
-    await vi.waitFor(() => expect(taskkill).toHaveBeenLastCalledWith(900, true))
-    expect(calls.some((op) => op.op === 'kill')).toBe(false)
-  })
-
-  it('falls back to taskkill when the host does not close the pane, and says when that fails too', async () => {
+  it('says when taskkill could not end the process', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const taskkill = vi.fn(async () => 'failed' as const)
-    await ready({
-      inventory: inventory([{ pane: '%3', rootPid: 900 }]),
-      kill: { state: 'unknown', dispatch: 'possibly_executed', reason: 'no reply' },
-    }, { platform: 'win32', taskkill })
-    signalAgentProcess(900, 'SIGKILL')
-    await vi.waitFor(() => expect(error).toHaveBeenCalledWith('[terminal] ptyhost: taskkill could not end pid 900'))
-    expect(taskkill).toHaveBeenCalledWith(900, true)
+    await ready({}, { platform: 'win32', taskkill: vi.fn(async () => 'failed' as const) })
+    signalAgentProcess(900, 'SIGTERM')
+    await vi.waitFor(() => expect(error).toHaveBeenCalledWith('[terminal] ptyhost: taskkill could not end pid 900 (SIGTERM)'))
   })
 
   it('logs a signal it could not send at all', async () => {
@@ -693,7 +676,6 @@ describe('PtyHostBackend on Windows: the process table and the agent signaller',
     const taskkill = vi.fn(async () => { throw new Error('spawn failed') })
     const { backend } = await ready({}, { platform: 'win32', taskkill })
     backend.dispose()
-    // Disconnected: no pane can be asked about, so straight to taskkill.
     backend.signalProcess(77, 'SIGTERM')
     await vi.waitFor(() => expect(error).toHaveBeenCalledWith('[terminal] ptyhost: could not SIGTERM pid 77: spawn failed'))
     const odd = vi.fn(async () => { throw 'odd' })

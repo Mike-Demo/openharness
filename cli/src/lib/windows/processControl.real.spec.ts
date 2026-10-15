@@ -78,10 +78,12 @@ const running = (pid: number): boolean => {
       expect(await treeKill(processIdentityOf(foreignRow!), { graceful: false })).toBe('sent')
       expect(await until(async () => running(foreign!.pid!), (alive) => !alive)).toBe(false)
 
-      // The agent signaller: SIGKILL of the pane root ends the pane and its whole tree.
+      // The agent signaller: SIGKILL of the pane root ends its whole tree, and leaves the held pane (dead).
       signalAgentProcess(root, 'SIGKILL')
-      expect(await until(() => backend.paneState(pane), (state) => state === 'gone')).toBe('gone')
       expect(await until(async () => running(root) || running(identity.pid), (alive) => !alive)).toBe(false)
+      expect(await until(() => backend.paneState(pane), (state) => state !== 'gone' && state !== 'unknown' && state.dead))
+        .toMatchObject({ dead: true })
+      expect((await backend.kill(pane)).state).toBe('succeeded')
     } finally {
       foreign?.kill()
       backend.dispose()
@@ -91,6 +93,49 @@ const running = (pid: number): boolean => {
       }
       await removeTree(home).catch(() => {})
       await removeTree(dir).catch(() => {})
+    }
+  }, CASE_TIMEOUT_MS)
+
+  // A restart or swap on a pty host pane: hold the pane, end its engine (the pane's root) through the agent
+  // signaller, respawn in the same pane (restartAgent.ts, core/agents/swap.ts). The signaller must never close
+  // the pane, or the respawn finds none.
+  it('a restart through signalAgentProcess keeps the pane: the respawn runs in the same pane id', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pty-windows-restart-'))
+    const backend = new PtyHostBackend({ home })
+    try {
+      const prepared = await backend.prepare({ ownedPanes: new Map() })
+      if (prepared.state !== 'ready') throw new Error(`the pty host is unavailable: ${prepared.reason}`)
+      const created = await backend.create({ command: ['powershell.exe', '-NoLogo', '-NoProfile', '-NoExit', '-Command', 'echo first-run'] })
+      if (created.state !== 'succeeded') throw new Error(`create failed: ${JSON.stringify(created)}`)
+      const pane = created.runtime
+      const screen = async (): Promise<string> => {
+        const read = await backend.capture(pane, { historyLines: 100, ansi: false })
+        return read.state === 'succeeded' ? read.value : ''
+      }
+      await until(screen, (text) => /^first-run$/m.test(text))
+      const root = await backend.rootProcess(pane)
+      if (typeof root !== 'number') throw new Error(`no root: ${String(root)}`)
+
+      expect((await backend.holdOpen(pane)).state).toBe('succeeded')
+      signalAgentProcess(root, 'SIGTERM')
+      expect(await until(async () => running(root), (alive) => !alive)).toBe(false)
+      expect(await until(() => backend.paneState(pane), (state) => state !== 'gone' && state !== 'unknown' && state.dead))
+        .toMatchObject({ dead: true })
+
+      const respawned = await backend.respawn(pane, { command: ['powershell.exe', '-NoLogo', '-NoProfile', '-NoExit', '-Command', 'echo second-run'] })
+      expect(respawned.state).toBe('succeeded')
+      expect(await until(screen, (text) => /^second-run$/m.test(text))).toMatch(/^second-run$/m)
+      const again = await backend.rootProcess(pane)
+      expect(typeof again === 'number' && again !== root && running(again)).toBe(true)
+      expect(await backend.paneState(pane)).toMatchObject({ dead: false })
+      expect((await backend.kill(pane)).state).toBe('succeeded')
+    } finally {
+      backend.dispose()
+      const pid = readDiscovery(home, PTY_PROTOCOL)?.pid
+      if (pid) {
+        try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+      }
+      await removeTree(home).catch(() => {})
     }
   }, CASE_TIMEOUT_MS)
 })

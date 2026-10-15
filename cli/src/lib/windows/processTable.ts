@@ -73,7 +73,7 @@ function readWithBinary(options: WindowsProcessRowsOptions): Promise<ProcessRow[
   const run = options.run ?? defaultRun
   return new Promise((resolve) => {
     try {
-      run(binary, ['ps', '--json'], { timeout: WINDOWS_PS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
+      run(binary, ['ps', '--json'], { timeout: WINDOWS_PS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024, windowsHide: true }, (error, stdout) => {
         if (error) { resolve(null); return }
         try { resolve(windowsProcessTable(JSON.parse(stdout))) } catch { resolve(null) }
       })

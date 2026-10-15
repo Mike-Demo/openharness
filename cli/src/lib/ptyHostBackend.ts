@@ -192,7 +192,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   /**
    * Windows has no `ps` and no signals. The process table is the host's (windows/processTable.ts): asked of
    * whichever client is connected at each read, so a reconnect is followed, and of `harness-pty ps` while none
-   * is. An agent's process is ended through the host when it is a pane's root, else with `taskkill`.
+   * is. An agent's process is ended with `taskkill` (`signalProcess`).
    */
   private installWindowsSeams(): void {
     this.windowsSeams = true
@@ -201,35 +201,26 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   }
 
   /**
-   * `process.kill` on Windows, for `signalAgentProcess`: fire and forget, as a signal is. Its caller has just
-   * checked [pid]'s identity (`terminateDeletedAgent`), and checks again for the outcome. A pane's root is
-   * ended by the host's `kill` of that pane, which ends its whole Job: after the usual grace for SIGTERM, at
-   * once for SIGKILL. Any other process, and every one while the host cannot be asked, by `taskkill /T`
-   * (with `/F` for SIGKILL).
+   * `process.kill` on Windows, for `signalAgentProcess`: `taskkill /PID <pid> /T /F`, fire and forget, as a
+   * signal is. Its caller has just checked [pid]'s identity (`terminateDeletedAgent`), and checks again for
+   * the outcome, escalating as it does on Unix.
+   *
+   * SIGTERM is forced too. Windows has no graceful signal for a console process: `taskkill` without /F only
+   * asks its windows to close, which a console engine has none of, and Node's own `process.kill` is
+   * `TerminateProcess` whatever the signal.
+   *
+   * The pane is never closed here, even when [pid] is its root (the engine is, in a pty host pane). A restart or
+   * a swap holds the pane open, ends its engine through this, then respawns in the same pane
+   * (restartAgent.ts, core/agents/swap.ts); the host's `kill` op would remove the pane, and the respawn would
+   * find none. Ending the root's tree leaves the held pane dead, as a SIGTERM leaves a tmux pane under
+   * remain-on-exit.
    */
   signalProcess(pid: number, signal: AgentSignal): void {
-    void this.endProcess(pid, signal === 'SIGKILL').catch((error: unknown) => {
+    void this.taskkill(pid, true).then((outcome) => {
+      if (outcome === 'failed') console.error(`[terminal] ptyhost: taskkill could not end pid ${pid} (${signal})`)
+    }).catch((error: unknown) => {
       console.error(`[terminal] ptyhost: could not ${signal} pid ${pid}: ${error instanceof Error ? error.message : String(error)}`)
     })
-  }
-
-  private async endProcess(pid: number, force: boolean): Promise<void> {
-    const pane = await this.paneRootedAt(pid)
-    // Not done, or not known to be: the tree is ended directly instead.
-    if (pane && (await this.killPane(pane, force ? 0 : KILL_GRACE_MS)).state === 'succeeded') return
-    const outcome = await this.taskkill(pid, force)
-    if (outcome === 'failed') console.error(`[terminal] ptyhost: taskkill could not end pid ${pid}`)
-  }
-
-  /** The live pane [pid] is the root of, on the connected host; null when none is, or the host cannot be asked. */
-  private async paneRootedAt(pid: number): Promise<PtyRuntimeRef | null> {
-    const client = this.client
-    if (!client) return null
-    const listed = await client.call({ op: 'inventory' })
-    if (listed.state !== 'ok') return null
-    // A held pane whose process ended still lists its last pid, which Windows may have given to another process.
-    const pane = listed.value.panes.find((entry) => entry.rootPid === pid && !entry.dead)
-    return pane ? { backend: 'ptyhost', instance: client.instance, paneId: pane.pane } : null
   }
 
   /** Make [client] this backend's connection, in place of any other. Whether it is another host than the last. */
@@ -351,14 +342,10 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   }
 
   async kill(runtime: PtyRuntimeRef, current?: () => boolean): Promise<TerminalActionResult> {
-    return this.killPane(runtime, KILL_GRACE_MS, current)
-  }
-
-  private async killPane(runtime: PtyRuntimeRef, graceMs: number, current?: () => boolean): Promise<TerminalActionResult> {
     const client = this.clientFor(runtime)
     if (!client) return terminalActionNotStarted(UNAVAILABLE)
     if (current && !current()) return terminalActionNotStarted('The harness changed before pane close')
-    const result = await client.call({ op: 'kill', pane: runtime.paneId, graceMs })
+    const result = await client.call({ op: 'kill', pane: runtime.paneId, graceMs: KILL_GRACE_MS })
     // A pane the host does not have is closed already, as tmux's kill reads an authoritative absence.
     if (result.state === 'ok' || (result.state === 'failed' && result.code === 'no_pane')) {
       this.panes.delete(runtime.paneId)

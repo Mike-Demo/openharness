@@ -417,7 +417,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function execFileText(cmd, args, timeout, env) {
+function execFileText(cmd, args, timeout, env, options = {}) {
   return new Promise((resolve) => {
     // Whole milliseconds. What is left of the budget is a fraction off the whole (performance.now()),
     // and `execFile` throws ERR_OUT_OF_RANGE on a fractional timeout: once less was left than a step's
@@ -425,7 +425,7 @@ function execFileText(cmd, args, timeout, env) {
     // step threw, and the offline registration it was part of was dropped.
     const budget = Math.floor(Math.min(stepLimit(timeout), remainingBudget()))
     if (budget < 50) { resolve(null); return }
-    execFile(cmd, args, { timeout: budget, ...(env && { env }) }, (err, stdout) => {
+    execFile(cmd, args, { timeout: budget, ...(env && { env }), ...options }, (err, stdout) => {
       resolve(err ? null : stdout)
     })
   })
@@ -813,7 +813,8 @@ function ptyHostBinary() {
 async function windowsProcessRows() {
   const binary = ptyHostBinary()
   if (!binary) return null
-  const stdout = await execFileText(binary, ['ps', '--json'], 3000)
+  // A busy machine's table is a few hundred KB of JSON: the daemon's own limit (src/lib/windows/processTable.ts).
+  const stdout = await execFileText(binary, ['ps', '--json'], 3000, undefined, { maxBuffer: 64 * 1024 * 1024, windowsHide: true })
   if (stdout === null) return null
   let table
   try { table = JSON.parse(stdout) } catch { return null }
