@@ -3,26 +3,38 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Fastify, { type FastifyInstance, type InjectOptions } from 'fastify'
 
 type Row = Record<string, unknown> & { id: string; createdAt: Date }
-type Query = { where?: Record<string, unknown>; select?: Record<string, boolean>; take?: number; skip?: number; cursor?: { id: string }; orderBy?: unknown; by?: string[] }
+type Query = { where?: Record<string, unknown>; select?: Record<string, boolean>; take?: number; skip?: number; cursor?: { id: string }; orderBy?: Record<string, 'asc' | 'desc'>[]; by?: string[] }
 const db = vi.hoisted(() => {
   function matches(row: Row, where: Record<string, unknown> = {}): boolean {
     return Object.entries(where).every(([key, value]) => {
       if (key === 'OR') return (value as Record<string, unknown>[]).some(branch => matches(row, branch))
+      if (key === 'AND') return (value as Record<string, unknown>[]).every(branch => matches(row, branch))
       if (value && typeof value === 'object' && !(value instanceof Date)) {
         const filter = value as Record<string, unknown>
         if ('contains' in filter) return typeof row[key] === 'string' && (row[key] as string).toLowerCase().includes((filter.contains as string).toLowerCase())
         if ('in' in filter) return (filter.in as unknown[]).includes(row[key])
         if ('gt' in filter) return (row[key] as Date) > (filter.gt as Date)
+        if ('lt' in filter) return (row[key] as number | Date) < (filter.lt as number | Date)
         if ('isSet' in filter || 'not' in filter) return (!filter.isSet || row[key] !== undefined) && (!('not' in filter) || row[key] !== filter.not)
         return matches(row, filter)
       }
-      return row[key] === value
+      return value instanceof Date ? (row[key] as Date)?.getTime() === value.getTime() : row[key] === value
     })
   }
-  function table() {
+  const compare = (a: unknown, b: unknown) => a instanceof Date ? a.getTime() - (b as Date).getTime() : typeof a === 'number' ? a - (b as number) : String(a).localeCompare(String(b))
+  /** `defaults` stand in for Prisma's on rows a test pushes directly; `unique` refuses a second create, as the index does. */
+  function table({ defaults = {}, unique }: { defaults?: Record<string, unknown>; unique?: string[] } = {}) {
     const rows: Row[] = []
     const find = (query: Query = {}) => {
-      let result = rows.filter(row => matches(row, query.where)).slice().sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.id.localeCompare(a.id))
+      for (const row of rows) for (const [key, value] of Object.entries(defaults)) row[key] ??= value
+      const order = query.orderBy ?? [{ createdAt: 'desc' }, { id: 'desc' }]
+      let result = rows.filter(row => matches(row, query.where)).slice().sort((a, b) => {
+        for (const [key, direction] of order.flatMap(Object.entries)) {
+          const difference = compare(a[key], b[key])
+          if (difference) return direction === 'desc' ? -difference : difference
+        }
+        return 0
+      })
       if (query.cursor) result = result.slice(result.findIndex(row => row.id === query.cursor!.id) + (query.skip || 0))
       if (query.take) result = result.slice(0, query.take)
       return result
@@ -39,7 +51,10 @@ const db = vi.hoisted(() => {
         for (const row of find(query)) counts.set(row[key] as string, (counts.get(row[key] as string) || 0) + 1)
         return [...counts].map(([value, count]) => ({ [key]: value, _count: { _all: count } }))
       }),
-      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { const row = { id: crypto.randomUUID(), createdAt: new Date(), ...data } as Row; rows.push(row); return row }),
+      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        if (unique && rows.some(row => unique.every(key => row[key] === data[key]))) throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' })
+        const row = { id: crypto.randomUUID(), createdAt: new Date(), ...defaults, ...data } as Row; rows.push(row); return row
+      }),
       upsert: vi.fn(async ({ where, create, update }: { where: Record<string, unknown>; create: Record<string, unknown>; update: Record<string, unknown> }) => {
         let row = rows.find(row => matches(row, where));
         if (row) Object.assign(row, update)
@@ -47,10 +62,16 @@ const db = vi.hoisted(() => {
         return row
       }),
       deleteMany: vi.fn(async ({ where }: Query) => { const removed = rows.filter(row => matches(row, where)); removed.forEach(row => rows.splice(rows.indexOf(row), 1)); return { count: removed.length } }),
-      updateMany: vi.fn(async ({ where, data }: Query & { data: Record<string, unknown> }) => { const found = rows.filter(row => matches(row, where)); found.forEach(row => Object.assign(row, data)); return { count: found.length } }),
+      updateMany: vi.fn(async ({ where, data }: Query & { data: Record<string, unknown> }) => {
+        const found = rows.filter(row => matches(row, where))
+        for (const row of found) for (const [key, value] of Object.entries(data)) {
+          row[key] = value && typeof value === 'object' && 'increment' in value ? ((row[key] as number) ?? 0) + (value.increment as number) : value
+        }
+        return { count: found.length }
+      }),
     }
   }
-  return { communityHarness: table(), communityLike: table(), communityComment: table(), communityFollow: table(), user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({ name: where.id === 'alice' ? 'Alice' : 'Bob' })) } }
+  return { communityHarness: table({ defaults: { likeCount: 0 } }), communityLike: table({ unique: ['autonomousEnv', 'harnessId', 'userId'] }), communityComment: table(), communityFollow: table(), user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({ name: where.id === 'alice' ? 'Alice' : 'Bob' })) } }
 })
 vi.mock('../lib/prisma.js', () => ({ prisma: db }))
 import { communityRoutes, publicationSchema } from './community.js'
@@ -354,6 +375,33 @@ describe('persistent social actions', () => {
     const second = (await call('GET', `harnesses?sort=popular&cursor=${first.nextCursor}`)).json().data
     expect(second.harnesses).toHaveLength(1); expect(second.nextCursor).toBeNull()
     expect(first.harnesses.map((row: Row) => row.id)).not.toContain(second.harnesses[0].id)
+  })
+  it('keeps a publication’s like count exact across repeats and requests at once', async () => {
+    const id = await publish('alice')
+    const count = () => db.communityHarness.rows.find(row => row.id === id)?.likeCount
+    await Promise.all([call('PUT', `harnesses/${id}/like`, 'bob', { liked: true }), call('PUT', `harnesses/${id}/like`, 'bob', { liked: true })])
+    expect(count()).toBe(1)
+    expect((await call('PUT', `harnesses/${id}/like`, 'alice', { liked: true })).json().data).toEqual({ liked: true, likes: 2 })
+    await call('PUT', `harnesses/${id}/like`, 'bob', { liked: false })
+    await call('PUT', `harnesses/${id}/like`, 'bob', { liked: false })
+    expect(count()).toBe(1)
+  })
+  it('pages a popular feed by its like counts, every publication and starter once, most liked first', async () => {
+    const likes = (index: number) => index % 4
+    for (let i = 0; i < 45; i++) db.communityHarness.rows.push({ ...sample, id: crypto.randomUUID(), createdAt: new Date(Date.now() - i * 1000), autonomousEnv: 'prod', authorId: 'alice', authorName: 'Alice', deletedAt: null, credits: [], likeCount: likes(i) })
+    for (const token of ['alice', 'bob']) await call('PUT', 'harnesses/starter-orbit/like', token, { liked: true })
+    const seen: string[] = []
+    let cursor: string | null = null
+    do {
+      const page: { order: string[]; nextCursor: string | null } = (await call('GET', `harnesses?sort=popular${cursor ? `&cursor=${cursor}` : ''}`)).json().data
+      seen.push(...page.order); cursor = page.nextCursor
+    } while (cursor)
+    expect(new Set(seen).size).toBe(45 + communityStarters.size)
+    expect(seen).toHaveLength(45 + communityStarters.size)
+    const count = (id: string) => id === 'starter-orbit' ? 2 : communityStarters.has(id) ? 0 : db.communityHarness.rows.find(row => row.id === id)!.likeCount as number
+    expect(seen.map(count)).toEqual(seen.map(count).slice().sort((a, b) => b - a))
+    // Among equal likes the publications come first: the starter with two follows every publication with two.
+    expect(seen.indexOf('starter-orbit')).toBe(seen.filter(id => count(id) >= 2).length - 1)
   })
   it('counts and lists a harness’s public forks, and every comment beyond the latest hundred', async () => {
     const id = await publish('alice')

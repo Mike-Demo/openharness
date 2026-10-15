@@ -28,8 +28,12 @@ model CommunityHarness {
   createdAt     DateTime @default(now())
   // Set when its author edits it (routes/communityEdit.ts); never on publishing.
   updatedAt     DateTime?
+  // Its likes, moved with each one saved (lib/communityLikes.ts) and reconciled at worker boot: what a
+  // popular feed orders by, instead of counting every publication's likes for each page.
+  likeCount     Int      @default(0)
 
   @@index([autonomousEnv, deletedAt, createdAt])
+  @@index([autonomousEnv, deletedAt, likeCount, createdAt])
   @@index([autonomousEnv, authorId])
   @@index([autonomousEnv, forkedFrom])
   @@index([autonomousEnv, category, deletedAt, createdAt])

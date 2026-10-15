@@ -1,3 +1,4 @@
+import { likeCounts } from './communityLikes.js'
 import { prisma } from './prisma.js'
 
 export const feedSorts = ['newest', 'popular'] as const
@@ -7,7 +8,7 @@ export type FeedSort = typeof feedSorts[number]
 const feedSelect = { id: true, title: true, description: true, category: true, engine: true, harnessId: true, authorId: true, authorName: true, forkedFrom: true, createdAt: true, updatedAt: true } as const
 const feedPageSize = 30
 
-type FeedWhere = NonNullable<Parameters<typeof prisma.communityHarness.findMany>[0]>['where']
+type FeedWhere = NonNullable<NonNullable<Parameters<typeof prisma.communityHarness.findMany>[0]>['where']>
 const newest = [{ createdAt: 'desc' as const }, { id: 'desc' as const }]
 
 /** One page newest first, the indexed order, after the last id read. One row more tells whether there is another page. */
@@ -18,26 +19,47 @@ function newestPage(where: FeedWhere, cursor?: string) {
   })
 }
 
+type Ranked = { id: string; likes: number }
+
 /**
- * One page most liked first, newest first among equals, after the last id read. [starters] — the
- * website's examples, which are not stored here — are ranked alongside, after publications with as
- * many likes, so the page's order names them too. A page whose last entry has since gone ends the
- * feed rather than starting it over.
- * TODO(BE): this ranks every matching publication for each page; keep a like count on the
- * publication (and index it) once the feed outgrows that.
+ * Where a popular page starts after [cursor]: the publications after it, and which starters are left.
+ * Among equal likes publications come first, newest first, then the starters in the Hub's order. A
+ * cursor that has since gone ends the feed rather than starting it over.
+ */
+async function after(where: FeedWhere, starters: Ranked[], cursor?: string): Promise<{ next: FeedWhere; starters: Ranked[] } | null> {
+  if (!cursor) return { next: {}, starters }
+  const at = starters.findIndex(starter => starter.id === cursor)
+  if (at >= 0) return { next: { likeCount: { lt: starters[at].likes } }, starters: starters.slice(at + 1) }
+  const last = await prisma.communityHarness.findFirst({ where: { AND: [where, { id: cursor }] }, select: { likeCount: true, createdAt: true } })
+  if (!last) return null
+  const { likeCount, createdAt } = last
+  return {
+    next: { OR: [{ likeCount: { lt: likeCount } }, { likeCount, createdAt: { lt: createdAt } }, { likeCount, createdAt, id: { lt: cursor } }] },
+    starters: starters.filter(starter => starter.likes <= likeCount),
+  }
+}
+
+/**
+ * One page most liked first, by the publications' indexed `likeCount`. [starters] — the website's
+ * examples, which are not stored here — are ranked alongside, after publications with as many likes,
+ * so the page's order names them too.
  */
 async function popularPage(where: FeedWhere, autonomousEnv: string, starters: readonly string[], cursor?: string) {
-  const published = (await prisma.communityHarness.findMany({ where, select: { id: true }, orderBy: newest })).map(row => row.id)
-  const ids = [...published, ...starters]
-  const likes = await prisma.communityLike.groupBy({ by: ['harnessId'], where: { autonomousEnv, harnessId: { in: ids } }, _count: { _all: true } })
-  const count = new Map(likes.map(row => [row.harnessId, row._count._all]))
-  // Array sort is stable, so equals keep the order they were read in.
-  const ranked = ids.sort((a, b) => (count.get(b) ?? 0) - (count.get(a) ?? 0))
-  const start = cursor ? ranked.indexOf(cursor) + 1 : 0
-  if (cursor && !start) return { rows: [], order: [] }
-  const order = ranked.slice(start, start + feedPageSize + 1)
-  const rows = await prisma.communityHarness.findMany({ where: { id: { in: order } }, select: feedSelect })
-  return { rows, order }
+  const counts = await likeCounts(starters, autonomousEnv)
+  // Array sort is stable, so equals keep the Hub's order.
+  const ranked = starters.map(id => ({ id, likes: counts.get(id) ?? 0 })).sort((a, b) => b.likes - a.likes)
+  const start = await after(where, ranked, cursor)
+  if (!start) return { rows: [], order: [] }
+  const found = await prisma.communityHarness.findMany({
+    where: { AND: [where, start.next] }, select: { ...feedSelect, likeCount: true },
+    orderBy: [{ likeCount: 'desc' }, ...newest], take: feedPageSize + 1,
+  })
+  const order: string[] = []
+  for (let row = 0, starter = 0; order.length <= feedPageSize && (row < found.length || starter < start.starters.length);) {
+    const next = found[row], waiting = start.starters[starter]
+    if (next && (!waiting || next.likeCount >= waiting.likes)) { order.push(next.id); row++ } else { order.push(waiting.id); starter++ }
+  }
+  return { rows: found.map(({ likeCount: _likeCount, ...row }) => row), order }
 }
 
 /**
@@ -62,13 +84,12 @@ export async function feedPage(where: FeedWhere, autonomousEnv: string, sort: Fe
 
 /** Likes, comments and public forks of each harness, and which of them the reader likes. */
 export async function feedStats(ids: string[], autonomousEnv: string, userId?: string) {
-  const [likes, comments, forks, liked] = await Promise.all([
-    prisma.communityLike.groupBy({ by: ['harnessId'], where: { autonomousEnv, harnessId: { in: ids } }, _count: { _all: true } }),
+  const [likeCount, comments, forks, liked] = await Promise.all([
+    likeCounts(ids, autonomousEnv),
     prisma.communityComment.groupBy({ by: ['harnessId'], where: { autonomousEnv, harnessId: { in: ids } }, _count: { _all: true } }),
     prisma.communityHarness.groupBy({ by: ['forkedFrom'], where: { autonomousEnv, deletedAt: null, forkedFrom: { in: ids } }, _count: { _all: true } }),
     userId ? prisma.communityLike.findMany({ where: { autonomousEnv, userId, harnessId: { in: ids } }, select: { harnessId: true } }) : [],
   ])
-  const likeCount = new Map(likes.map(row => [row.harnessId, row._count._all]))
   const commentCount = new Map(comments.map(row => [row.harnessId, row._count._all]))
   const forkCount = new Map(forks.map(row => [row.forkedFrom, row._count._all]))
   const likedIds = new Set(liked.map(row => row.harnessId))

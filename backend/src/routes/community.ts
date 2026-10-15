@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js'
 import { parseAutonomousEnvironment } from '../lib/autonomousEnvironment.js'
 import { communityStarterAuthor, communityStarters } from '../lib/communityAccess.js'
 import { feedPage, feedSorts, feedStats } from '../lib/communityFeed.js'
+import { saveLike } from '../lib/communityLikes.js'
 import { communityCategories, communityEngines, communityHarnessIds, communityHarnessMarkers, communityLimits, communityPathPattern, communityReservedName } from '../lib/communityContract.js'
 import { validateBody, validateParams, validateQuery } from '../middlewares/validation.js'
 import { sendError, sendSuccess } from '../utils/response.js'
@@ -228,10 +229,7 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
   app.put<{ Params: z.infer<typeof params>; Body: z.infer<typeof likeBody> }>('/api/community/harnesses/:id/like', { preHandler: [validateParams(params), validateBody(likeBody)] }, async (req, reply) => {
     const autonomousEnv = environment(req), harnessId = req.params.id, userId = req.user!.sub
     if (!await publication(harnessId, autonomousEnv)) return sendError(reply, 'Harness not found.', 'NOT_FOUND', 404)
-    const key = { autonomousEnv, harnessId, userId }
-    if (req.body.liked) await prisma.communityLike.upsert({ where: { autonomousEnv_harnessId_userId: key }, create: key, update: {} })
-    else await prisma.communityLike.deleteMany({ where: key })
-    sendSuccess(reply, { liked: req.body.liked, likes: await prisma.communityLike.count({ where: { autonomousEnv, harnessId } }) })
+    sendSuccess(reply, { liked: req.body.liked, likes: await saveLike({ autonomousEnv, harnessId, userId }, req.body.liked) })
   })
 
   const commentBody = z.object({ body: z.string().trim().min(1).max(2000), clientId: z.string().uuid(), parentId: z.string().uuid().optional() }).strict()
