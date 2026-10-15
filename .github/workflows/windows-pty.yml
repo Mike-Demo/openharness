@@ -1,10 +1,30 @@
 name: Windows PTY
 
+# On demand (Actions -> Windows PTY -> Run workflow): build, test and contract-test the host, and run the Windows
+# CLI specs, on each architecture's own runner.
+# Called by release.yml with `release: true`: build the release payload only, stamped with the CLI's version
+# (HARNESS_PTY_VERSION, pty/src/cli.rs), for the staging publish. A release is not a test suite
+# (docs/validation-and-release.md); the staging E2E is the gate before production.
+# The payload is the five files install.ps1 ($HarnessPtyFiles) installs: harness-pty.exe, harness-launch.exe,
+# harness.exe (the `harness` command, pty/src/command.rs), conpty.dll and OpenConsole.exe.
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: 'The CLI release version the host reports (X.Y.Z)'
+        type: string
+        required: false
+        default: ''
+      release:
+        description: 'Build the release payload only, without the tests'
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
-  group: windows-pty-${{ github.ref }}
+  # When called, github.workflow is the caller's name, so a release run never cancels an on-demand one, nor the reverse.
+  group: windows-pty-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -44,14 +64,22 @@ jobs:
         if: hashFiles('pty/scripts/fetch-conpty.ps1') != ''
         shell: pwsh
         run: pwsh pty/scripts/fetch-conpty.ps1
+      # Includes the launcher's and the harness command's tests (harness_launch, harness_launch_job, harness_command,
+      # harness_command_ctrl_c). A runner's job may refuse breakaway under cargo test; the launcher then logs it and
+      # starts the CLI inside the job, and the tests allow that.
       - name: Rust tests
+        if: ${{ !inputs.release }}
         working-directory: pty
         run: cargo test --locked --target ${{ matrix.target }}
+      # Every bin of the crate: harness-pty.exe, harness-launch.exe and harness.exe.
       - name: Build release
         working-directory: pty
-        run: cargo build --locked --release --target ${{ matrix.target }}
+        env:
+          # Empty on an on-demand run, and then the crate's own version (release_version in pty/src/cli.rs).
+          HARNESS_PTY_VERSION: ${{ inputs.version }}
+        run: cargo build --locked --release --target ${{ matrix.target }} --bins
       # The host loads conpty.dll (and through it OpenConsole.exe) from its own folder, as it ships in dist/pty/
-      # (cli/scripts/lib/ptyPayload.mjs): put them there so the contract suite tests what ships.
+      # (cli/scripts/lib/ptyPayload.mjs) and in runtime\pty\<version>\: put them there so what is tested is what ships.
       - name: Place the ConPTY payload beside the host
         shell: pwsh
         run: |
@@ -59,20 +87,49 @@ jobs:
           Copy-Item "pty/vendor/conpty/${{ matrix.arch }}/conpty.dll", "pty/vendor/conpty/${{ matrix.arch }}/OpenConsole.exe" $release
           Get-ChildItem $release -Filter '*.dll'
           Get-ChildItem $release -Filter 'OpenConsole.exe'
+      - name: Check the release payload
+        if: ${{ inputs.release }}
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $release = "pty/target/${{ matrix.target }}/release"
+          $said = & "$release/harness-pty.exe" version
+          if ($said -notmatch ('"version":"' + [regex]::Escape($env:VERSION) + '"')) { throw "harness-pty.exe says $said, not $env:VERSION" }
+          # A command line without `--` is a usage error (exit 2): the launcher runs, and it is a GUI-subsystem program.
+          $launch = Start-Process -FilePath "$release/harness-launch.exe" -ArgumentList 'version' -Wait -PassThru
+          if ($launch.ExitCode -ne 2) { throw "harness-launch.exe exited $($launch.ExitCode), not 2" }
+          # Outside an install (no cli\current above its folder) the harness command says how to reinstall and exits 3.
+          # Start-Process, not `&`: an expected non-zero exit must not become the step's ($LASTEXITCODE).
+          $stderr = Join-Path $env:RUNNER_TEMP 'harness-exe.stderr'
+          $command = Start-Process -FilePath "$release/harness.exe" -ArgumentList 'version' -NoNewWindow -Wait -PassThru -RedirectStandardError $stderr
+          $broken = Get-Content -Raw -LiteralPath $stderr
+          if ($command.ExitCode -ne 3 -or $broken -notmatch 'Harness is not installed completely') { throw "harness.exe exited $($command.ExitCode) and said: $broken" }
       - name: CLI install
+        if: ${{ !inputs.release }}
         working-directory: cli
         run: npm ci
-      - name: Contract suite against the real host
+      - name: Contract suite against the real host, and the Windows CLI specs
+        if: ${{ !inputs.release }}
         working-directory: cli
         shell: pwsh
         env:
           RUN_TERMINAL_CONTRACT: "1"
           HARNESS_PTY_BIN: ${{ github.workspace }}\pty\target\${{ matrix.target }}\release\harness-pty.exe
+          # installPs1.spec.ts runs the real harness.exe; a --target build is not where it looks by default.
+          HARNESS_EXE_BIN: ${{ github.workspace }}\pty\target\${{ matrix.target }}\release\harness.exe
         run: |
-          $paths = @('src/lib/ptyHostBackend.contract.spec.ts', 'src/lib/ptyHost')
-          if (Test-Path 'src/lib/windows') { $paths += 'src/lib/windows' }
+          $paths = @('src/lib/ptyHostBackend.contract.spec.ts', 'src/lib/ptyHost', 'src/lib/windows', 'src/scripts/installPs1.spec.ts')
           npx vitest run @paths --maxWorkers=1
+      - name: Collect the payload
+        shell: pwsh
+        run: |
+          $release = "pty/target/${{ matrix.target }}/release"
+          New-Item -ItemType Directory -Force payload | Out-Null
+          Copy-Item "$release/harness-pty.exe", "$release/harness-launch.exe", "$release/harness.exe", "$release/conpty.dll", "$release/OpenConsole.exe" payload/
+          Get-ChildItem payload
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: pty/target/${{ matrix.target }}/release/harness-pty.exe
+          path: payload/
+          if-no-files-found: error
