@@ -4,7 +4,7 @@
  * daemon gets one without it, in development and tests.
  */
 import { spawn } from 'node:child_process'
-import { accessSync, constants, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -243,22 +243,29 @@ export async function ensurePtyHost(home: string, options: EnsurePtyHostOptions 
   return (await connectExisting(home)) ?? unavailable('no harness-pty answers at the endpoint its discovery file names')
 }
 
-/** `reachPtyHost`'s: a host that is not there and never will be again (no discovery file, or its process exited). */
-export type PtyHostGone = { gone: string }
-export type ReachPtyHostResult = EnsurePtyHostResult | PtyHostGone
+/**
+ * `reachPtyHost`'s: nothing answered. What the discovery file named, for the caller to judge whether that host is gone
+ * (a drain backend checks the process table, ptyHostBackend.ts): `pid` from a readable file, else null; `missing`
+ * when there is no file at all, which a read that failed (caught mid-write, unreadable) is not.
+ */
+export type PtyHostUnreached = PtyHostUnavailable & { pid: number | null; missing: boolean }
+export type ReachPtyHostResult = { client: PtyHostClient } | { incompatible: string } | PtyHostUnreached
 
 /**
  * A client of the [protocol] host serving `home`, never starting one: how a drain backend reaches a host of the
- * protocol before this daemon's (ptyHost/drain.ts), which nothing starts again once it has gone. `gone` when there
- * is no such host any more; `unavailable` while its process runs but nothing answers.
+ * protocol before this daemon's (ptyHost/drain.ts). Whether a host that does not answer has gone is not decided
+ * here: a file that could not be read, or a pid that runs, is no proof either way.
  */
 export async function reachPtyHost(home: string, protocol: number): Promise<ReachPtyHostResult> {
+  const file = path.join(home, 'run', `pty-host-${protocol}.json`)
   const discovery = readDiscovery(home, protocol)
-  if (!discovery) return { gone: `there is no pty-host-${protocol}.json` }
+  if (!discovery) {
+    const missing = !existsSync(file)
+    return { ...unavailable(missing ? `there is no pty-host-${protocol}.json` : `pty-host-${protocol}.json cannot be read`), pid: null, missing }
+  }
   const existing = await connectExisting(home, protocol)
   if (existing) return existing
-  if (!pidAlive(discovery.pid)) return { gone: `the protocol ${protocol} host (pid ${discovery.pid}) has exited` }
-  return unavailable(`nothing answers for the protocol ${protocol} host (pid ${discovery.pid})`)
+  return { ...unavailable(`nothing answers for the protocol ${protocol} host (pid ${discovery.pid})`), pid: discovery.pid, missing: false }
 }
 
 /**

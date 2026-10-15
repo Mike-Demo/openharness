@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
@@ -10,6 +10,7 @@ import type { TerminalBackend } from '../terminalBackend.js'
 import { removeTree, SHELL } from '../terminalBackend.contract.js'
 import { TerminalBackendCoordinator } from '../terminalBackendCoordinator.js'
 import { terminalRouteKey } from '../terminalRuntime.js'
+import type { ProcessRow } from '../processTable.js'
 import type { PtyRuntimeRef, TerminalInventoryResult } from '../terminalTypes.js'
 import { PtyHostClient } from './client.js'
 import type { ReachPtyHostResult } from './launch.js'
@@ -45,8 +46,6 @@ const quiet = () => {
   vi.spyOn(console, 'error').mockImplementation(() => {})
 }
 
-/** A pid no process has: a child that has exited. */
-const deadPid = () => spawnSync(process.execPath, ['-e', '']).pid!
 
 /** An endpoint for a stand-in host: a named pipe on Windows, a socket file elsewhere. */
 const endpointIn = (dir: string, name: string) => process.platform === 'win32'
@@ -113,22 +112,28 @@ function stubClient(pid: number, protocol: number, replies: Record<string, unkno
 }
 type StubClient = ReturnType<typeof stubClient>
 
-/** A drain backend whose launches answer from [results] in turn, then unavailable. */
-function drainBackend(results: Array<StubClient | ReachPtyHostResult>, options: { alive?: (pid: number) => boolean; home?: string; platform?: NodeJS.Platform } = {}) {
-  const terminated: number[] = []
+/** A process table row for [pid], started at [marker]. */
+const row = (pid: number, marker = 'Thu Oct 15 10:00:00 2026'): ProcessRow =>
+  ({ pid, parentPid: 1, executable: 'harness-pty', startMarker: marker, args: 'harness-pty serve' })
+/** `reachPtyHost`'s nothing-answered, naming [pid] (null: no readable file; [missing]: no file at all). */
+const unreached = (pid: number | null, missing = false) => ({ unavailable: 'nothing answers', code: 'PTY_HOST_UNAVAILABLE' as const, pid, missing })
+
+/** A drain backend whose launches answer from [results] in turn, then nothing answering at [results]' last pid. */
+function drainBackend(results: Array<StubClient | ReachPtyHostResult>, options: { alive?: (pid: number) => boolean; rows?: () => Promise<ProcessRow[] | null>; home?: string; platform?: NodeJS.Platform } = {}) {
   const launch = vi.fn(async (): Promise<ReachPtyHostResult> => {
-    const next = results.shift() ?? { unavailable: 'nothing answers', code: 'PTY_HOST_UNAVAILABLE' as const }
+    const next = results.shift() ?? unreached(null)
     return 'call' in next ? { client: next as unknown as PtyHostClient } : next
   })
+  const tables = vi.fn(options.rows ?? (async () => [row(10)]))
   const backend = new PtyHostBackend({
     home: options.home ?? '/tmp/none',
     protocol: OLD,
     launch,
     owner: () => 'me',
     platform: options.platform ?? 'linux',
-    hostProcess: { alive: options.alive ?? (() => false), terminate: (pid) => { terminated.push(pid) } },
+    hostProcess: { alive: options.alive ?? (() => false), rows: tables },
   })
-  return { backend, launch, terminated }
+  return { backend, launch, tables }
 }
 
 const OLD_PANE: PtyRuntimeRef = { backend: 'ptyhost', instance: `p${OLD}`, paneId: '%3' }
@@ -189,15 +194,16 @@ describe.runIf(PTY_PROTOCOL >= 2)('a drain backend', () => {
     expect(setProcessTableSource).not.toHaveBeenCalled()
   })
 
-  it('is ready on a host that has gone, and its panes are then gone for certain', async () => {
+  it('is ready on a host proven gone, and its panes are then gone for certain', async () => {
     quiet()
-    const { backend } = drainBackend([{ gone: 'the protocol 1 host (pid 4) has exited' }])
+    // The discovery file names pid 4, which the process table does not have.
+    const { backend } = drainBackend([unreached(4)], { rows: async () => [row(10)] })
     const replaced = vi.fn()
     backend.onHostReplaced = replaced
     // Known before it reaches anything: rows name it.
     expect(backend.instanceId).toBe(`ptyhost:p${OLD}`)
     expect(await backend.prepare({ ownedPanes: new Map() })).toEqual({ state: 'ready' })
-    expect(backend.hostGone).toContain('has exited')
+    expect(backend.hostGone).toContain('(pid 4) has exited')
     expect(replaced).toHaveBeenCalledTimes(1)
     expect(await backend.prepare({ ownedPanes: new Map() })).toEqual({ state: 'ready' })
     expect(await backend.inventory()).toEqual({ state: 'available', roots: [] })
@@ -215,43 +221,73 @@ describe.runIf(PTY_PROTOCOL >= 2)('a drain backend', () => {
     expect(await backend.paneState({ ...OLD_PANE, instance: 'p9' })).toBe('unknown')
   })
 
-  it('is ready on a host that does not answer yet, unavailable until it does, gone after it never does', async () => {
+  it('is gone with no discovery file at all and no host ever reached: there is no process to look for', async () => {
+    quiet()
+    const { backend, tables } = drainBackend([unreached(null, true)])
+    await backend.prepare({ ownedPanes: new Map() })
+    expect(backend.hostGone).toBe('nothing answers')
+    expect(tables).not.toHaveBeenCalled()
+  })
+
+  it('keeps its panes while nothing proves the host gone: an unreadable file, a live pid, a table it cannot read', async () => {
     vi.useFakeTimers()
     quiet()
-    const later = stubClient(10, OLD)
+    let table: ProcessRow[] | null = [row(10)]
     const { backend, launch } = drainBackend([
-      { unavailable: 'nothing answers', code: 'PTY_HOST_UNAVAILABLE' },
+      // A discovery file caught unreadable: no pid to look for, and it is there.
+      unreached(null, false),
+      // The pid it names runs.
+      unreached(10),
       { incompatible: 'wrong token' },
-      later,
-    ])
+      unreached(10),
+    ], { rows: async () => table })
     expect(await backend.prepare({ ownedPanes: new Map() })).toEqual({ state: 'ready' })
     expect(await backend.inventory()).toMatchObject({ state: 'unavailable' })
     await vi.advanceTimersByTimeAsync(1_000 + 2_000)
-    expect(launch).toHaveBeenCalledTimes(3)
-    expect(await backend.inventory()).toEqual({ state: 'available', roots: [] })
-    // Lost within 30 s, and nothing answers again: five attempts in a row on the growing delay, then gone.
-    later.lose()
-    const replaced = vi.fn()
-    backend.onHostReplaced = replaced
-    await vi.advanceTimersByTimeAsync(4_000 + 8_000 + 16_000 + 30_000)
+    table = null
+    await vi.advanceTimersByTimeAsync(4_000)
+    // However many attempts fail: never gone without the proof.
+    for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(30_000)
+    expect(launch.mock.calls.length).toBeGreaterThan(10)
     expect(backend.hostGone).toBeNull()
-    await vi.advanceTimersByTimeAsync(30_000)
-    expect(backend.hostGone).toContain('nothing has answered in 5 attempts')
-    expect(replaced).toHaveBeenCalledTimes(1)
-    await vi.advanceTimersByTimeAsync(120_000)
-    expect(launch).toHaveBeenCalledTimes(8)
+    expect(await backend.inventory()).toMatchObject({ state: 'unavailable' })
+    expect(await backend.paneState(OLD_PANE)).toBe('unknown')
+    expect(await backend.kill(OLD_PANE)).toMatchObject({ state: 'failed', dispatch: 'not_started' })
   })
 
-  it('a host that exits while connected is gone on the next reconnect', async () => {
+  it('a host that exits while connected is gone once its pid leaves the process table', async () => {
     vi.useFakeTimers()
     quiet()
     const client = stubClient(10, OLD)
-    const { backend } = drainBackend([client, { gone: 'the protocol 1 host (pid 10) has exited' }])
+    let table = [row(10)]
+    const { backend } = drainBackend([client, unreached(10), unreached(null, false)], { rows: async () => table })
     await backend.prepare({ ownedPanes: new Map() })
     client.lose()
     expect(await backend.inventory()).toMatchObject({ state: 'unavailable' })
+    // Still in the table: kept.
     await vi.advanceTimersByTimeAsync(1_000)
+    expect(backend.hostGone).toBeNull()
+    // Gone from it, and its discovery file unreadable meanwhile: the last host reached is what is looked for.
+    table = []
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(backend.hostGone).toContain('(pid 10) has exited')
     expect(await backend.inventory()).toEqual({ state: 'available', roots: [] })
+  })
+
+  it('a host whose pid another process now has is gone: the start marker differs from when it was reached', async () => {
+    vi.useFakeTimers()
+    quiet()
+    const client = stubClient(10, OLD)
+    let table = [row(10, 'Thu Oct 15 10:00:00 2026')]
+    const { backend } = drainBackend([client, unreached(10), unreached(10)], { rows: async () => table })
+    await backend.prepare({ ownedPanes: new Map() })
+    await vi.advanceTimersByTimeAsync(0)
+    client.lose()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(backend.hostGone).toBeNull()
+    table = [row(10, 'Thu Oct 15 11:30:00 2026')]
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(backend.hostGone).toContain('another process has its pid')
   })
 
   it('drainState: empty, busy, or unknown when it cannot ask', async () => {
@@ -270,28 +306,15 @@ describe.runIf(PTY_PROTOCOL >= 2)('a drain backend', () => {
     expect(await backend.drainState()).toBe('unknown')
   })
 
-  it('ends a protocol 1 host by its pid once a fresh inventory lists nothing: it has no shutdown op', async () => {
+  it('never ends a host of a protocol without shutdown: it stays running, untouched', async () => {
     quiet()
-    const home = tmpHome()
-    const pid = deadPid()
-    writeDiscovery(home, { protocol: OLD, instance: `p${OLD}`, endpoint: path.join(home, 'run', 'gone.sock'), token: 't', pid })
-    let panes: unknown[] = [{ pane: '%1' }]
-    const client = stubClient(pid, 1, { inventory: () => ({ state: 'ok', value: { panes } }) })
-    let alive = true
-    const { backend, terminated } = drainBackend([client], { home, alive: () => alive })
+    const client = stubClient(10, SHUTDOWN_PROTOCOL - 1)
+    const { backend } = drainBackend([client], { alive: () => true })
     await backend.prepare({ ownedPanes: new Map() })
-    expect(await backend.shutdownHost()).toBe('refused')
-    expect(terminated).toEqual([])
-    panes = []
-    const done = backend.shutdownHost()
-    await vi.waitFor(() => expect(terminated).toEqual([pid]))
-    alive = false
-    expect(await done).toBe('exited')
-    expect(client.calls.map((op) => op.op)).not.toContain('shutdown')
-    expect(backend.hostGone).toContain(`pid ${pid}`)
-    expect(client.closed).toBe(true)
-    // What it left published is taken down.
-    expect(readDiscovery(home, OLD)).toBeNull()
+    expect(await backend.shutdownHost()).toBe('unsupported')
+    expect(client.calls).toEqual([])
+    expect(backend.hostGone).toBeNull()
+    expect(client.closed).toBe(false)
   })
 
   it.runIf(SHUTDOWN_PROTOCOL <= PTY_PROTOCOL)('asks a host of the shutdown protocol on to shut down, and takes its refusal', async () => {
@@ -300,13 +323,13 @@ describe.runIf(PTY_PROTOCOL >= 2)('a drain backend', () => {
     const client = stubClient(10, SHUTDOWN_PROTOCOL, {
       shutdown: () => refuse ? { state: 'failed', dispatch: 'rejected', code: 'bad_request', reason: 'host still has panes (1)' } : { state: 'ok', value: {} },
     })
-    const { backend, terminated } = drainBackend([client])
+    const { backend } = drainBackend([client])
     await backend.prepare({ ownedPanes: new Map() })
     expect(await backend.shutdownHost()).toBe('refused')
     refuse = false
     expect(await backend.shutdownHost()).toBe('exited')
     expect(client.calls.filter((op) => op.op === 'shutdown')).toHaveLength(2)
-    expect(terminated).toEqual([])
+    expect(backend.hostGone).toContain('pid 10')
   })
 
   it('a shutdown that could not be asked, or a host that does not exit, is failed', async () => {
@@ -316,16 +339,6 @@ describe.runIf(PTY_PROTOCOL >= 2)('a drain backend', () => {
     const first = drainBackend([unanswered])
     await first.backend.prepare({ ownedPanes: new Map() })
     expect(await first.backend.shutdownHost()).toBe('failed')
-    const old = drainBackend([stubClient(10, 1, { inventory: { state: 'failed', dispatch: 'not_started', code: 'x', reason: 'r' } })])
-    await old.backend.prepare({ ownedPanes: new Map() })
-    expect(await old.backend.shutdownHost()).toBe('failed')
-    // A termination that throws (no such process, no permission).
-    const throwing = new PtyHostBackend({
-      home: '/tmp/none', protocol: OLD, launch: async () => ({ client: stubClient(10, 1) as unknown as PtyHostClient }),
-      hostProcess: { alive: () => true, terminate: () => { throw new Error('EPERM') } },
-    })
-    await throwing.prepare({ ownedPanes: new Map() })
-    expect(await throwing.shutdownHost()).toBe('failed')
     vi.useFakeTimers()
     const stuck = drainBackend([stubClient(10, SHUTDOWN_PROTOCOL)], { alive: () => true })
     await stuck.backend.prepare({ ownedPanes: new Map() })
@@ -387,6 +400,29 @@ describe('PtyHostDrain', () => {
     expect(drainer.pending).toEqual([])
     await step()
     expect(replaced).toHaveLength(1)
+  })
+
+  it('removes an empty protocol 1 drain backend without signalling its host, once no row names it', async () => {
+    quiet()
+    const kill = vi.spyOn(process, 'kill')
+    const client = stubClient(10, 1)
+    const { backend } = drainBackend([client], { alive: () => true })
+    await backend.prepare({ ownedPanes: new Map() })
+    const create = { instanceId: `ptyhost:p${PTY_PROTOCOL}` } as unknown as TerminalBackend
+    const backends: TerminalBackend[] = [create, backend]
+    let rows = true
+    const drainer = new PtyHostDrain({ drain: [backend], backends, coordinator: { replaceBackends: () => {} }, inUse: () => rows })
+    await drainer.step(); await drainer.step(); await drainer.step()
+    // Rows still name it: kept, though its host is idle.
+    expect(backends).toHaveLength(2)
+    rows = false
+    await drainer.step()
+    expect(backends).toEqual([create])
+    // Asked for its panes and nothing else; no signal, no shutdown; the connection closed, the host left running.
+    expect(new Set(client.calls.map((op) => op.op))).toEqual(new Set(['inventory']))
+    expect(kill).not.toHaveBeenCalled()
+    expect(backend.hostGone).toBeNull()
+    expect(client.closed).toBe(true)
   })
 
   it('counts empty passes in a row: a pass with a pane, or one that could not ask, starts again', async () => {
@@ -519,7 +555,7 @@ describe.runIf(!!realBinary)('shutdown on the real host', () => {
 // A protocol bump with real hosts: HARNESS_PTY_BIN_PREV is a build of the protocol before (the commit before the bump,
 // built apart), HARNESS_PTY_BIN this one's.
 describe.runIf(!!realBinary && !!previousBinary && PTY_PROTOCOL >= 2)('a protocol bump with the real hosts', () => {
-  it('streams the old host\'s pane, makes new panes on the new host, and ends the old host once its pane closes', async () => {
+  it('streams the old host\'s pane, makes new panes on the new host, and lets the old one go once its pane closes', async () => {
     quiet()
     const home = tmpHome()
     cleanup.push(() => { killPid(readDiscovery(home, OLD)?.pid); killPid(readDiscovery(home, PTY_PROTOCOL)?.pid) })
@@ -565,19 +601,21 @@ describe.runIf(!!realBinary && !!previousBinary && PTY_PROTOCOL >= 2)('a protoco
     expect(fresh.runtime.instance).toBe(`p${PTY_PROTOCOL}`)
     expect(terminals.backendFor(fresh.runtime)).toBe(create)
 
-    // The old pane closes: two empty passes later the old host has exited, and its backend left.
+    // The old pane closes: two empty passes later its backend has left. The protocol 1 host has no `shutdown` and
+    // is never signalled: it stays running, idle.
     const drainer = new PtyHostDrain({ drain, backends, coordinator: terminals, inUse: () => false })
     await drainer.step()
-    expect(alive(oldPid)).toBe(true)
+    expect(backends).toHaveLength(2)
     expect((await drain[0].kill(oldPane)).state).toBe('succeeded')
     await until(() => drain[0].drainState(), (state) => state === 'empty')
     await drainer.step()
-    expect(alive(oldPid)).toBe(true)
+    expect(backends).toHaveLength(2)
     await drainer.step()
-    expect(await until(() => alive(oldPid), (up) => !up)).toBe(false)
     expect(backends).toEqual([create])
     expect(terminals.instances()).toEqual([create])
-    expect(readDiscovery(home, OLD)).toBeNull()
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(alive(oldPid)).toBe(true)
+    expect(readDiscovery(home, OLD)?.pid).toBe(oldPid)
     // The new host and its pane are untouched.
     const remaining: TerminalInventoryResult = await create.inventory()
     expect(remaining.state === 'available' && remaining.roots.map((root) => root.runtime)).toEqual([fresh.runtime])

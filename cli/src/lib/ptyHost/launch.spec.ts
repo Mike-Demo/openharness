@@ -358,7 +358,7 @@ async function answeringHost(endpoint: string, token: string): Promise<number[]>
         if (said) { socket.write(`${JSON.stringify({ id: value.id, ok: true })}\n`); continue }
         said = true
         protocols.push(value.hello.protocol)
-        socket.write(`${JSON.stringify({ hello: { ok: true, instance: `p${value.hello.protocol}`, version: 'v', pid: 1, proof: helloProof(token, value.hello.nonce) } })}\n`)
+        socket.write(`${JSON.stringify({ hello: { ok: true, instance: `p${value.hello.protocol}`, version: 'v', pid: process.pid, proof: helloProof(token, value.hello.nonce) } })}\n`)
       }
     })
   })
@@ -401,14 +401,15 @@ describe('reachPtyHost', () => {
     expect(protocols).toEqual([protocol])
   })
 
-  it('is gone with no discovery file, or once its process has exited; unavailable while it runs unanswering', async () => {
+  it('says what the file named when nothing answers, and never that the host has gone', async () => {
     const dir = tempDir('h-')
-    expect(await reachPtyHost(dir, 1)).toEqual({ gone: 'there is no pty-host-1.json' })
-    const nowhere = endpointIn(dir, 'none')
-    writeDiscoveryOf(dir, 1, { endpoint: nowhere, pid: deadPid() })
-    expect(await reachPtyHost(dir, 1)).toEqual({ gone: expect.stringContaining('has exited') })
-    writeDiscoveryOf(dir, 1, { endpoint: nowhere, pid: process.pid })
-    expect(await reachPtyHost(dir, 1)).toEqual({ unavailable: expect.stringContaining(`pid ${process.pid}`), code: 'PTY_HOST_UNAVAILABLE' })
+    expect(await reachPtyHost(dir, 1)).toEqual({ unavailable: 'there is no pty-host-1.json', code: 'PTY_HOST_UNAVAILABLE', pid: null, missing: true })
+    mkdirSync(path.join(dir, 'run'), { recursive: true })
+    writeFileSync(path.join(dir, 'run', 'pty-host-1.json'), '{"protocol":')
+    expect(await reachPtyHost(dir, 1)).toEqual({ unavailable: 'pty-host-1.json cannot be read', code: 'PTY_HOST_UNAVAILABLE', pid: null, missing: false })
+    const dead = deadPid()
+    writeDiscoveryOf(dir, 1, { endpoint: endpointIn(dir, 'none'), pid: dead })
+    expect(await reachPtyHost(dir, 1)).toEqual({ unavailable: expect.stringContaining(`pid ${dead}`), code: 'PTY_HOST_UNAVAILABLE', pid: dead, missing: false })
   })
 })
 

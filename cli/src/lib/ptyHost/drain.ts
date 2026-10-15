@@ -6,11 +6,12 @@
  * host running with the person's panes in it, as a tmux server of an older tmux keeps running. This daemon reaches
  * it too, as a drain backend (ptyHostBackend.ts): its panes are listed, streamed and controlled, their registry rows
  * keep their `ptyhost:p<old>` runtimes, and the route keys name the instance, so both hosts' panes are reached at
- * once. Nothing new goes to it. Once it has no pane on two reconcile passes in a row it is shut down, and the backend
- * leaves the daemon's backends (`TerminalBackendCoordinator.replaceBackends`). A drain host that exits is gone, its
- * panes with it: its inventory is then empty for certain, so the reconciler counts its rows' runtimes missing, and
- * the backend leaves once no row names its instance. Then the runtime's host binaries no host runs any more are
- * deleted (launch.ts `removeUnusedPtyVersions`).
+ * once. Nothing new goes to it. Once it has no pane on two reconcile passes in a row it is shut down (protocol 2 on;
+ * an older host, which has no `shutdown`, is left running idle, ptyHostBackend.ts `shutdownHost`), and the backend
+ * leaves the daemon's backends (`TerminalBackendCoordinator.replaceBackends`). A drain host proven to have exited (the
+ * process table) is gone, its panes with it: its inventory is then empty for certain, so the reconciler counts its
+ * rows' runtimes missing, and the backend leaves once no row names its instance. Then the runtime's host binaries no
+ * running host uses are deleted (launch.ts `removeUnusedPtyVersions`).
  */
 import type { TerminalBackend } from '../terminalBackend.js'
 import { terminalInstanceId } from '../terminalRuntime.js'
@@ -89,9 +90,10 @@ export class PtyHostDrain {
 
   /**
    * One pass's look at each drain host. An empty one (no pane of any owner) on `EMPTY_PASSES` passes in a row is
-   * shut down; a host that refuses (a pane came meanwhile) starts the count again. A host that has gone, shut down
-   * or exited, leaves once no row names its instance: its rows go gone through the reconciler first, which a backend
-   * taken out early would strand on no backend. A step while one runs is skipped: the count is of passes.
+   * shut down; a host that refuses (a pane came meanwhile) starts the count again. One of a protocol without
+   * `shutdown` stays running, idle, and only its backend leaves. A backend leaves once no row names its instance: a
+   * gone host's rows go gone through the reconciler first, which a backend taken out early would strand on no
+   * backend. A step while one runs is skipped: the count is of passes.
    */
   async step(): Promise<void> {
     if (this.stepping) return
@@ -115,7 +117,8 @@ export class PtyHostDrain {
     if (state === 'empty') {
       const shutdown = await backend.shutdownHost().catch(() => 'failed' as const)
       if (shutdown === 'refused') this.empty.delete(backend)
-      if (shutdown !== 'exited') return
+      // `unsupported`: the host stays, never signalled; its backend leaves all the same.
+      if (shutdown !== 'exited' && shutdown !== 'unsupported') return
     }
     if (this.deps.inUse(backend.instanceId)) return
     this.remove(backend)
@@ -128,7 +131,7 @@ export class PtyHostDrain {
     if (at >= 0) this.deps.backends.splice(at, 1)
     this.deps.coordinator.replaceBackends(this.deps.backends)
     backend.dispose()
-    console.log(`[terminal] ptyhost: ${backend.instanceId} drained and removed (${backend.hostGone ?? 'gone'})`)
+    console.log(`[terminal] ptyhost: ${backend.instanceId} drained and removed (${backend.hostGone ?? 'its host is idle and left running'})`)
     try {
       this.deps.cleanup?.()
     } catch (error) {

@@ -150,6 +150,14 @@ describe('PtyHostClient.connect', () => {
     expect(fake.hellos).toHaveLength(2)
   })
 
+  it('refuses a host whose hello names another pid than its discovery file', async () => {
+    const fake = await fakeHost()
+    cleanup.push(() => fake.close())
+    // The stand-in says pid 1.
+    expect(await PtyHostClient.connect({ ...fake.discovery, pid: 2 }))
+      .toEqual({ incompatible: 'the host answering is pid 1, not the 2 its discovery file names' })
+  })
+
   it('reports a bad token as incompatible', async () => {
     const fake = await fakeHost({ token: 'right' })
     cleanup.push(() => fake.close())

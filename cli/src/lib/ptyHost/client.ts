@@ -145,6 +145,10 @@ function hello(discovery: PtyHostDiscovery, role: HelloRole, timeoutMs: number):
         finish({ state: 'incompatible', reason: 'the host sent an unreadable hello reply' })
       } else if (reply.ok === true && !provesToken(reply.proof, discovery.token, nonce)) {
         finish({ state: 'incompatible', reason: 'the endpoint does not know this host\'s token' })
+      } else if (reply.ok === true && reply.pid !== discovery.pid) {
+        // The pid is what a drain judges the host's death by, and what a reconnect tells another host by: the one
+        // answering must be the one the file names.
+        finish({ state: 'incompatible', reason: `the host answering is pid ${String(reply.pid)}, not the ${discovery.pid} its discovery file names` })
       } else if (reply.ok === true) {
         // The lines after the hello's are not split here: they belong to whoever reads next.
         const after = chunk.subarray(chunk.indexOf(0x0a) + 1)
