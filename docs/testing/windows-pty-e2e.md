@@ -15,6 +15,13 @@ keyframe frames, `terminal_resize` and `terminal_resync`. It lives in
 **not run**: the Mac desktop app as a remote client of the VM (see
 [Not run](#not-run-the-mac-desktop-as-a-remote-client)).
 
+**Evidence.** Each run's output is committed as
+[`cli/scripts/windows-pty-e2e/evidence/<run>.log`](../../cli/scripts/windows-pty-e2e/evidence/), named after the
+`run.cmd` command or step that produced it: `s1` (the first scenario 1 run), `s1ps`, `s1b`, `s1c`, `codex-emoji`,
+`s2` and `s2-rerun`, `s3-two-binary`, `s3-live` and `s3-live-close`, `s4`, `s4-resume`, `s4-setup` and `s4-rerun`,
+`s5`, `s6`, `s7`, `perf-vm`, `perf-stream-driver`, `perf-mac-tmux` and `bg-start`. They hold no account
+credential (nothing was signed in) and no host token.
+
 ## Summary
 
 | # | Scenario | Result |
@@ -42,7 +49,8 @@ The SSH session is an elevated admin running `cmd.exe`. Installed beforehand:
 - OpenCode 1.19.0.
 
 1. **Sync the tree.** Copy the sources to `C:\work\oh` (it excludes the `target` folders and `cli/node_modules`):
-   `.superpowers/sdd/2026-10-14-windows-native-pty-host/vm-sync --cli`
+   [`cli/scripts/windows-pty-e2e/vm-sync.sh --cli`](../../cli/scripts/windows-pty-e2e/vm-sync.sh). `VM_SSH` and
+   `VM_DIR` name another machine or folder (defaults `admin@192.168.65.3`, `C:/work/oh`).
 2. **Build the host on the VM.**
    - Run `ssh admin@192.168.65.3 "cd /d C:\work\oh\pty && cargo build --release"`.
    - The result was `harness-pty.exe` at 1,299,456 bytes, sha256 `6106543D…D696`, reporting
@@ -134,7 +142,8 @@ of this run.
 
 ### Not run: the Mac desktop as a remote client
 
-This check needs the VM signed in to the user's account, which this run must not do. To run it:
+This check needs the VM signed in to the user's account, which this run must not do. The VM has since been signed
+in (2026-10-15, after this run), so the check can now be run as below; its result is still **not run**. To run it:
 
 1. On the VM, start the daemon as in the recipe. Then sign it in with the same account as the Mac desktop:
    - `C:\work\e2e\cli.cmd login --qr`, which a signed-in phone scans; or
@@ -143,7 +152,7 @@ This check needs the VM signed in to the user's account, which this run must not
 3. On the Mac, open the Harness desktop app. The VM appears as a remote machine. Create a Claude Code, a Codex and a terminal
    (PowerShell) tile on it. Type, paste about 30 KB, paste the Unicode line above, and resize the tile. Check that the
    tile's screen matches.
-4. Sign the VM out afterwards (`harness logout`), if it should not stay linked.
+4. Sign the VM out afterwards (`C:\work\e2e\cli.cmd logout`), if it should not stay linked.
 
 ### Scenario 2: daemon restart
 
