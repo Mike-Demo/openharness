@@ -51,6 +51,75 @@ describe("the pages and skill agents read", () => {
     for (const verb of verbs) expect(cliVerbs.has(verb), `harness ${verb}`).toBe(true);
   });
 
+  // The agent commands each page must teach, and where each command's usage (its options) is written.
+  const AGENT_VERBS = ["ps", "new", "wait", "show", "send", "close"];
+  const usageSources: Record<string, [string, string]> = {
+    ps: ["cli/src/agentClient/commands.ts", "PS_USAGE"],
+    show: ["cli/src/agentClient/commands.ts", "SHOW_USAGE"],
+    wait: ["cli/src/agentClient/commands.ts", "WAIT_USAGE"],
+    close: ["cli/src/agentClient/commands.ts", "CLOSE_USAGE"],
+    new: ["cli/src/lib/newCommand.ts", "NEW_USAGE"],
+    send: ["cli/src/messages/command.ts", "SEND_USAGE"],
+  };
+  /** The options a verb's usage names: every `--word` from `export const X` to the next export. */
+  function usageFlags(verb: string): Set<string> {
+    const [file, name] = usageSources[verb];
+    const source = readFileSync(join(repo, file), "utf8");
+    const start = source.indexOf(`export const ${name}`);
+    expect(start, `${name} in ${file}`).toBeGreaterThanOrEqual(0);
+    const end = source.indexOf("\nexport ", start + 1);
+    const block = source.slice(start, end === -1 ? undefined : end);
+    const flags = new Set([...block.matchAll(/--[a-z][a-z-]*/g)].map((m) => m[0]));
+    // `${ON_MACHINE}` stands for the --machine line the four verbs share.
+    if (block.includes("${ON_MACHINE}")) flags.add("--machine");
+    for (const always of ["--json", "--help"]) flags.add(always);
+    return flags;
+  }
+  /** Each `harness <agent verb> …` in a page's code, with the options it uses (the task after ` -- ` left out). */
+  function agentCalls(text: string, html: boolean): Array<{ verb: string; flags: string[]; line: string }> {
+    const calls: Array<{ verb: string; flags: string[]; line: string }> = [];
+    for (const code of codeIn(text, html)) {
+      for (const m of code.matchAll(/(?:^|[\s;&|(])harness ([a-z][a-z-]*)([^\n]*)/gm)) {
+        if (!AGENT_VERBS.includes(m[1]) && m[1] !== "whoami") continue;
+        const rest = m[2].split(/\s--\s|&&|\|\||;|\|/)[0];
+        calls.push({ verb: m[1], flags: [...rest.matchAll(/(?:^|[\s[(|])(--[a-z][a-z-]*)/g)].map((f) => f[1]), line: `harness ${m[1]}${m[2]}` });
+      }
+    }
+    return calls;
+  }
+
+  it.each([
+    ["/agents", page, true],
+    ["/llms.txt", llms, false],
+    ["SKILL.md", skill, false],
+  ] as const)("%s teaches every agent command", (_, text, html) => {
+    const verbs = verbsIn(text, html);
+    for (const verb of AGENT_VERBS) expect(verbs.has(verb), `harness ${verb}`).toBe(true);
+  });
+
+  it.each([
+    ["/agents", page, true],
+    ["/llms.txt", llms, false],
+    ["SKILL.md", skill, false],
+  ] as const)("%s uses only options the agent commands take", (_, text, html) => {
+    const calls = agentCalls(text, html);
+    expect(calls.length).toBeGreaterThan(5);
+    for (const call of calls) {
+      if (!usageSources[call.verb]) continue;
+      const known = usageFlags(call.verb);
+      for (const flag of call.flags) expect(known.has(flag), `${flag} in: ${call.line}`).toBe(true);
+    }
+  });
+
+  it.each([
+    ["/agents", page, true],
+    ["/llms.txt", llms, false],
+    ["SKILL.md", skill, false],
+  ] as const)("%s names machines with --machine, never @", (_, text, html) => {
+    // `harness new claude @office` became a project called "@office" on this machine; the CLI refuses it (#1333).
+    for (const call of agentCalls(text, html)) expect(call.line.split(/\s--\s/)[0], call.line).not.toMatch(/\s@[A-Za-z]/);
+  });
+
   it("gives the exit codes the agent commands return", () => {
     const literal = agentVerbs.match(/export const EXIT = \{([^}]*)\}/);
     expect(literal).not.toBeNull();
