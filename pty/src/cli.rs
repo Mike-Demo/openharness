@@ -16,10 +16,22 @@ const DEFAULT_HISTORY_LIMIT: usize = 2000;
 const USAGE: &str =
     "usage: harness-pty serve --home <dir> [--history-limit N] | version | ps --json";
 
+/// The version this host reports. A release stamps it with the CLI's version (`HARNESS_PTY_VERSION`, set by
+/// windows-pty.yml's release mode) instead of editing Cargo.toml, which would put the lockfile out of date for
+/// `--locked`.
+pub const VERSION: &str = release_version(option_env!("HARNESS_PTY_VERSION"));
+
+pub const fn release_version(given: Option<&'static str>) -> &'static str {
+    match given {
+        Some(version) if !version.is_empty() => version,
+        _ => env!("CARGO_PKG_VERSION"),
+    }
+}
+
 pub fn version_line() -> String {
     format!(
         "{{\"version\":\"{}\",\"protocol\":{}}}",
-        env!("CARGO_PKG_VERSION"),
+        VERSION,
         PROTOCOL
     )
 }
@@ -91,7 +103,7 @@ pub fn main() {
             crate::logfile::install(&home);
             log::info!(
                 "harness-pty {} (protocol {PROTOCOL}) serving {} (pid {})",
-                env!("CARGO_PKG_VERSION"),
+                VERSION,
                 home.display(),
                 std::process::id()
             );
@@ -254,7 +266,7 @@ fn publish_and_serve<L: crate::transport::Listener>(
     let info = crate::server::HostInfo {
         token: uuid::Uuid::new_v4().to_string(),
         instance: crate::discovery::instance(),
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: VERSION.to_owned(),
         pid: std::process::id(),
     };
     // Before the host is published: a host that cannot keep its pane counter must not serve.
@@ -304,8 +316,18 @@ mod tests {
     #[test]
     fn version_line_is_json_with_protocol() {
         let v: serde_json::Value = serde_json::from_str(&version_line()).unwrap();
-        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["version"], VERSION);
         assert_eq!(v["protocol"], PROTOCOL);
+    }
+
+    #[test]
+    fn a_release_build_reports_the_cli_release_version() {
+        // The release builds the host with the CLI's version, so its folder runtime\pty\<version>\ and the
+        // `version` in its discovery file are the version current-pty names. A plain build keeps the crate's.
+        assert_eq!(release_version(Some("0.3.120")), "0.3.120");
+        assert_eq!(release_version(None), env!("CARGO_PKG_VERSION"));
+        // An unset workflow input arrives as an empty string, never as a version.
+        assert_eq!(release_version(Some("")), env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

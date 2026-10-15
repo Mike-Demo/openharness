@@ -2,6 +2,7 @@
 name = "harness-pty"
 version = "0.1.0"
 edition = "2024"
+default-run = "harness-pty"
 
 [dependencies]
 alacritty_terminal = "0.26.0"
