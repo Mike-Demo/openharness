@@ -8,9 +8,11 @@
 //! (`NtQueryInformationProcess(ProcessCommandLineInformation)`, Windows 8.1 and later), which
 //! `CommandLineToArgvW` splits as the C runtime does.
 //!
-//! A process that cannot be opened (another user's, a protected one, or one that exited during the
-//! scan) keeps its pid, parent and exe name with an empty marker; the daemon drops such rows,
-//! since they can never be an identity. One process never fails the scan.
+//! A process that has exited is left out, though Toolhelp still lists it while anything holds a
+//! handle to it: a dead engine must not look alive. A process that cannot be opened (another
+//! user's, a protected one, or one gone during the scan) keeps its pid, parent and exe name with
+//! an empty marker; the daemon drops such rows, since they can never be an identity. One process
+//! never fails the scan.
 
 use serde::Serialize;
 
@@ -47,15 +49,16 @@ mod windows {
     use windows_sys::Win32::Foundation::{
         ERROR_NO_MORE_FILES, FILETIME, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
         NTSTATUS, STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL, STATUS_INFO_LENGTH_MISMATCH,
-        UNICODE_STRING,
+        STILL_ACTIVE, UNICODE_STRING, WAIT_OBJECT_0,
     };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
     use windows_sys::Win32::System::Threading::{
-        GetProcessTimes, OpenProcess, PROCESS_BASIC_INFORMATION, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_BASIC_INFORMATION,
+        PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        QueryFullProcessImageNameW, WaitForSingleObject,
     };
     use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
 
@@ -66,7 +69,7 @@ mod windows {
         let mut reader = Reader::default();
         Ok(listed()?
             .into_iter()
-            .map(|(pid, parent_pid, executable)| reader.row(pid, parent_pid, executable))
+            .filter_map(|(pid, parent_pid, executable)| reader.row(pid, parent_pid, executable))
             .collect())
     }
 
@@ -106,7 +109,9 @@ mod windows {
     }
 
     impl Reader {
-        fn row(&mut self, pid: u32, parent_pid: u32, executable: String) -> ProcessRowJson {
+        /// The listed process's row, or `None` when it has exited: an exited process stays in the
+        /// Toolhelp list while anything holds a handle to it, and must not look alive.
+        fn row(&mut self, pid: u32, parent_pid: u32, executable: String) -> Option<ProcessRowJson> {
             let mut row = ProcessRowJson {
                 pid,
                 parent_pid,
@@ -118,22 +123,23 @@ mod windows {
             };
             // Pid 0 is the idle process, which has nothing to open.
             if pid == 0 {
-                return row;
+                return Some(row);
             }
-            let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-            if handle.is_null() {
-                return row;
-            }
-            let process = unsafe { OwnedHandle::from_raw_handle(handle as _) };
+            let Some((process, synchronize)) = open(pid) else {
+                return Some(row);
+            };
             let h = process.as_raw_handle() as HANDLE;
+            if exited(h, synchronize) {
+                return None;
+            }
             // The pid may have been reused since the snapshot (its process exited and another
             // started): that one's parent is not the listed parent. Its marker would pair the
             // listed name with the newcomer's start, so the row is left unidentifiable.
             if parent(h) != Some(parent_pid) {
-                return row;
+                return Some(row);
             }
             let Some(created) = creation_time(h) else {
-                return row;
+                return Some(row);
             };
             row.start_marker = format!("w:{created}");
             row.image_path = self.image_path(h);
@@ -141,7 +147,7 @@ mod windows {
                 row.native_argv = split(&line);
                 row.args = String::from_utf16_lossy(&line);
             }
-            row
+            Some(row)
         }
 
         fn image_path(&mut self, h: HANDLE) -> Option<String> {
@@ -200,6 +206,38 @@ mod windows {
             }
             None
         }
+    }
+
+    /// The process opened for queries, and whether the handle can be waited on (`SYNCHRONIZE`,
+    /// which a process may refuse while it still allows limited queries).
+    fn open(pid: u32) -> Option<(OwnedHandle, bool)> {
+        [
+            (
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                true,
+            ),
+            (PROCESS_QUERY_LIMITED_INFORMATION, false),
+        ]
+        .into_iter()
+        .find_map(|(access, synchronize)| {
+            let handle = unsafe { OpenProcess(access, 0, pid) };
+            (!handle.is_null()).then(|| {
+                (
+                    unsafe { OwnedHandle::from_raw_handle(handle as _) },
+                    synchronize,
+                )
+            })
+        })
+    }
+
+    /// Whether the process has exited: its handle is signaled; without `SYNCHRONIZE`, it has an
+    /// exit code (a live process reports `STILL_ACTIVE`).
+    fn exited(h: HANDLE, synchronize: bool) -> bool {
+        if synchronize {
+            return unsafe { WaitForSingleObject(h, 0) } == WAIT_OBJECT_0;
+        }
+        let mut code = 0u32;
+        unsafe { GetExitCodeProcess(h, &mut code) != 0 && code != STILL_ACTIVE as u32 }
     }
 
     /// The parent the kernel recorded for the process.
@@ -316,15 +354,26 @@ mod windows {
                 Some(&c.start_marker)
             );
 
-            // Once it has exited, it is gone.
+            // Once it has exited, it is gone, though `child` still holds its handle (so its pid
+            // cannot have been reused either).
             child.kill().unwrap();
             child.wait().unwrap();
             let after = snapshot().unwrap();
-            assert!(
-                row(&after, c.pid).is_none_or(|r| r.start_marker != c.start_marker),
-                "{:?}",
-                row(&after, c.pid)
-            );
+            assert_eq!(row(&after, c.pid), None);
+        }
+
+        #[test]
+        fn an_exited_process_is_not_listed_while_a_handle_keeps_it() {
+            let mut child = std::process::Command::new("cmd.exe")
+                .args(["/d", "/c", "exit 3"])
+                .spawn()
+                .unwrap();
+            assert_eq!(child.wait().unwrap().code(), Some(3));
+            // `child` still holds its process handle, so the kernel keeps the exited process
+            // (and Toolhelp lists it) until it is dropped.
+            let rows = snapshot().unwrap();
+            assert_eq!(row(&rows, child.id()), None);
+            drop(child);
         }
 
         #[test]
@@ -355,11 +404,18 @@ mod windows {
 
         #[test]
         fn a_scan_is_quick() {
+            // The fastest of a few scans: the scan's own cost, not the time the other tests (which
+            // start shells in parallel) keep this thread off the CPU.
             snapshot().unwrap();
-            let start = Instant::now();
-            let rows = snapshot().unwrap();
-            let took = start.elapsed();
-            eprintln!("ps: {} rows in {took:?}", rows.len());
+            let (took, rows) = (0..5)
+                .map(|_| {
+                    let start = Instant::now();
+                    let rows = snapshot().unwrap().len();
+                    (start.elapsed(), rows)
+                })
+                .min()
+                .unwrap();
+            eprintln!("ps: {rows} rows in {took:?}");
             assert!(took < Duration::from_millis(500), "{took:?}");
         }
     }
