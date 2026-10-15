@@ -8,7 +8,7 @@ and rolls back without ending agents, trusts only its own user's local calls, re
 through hooks, and uninstalls cleanly.
 
 **Architecture:** Mirror the Mac flow with Windows pieces. B1 publishes the Windows artifacts and adds a
-per-user `install.ps1`, version folders with pointer files, `harness.cmd` and a windowless `harness-launch.exe`.
+per-user `install.ps1`, version folders with pointer files, `harness.exe` and a windowless `harness-launch.exe`.
 B2 serves the daemon's HTTP API on a named pipe with per-request HMAC auth and proof. B3 runs harnessd under a
 per-user scheduled task, stops it by protocol message (never signals, never `taskkill /T`), replaces the master
 without exec, and self-updates over version folders. B4 turns hooks on with per-engine Windows runners. B5 adds
@@ -32,7 +32,7 @@ on: `docs/superpowers/specs/2026-10-14-windows-native-pty-host-design.md`)
   against a clean `origin/main` worktree, never claim "all green".
 - **No symlinks on Windows.** Pointers are files, written by temp file + rename, read with the
   "must resolve inside its root" check.
-- **Layout:** `%USERPROFILE%\.harness\{bin\harness.cmd, bin\harness-launch.exe, cli\<version>\, cli\current,
+- **Layout:** `%USERPROFILE%\.harness\{bin\harness.exe, bin\harness-launch.exe, cli\<version>\, cli\current,
   cli\notify.mjs, cli\data\, runtime\node-<ver>-win32-<arch>\, runtime\current-node, runtime\pty\<ver>\,
   runtime\pty\current-pty}`.
 - **Trust:** on Windows, reaching the pipe is never trust; only a pipe request with valid
@@ -59,9 +59,9 @@ on: `docs/superpowers/specs/2026-10-14-windows-native-pty-host-design.md`)
    `Harness harnessd (<user>)` in the root folder. Test: B3.12's main text (`taskName` and its spec case, used by
    B3.13, B3.21, B5.9, B5.12 and B5.14); B5.14 Step 7 (scenario 6), where the second user installs and runs its own
    daemon.
-2. **Arguments with `&`, `%`, `^`, `!`, `"` or spaces through `harness.cmd`** reach the CLI unchanged, or the
-   characters cmd cannot carry are pinned and listed in the B1 notes, and the desktop and daemon never go through
-   `harness.cmd`. Test: B1.8 Step 6 "Review Focus 2 and 3".
+2. **Arguments with `&`, `%`, `^`, `!`, `"` or spaces through `harness.exe`** reach the CLI unchanged when passed from cmd or
+   Windows PowerShell 5.1 (it is an .exe, so cmd never re-parses them; PowerShell 5.1's own dropping of an inner
+   `"` is pinned in the B1 notes), and nothing extra runs. Test: B1.8 Step 6 "Review Focus 2 and 3" (fix round 1).
 3. **`irm | iex` under the default `Restricted` execution policy on Windows PowerShell 5.1** installs, and
    `harness` then runs from a Restricted PowerShell. Test: B1.8 Step 6 "Review Focus 2 and 3".
 4. **Running the installer again over a live install** fails on no file in use and never restarts an agent. When
@@ -69,7 +69,7 @@ on: `docs/superpowers/specs/2026-10-14-windows-native-pty-host-design.md`)
    (`harness stop`, then `harness start`; the terminal host and its agents are independent of it); the same version
    restarts nothing. Code and unit test: B3.15. Test: B5.14 Step 8 "Review Focus 4".
 5. **Uninstalling a broken or half install** (no pointer, no daemon, no task) removes what is there and exits 0,
-   with no error line and no new message. Pinned at the command level: B5.9 Step 6 "Review Focus 5". `harness.cmd`
+   with no error line and no new message. Pinned at the command level: B5.9 Step 6 "Review Focus 5". `harness.exe`
    without `cli\current` keeps telling the person to run the installer again; re-running install.ps1 repairs the
    install, and `harness uninstall` then works (B5.14 Step 9).
 
@@ -2728,7 +2728,7 @@ ssh admin@192.168.65.3 "curl.exe -fsSLo C:\work\b1\node-v22.23.2-win-arm64.zip h
 ssh admin@192.168.65.3 "node C:\work\oh\cli\scripts\windows-install-manifest.mjs --out C:\work\b1\manifest --cli-dir C:\work\b1\dist --pty-dir C:\work\b1\payload --node-zip C:\work\b1\node-v22.23.2-win-arm64.zip --version $VERSION"
 # 1. As a file, in a fresh profile, with a throwaway PATH key, so the admin account's own setup is untouched.
 ssh admin@192.168.65.3 "set USERPROFILE=C:\work\b1\profile&& set HARNESS_INSTALL_ENV_KEY=Software\HarnessB1Check&& powershell -NoProfile -ExecutionPolicy Bypass -File C:\work\oh\cli\scripts\install.ps1 -Manifest C:\work\b1\manifest\install-manifest.json -NoService"
-ssh admin@192.168.65.3 "set USERPROFILE=C:\work\b1\profile&& C:\work\b1\profile\.harness\bin\harness.cmd version && type C:\work\b1\profile\.harness\runtime\pty\current-pty && C:\work\b1\profile\.harness\runtime\pty\\$CORE\\harness-pty.exe version"
+ssh admin@192.168.65.3 "set USERPROFILE=C:\work\b1\profile&& C:\work\b1\profile\.harness\bin\harness.exe version && type C:\work\b1\profile\.harness\runtime\pty\current-pty && C:\work\b1\profile\.harness\runtime\pty\\$CORE\\harness-pty.exe version"
 # 2. The way a person runs it: the script text through Invoke-Expression, its manifest from the environment.
 ssh admin@192.168.65.3 "set USERPROFILE=C:\work\b1\profile-iex&& set HARNESS_INSTALL_ENV_KEY=Software\HarnessB1Check&& set HARNESS_INSTALL_MANIFEST=C:\work\b1\manifest\install-manifest.json&& powershell -NoProfile -Command \"Get-Content -Raw C:\work\oh\cli\scripts\install.ps1 | Invoke-Expression; Write-Output done\""
 ssh admin@192.168.65.3 "reg delete HKCU\Software\HarnessB1Check /f"
@@ -2737,7 +2737,7 @@ ssh admin@192.168.65.3 "reg delete HKCU\Software\HarnessB1Check /f"
   Expected:
   - both installs print the guide;
   - the first exits 0, and the second ends with `done`, because the session was not closed;
-  - `harness.cmd version` prints `$VERSION`;
+  - `harness.exe version` prints `$VERSION`;
   - `current-pty` holds `$CORE`;
   - the installed `harness-pty.exe version` prints `{"version":"<CORE>","protocol":2}`.
 
@@ -8303,7 +8303,7 @@ export const VERSION_FOLDER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
 **Interfaces**
 - Produces: `startIfDown(deps: IfDownDeps): Promise<IfDown>`, `processIfDownDeps(): IfDownDeps`; the `--if-down` flag;
   in install.ps1, `Read-HarnessCurrentCli -Root <dir>` (`cli\current`'s version, or `''`) and
-  `Restart-HarnessDaemon -Command <harness.cmd> -Before <v> -After <v>` (returns whether it restarted).
+  `Restart-HarnessDaemon -Command <bin\harness.exe> -Before <v> -After <v>` (returns whether it restarted).
 - Consumes: B3.7 `identifyDaemonProcess`; B3.10 `readSpawnLockOwner`, `spawnLockOwnerReused`,
   `releaseAbandonedSpawnLock`; B3.13 `startThroughTask`, `taskStoppedThisBoot`, `clearTaskStopped`,
   `installedPlatform`; B3.11 `launchDetached`; B1 `harnessLaunchPath(rootDir)` (`lib/windows/installLayout.ts`);
@@ -12950,7 +12950,7 @@ git commit -m "feat(cli): harness tui says the terminal app is not available on 
   unchanged, and a mac pty host (opt-in `TERMINAL_BACKENDS=ptyhost`) gains it too. Amp is left as it is, because it is
   not on Windows.
 - Decision: Agent Messages' inbox block and Harness's command allowance are not installed on Windows. Why: the inbox
-  line is POSIX shell, and the allowance names `~/.local/bin/harness` while B1's launcher is `bin\harness.cmd`. This is
+  line is POSIX shell, and the allowance names `~/.local/bin/harness` while B1's launcher is `bin\harness.exe`. This is
   left for a later change.
 - Decision: `nativeInstall.ts` keeps F2's win32 refusal unchanged. Why: install-first runs POSIX recipes
   (`buildEngineInstallationArgv` already throws on win32) and kills a process group. Its file writes reach Windows only
@@ -14942,8 +14942,8 @@ git commit -m "feat(cli): stop every harness through the daemon for harness unin
   master over the pipe. Also `withSpawnLock` (`lib/daemonSpawnLock.ts:318`), `readPid`, `isAlive`
   (`lib/daemonState.ts:31,38`), `AUTH_DIR` (`lib/authSession.ts:53`), `warnIfGridSignInRemains`
   (`lib/gridCredentials.ts:86`), `env.HARNESS_BIN_DIR`, `ADAPTER_CLI_DIR`, `ADAPTER_DATA_DIR`, `HARNESS_PTY_DIR`.
-  B1.8's `bin\harness.cmd` ends its node line with `& exit /b`, so cmd does not read the deleted batch file again
-  (see the notes).
+  B1.8's launcher is `bin\harness.exe` (no batch file): Windows cannot delete it while it runs, only rename it,
+  so its removal belongs to the final detached step that waits for the CLI and harness.exe to exit (B5.4).
 - Produces: `UNINSTALL_USAGE`, `type UninstallDeps`, `uninstallCommand(argv: readonly string[], deps: UninstallDeps): Promise<number>`,
   `uninstallDeps(options: { tildify: (path: string) => string; ask: (question: string) => Promise<string> }): Promise<UninstallDeps>`;
   the CLI command `harness uninstall [--yes|-y] [--keep-data]` (exit 0 done, 1 refused or incomplete, 2 usage).
@@ -15418,9 +15418,8 @@ older tsx, use `npx tsx src/cli.ts uninstall --yes` under the same `env -i` and 
 
 - [ ] **Step 6: Review Focus 5 — uninstall of a broken or half install (before this task's commit).** An install
   that failed midway, or one whose daemon is down, task missing and `cli\current` gone, must still uninstall: exit 0,
-  no error line and no new message, and what is there removed. This is pinned at the command level. `harness.cmd`
-  itself cannot run without `cli\current`: its `:broken` branch keeps telling the person to run the installer again
-  (B1.8). Re-running install.ps1 repairs a half install, and `harness uninstall` then works (B5.14 checks that end to
+  no error line and no new message, and what is there removed. This is pinned at the command level. `harness.exe`
+  itself cannot run without `cli\current`: it tells the person to run the installer again and exits 3 (B1.8). Re-running install.ps1 repairs a half install, and `harness uninstall` then works (B5.14 checks that end to
   end). Add to `cli/src/lib/uninstall/command.spec.ts`, inside `describe('harness uninstall')`:
 
 ```ts
@@ -15639,7 +15638,7 @@ git commit -m "ci: the Windows workflow is windows.yml, and runs the uninstall s
   (B1.9), which zips the payload folder and writes `<out>/install-manifest.json`: B1.7's `-Manifest` document, one JSON
   file with the `cli`, `node` and `pty` keys, its files beside it by relative name. `cli/scripts/install.ps1 -Manifest <path>`
   (B1.7, B1.8). B1.13's `windows-pty` job and its `harness-pty-windows-<arch>` artifacts, and its `release` input
-  (B5.11 renamed the file to `windows.yml`). Also from B1: `bin\harness.cmd`, the user PATH entry; from B3: this user's task
+  (B5.11 renamed the file to `windows.yml`). Also from B1: `bin\harness.exe`, the user PATH entry; from B3: this user's task
   `taskName(<user>)`, `Harness harnessd (<user>)` in the root folder (B3.12; the checks name it
   `"Harness harnessd ($env:USERNAME)"`). From B5.9: `harness uninstall --yes`.
 - Produces: the job `install` on windows-latest (x64) and windows-11-arm (arm64), on-demand runs only;
@@ -15657,7 +15656,7 @@ git commit -m "ci: the Windows workflow is windows.yml, and runs the uninstall s
 param([Parameter(Mandatory)][string]$Version, [string]$Project = (Join-Path $env:TEMP 'harness-check-proj'))
 $ErrorActionPreference = 'Stop'
 $root = Join-Path $env:USERPROFILE '.harness'
-$harness = Join-Path $root 'bin\harness.cmd'
+$harness = Join-Path $root 'bin\harness.exe'
 function Fail([string]$message) { Write-Host "FAIL $message"; exit 1 }
 
 $v = ((& $harness version) | Select-Object -First 1).Trim()
@@ -15800,7 +15799,7 @@ Add to `.github/workflows/windows.yml`, after the `windows-pty` job:
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited $LASTEXITCODE" }
           # install.ps1 does not start the daemon itself: a task Task Scheduler would not run leaves it down, and the
           # installer says to run `harness start` (B1.8). That starts it directly through harness-launch.exe (B3.15).
-          $harness = "$env:USERPROFILE\.harness\bin\harness.cmd"
+          $harness = "$env:USERPROFILE\.harness\bin\harness.exe"
           if (((& $harness status) -join "`n") -notmatch 'running') {
             Write-Host '::notice::the scheduled task did not start harnessd here; starting it with harness start'
             & $harness start
@@ -15821,7 +15820,7 @@ Add to `.github/workflows/windows.yml`, after the `windows-pty` job:
         shell: pwsh
         run: |
           Set-Location $env:USERPROFILE
-          & "$env:USERPROFILE\.harness\bin\harness.cmd" uninstall --yes
+          & "$env:USERPROFILE\.harness\bin\harness.exe" uninstall --yes
           if ($LASTEXITCODE -ne 0) { throw "harness uninstall exited $LASTEXITCODE" }
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\cli\scripts\windows-ci\check-uninstall.ps1"
           if ($LASTEXITCODE -ne 0) { throw 'harness uninstall left something behind' }
@@ -16177,7 +16176,7 @@ ssh hxe2e@$VM "tree /F %USERPROFILE%\.harness\bin %USERPROFILE%\.harness\cli & t
 ```
 Record: the install's duration and its output (each step named, no error); `check-install` all `ok`; the process tree
 (the master `node.exe` under `svchost`/`taskhostw`, not under the SSH session's `sshd`, and `harness-pty.exe`); any
-Defender or SmartScreen detection; the layout (`cli\<N>\`, `cli\current` = N, `cli\notify.mjs`, `bin\harness.cmd`,
+Defender or SmartScreen detection; the layout (`cli\<N>\`, `cli\current` = N, `cli\notify.mjs`, `bin\harness.exe`,
 `bin\harness-launch.exe`).
 Pass: every check `ok`, and the daemon survives closing the SSH session. Check that with
 `ssh hxe2e@$VM "harness status"` in a new connection.
@@ -16351,9 +16350,8 @@ cli/scripts/windows-cli-e2e/vm.sh admin cli/scripts/windows-cli-e2e/procs.ps1 -U
 ssh hxe2e@$VM "reg query HKCU\Environment & type %USERPROFILE%\.claude\settings.json & type %USERPROFILE%\.codex\hooks.json" | tee -a "$EV/s7-check.log"
 ssh hxe2e@$VM "reg delete HKCU\Environment /v PORT /f & reg delete HKCU\Environment /v ADAPTER_UPDATE_URL /f"
 ```
-Pass: the uninstall prints each step and `Harness is uninstalled.`, exit 0, and nothing about a batch file
-that cannot be found. It also does not print `The batch file cannot be found` after the CLI exits (B1's harness.cmd
-`& exit /b`). `check-uninstall` prints `clean`. `procs.ps1` lists nothing. The user PATH keeps every other entry
+Pass: the uninstall prints each step and `Harness is uninstalled.`, exit 0, and no error after the CLI exits
+(`harness.exe` is renamed or removed by the final detached step, never deleted while it runs). `check-uninstall` prints `clean`. `procs.ps1` lists nothing. The user PATH keeps every other entry
 (npm's `%APPDATA%\npm` included). The engine settings files hold no `notify.mjs`, and Codex's
 `rules\harness.rules` is gone. Then a second round: install again (Step 2's command) and
 `harness uninstall --yes --keep-data`. Check that `cli\data`, `auth` and `computer-id` stay and that the program
@@ -16365,7 +16363,7 @@ pins the command itself). A third round:
 
 ```bash
 ssh hxe2e@$VM "powershell -NoProfile -EncodedCommand $enc" | tee "$EV/s7-half.log"
-# Half an install: its pointer gone. harness.cmd says to install again (B1.8 :broken), and exits 1.
+# Half an install: its pointer gone. harness.exe says to install again, and exits 3 (B1.8).
 ssh hxe2e@$VM "del %USERPROFILE%\.harness\cli\current & harness version & echo exit=%ERRORLEVEL%" | tee -a "$EV/s7-half.log"
 ssh hxe2e@$VM "powershell -NoProfile -EncodedCommand $enc" | tee -a "$EV/s7-half.log"
 ssh hxe2e@$VM "cd /d %USERPROFILE% & harness uninstall --yes" | tee -a "$EV/s7-half.log"
@@ -16512,9 +16510,9 @@ git commit -m "docs: Windows CLI end-to-end results, and uninstall on macOS and 
 **Open risks**
 - B5.12 writes its manifest with B1.9's `windows-install-manifest.mjs` (relative file names beside the manifest, which
   B1.7 allows for a local file), so the job tests B1's own builder and reader together.
-- B1.8's `harness.cmd` ends its node line with `& exit /b` (its static test pins it). Otherwise, after `harness
-  uninstall` deletes it, cmd would read the batch file again when node exits and print "The batch file cannot be
-  found". B5.14 Step 8 checks for it on the VM.
+- B1.8's launcher is `bin\harness.exe`. Windows can rename a running exe but not delete it, and an overwritten one
+  leaves `harness.exe~RF*.TMP` beside it: the final detached removal step (B5.4) runs after the CLI and harness.exe
+  exit, and removes such leftovers too. B5.14's uninstall scenario checks nothing is left.
 - Hosted runners may not run a logon task in their session. B5.12 Step 3 states what passes then: the reported fallback.
 - If the scheduled task fires only at an interactive logon, a rebooted remote machine with nobody signed in stays down.
   B5.14 Step 3 measures this rather than assuming it. That behaviour is B3's choice of logon type.

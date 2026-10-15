@@ -68,7 +68,7 @@ signing and the desktop's release.
 
 ```
 %USERPROFILE%\.harness\
-  bin\harness.cmd                       ← on the user's PATH
+  bin\harness.exe                       ← on the user's PATH
   bin\harness-launch.exe                ← windowless starter (below)
   cli\<version>\cli.js, notify.mjs      ← one folder per CLI version
   cli\current                           ← pointer file: the version in use
@@ -80,21 +80,23 @@ signing and the desktop's release.
 ```
 
 Pointer files are written by write-to-temp then rename. The pointer readers in Node and in Rust
-(`harness-launch.exe`) read them with the "single segment, must resolve inside its own root" check
-`managedNodePath()` applies today.
-`harness.cmd` cannot do that containment check in cmd: it relies on `if not exist` checks of the files the
-pointers resolve to.
+(`harness.exe`, `harness-launch.exe`) read them with the "single segment, must resolve inside its own
+root" check `managedNodePath()` applies today.
 
 **Contract for the desktop (C):** on Windows there is no `~\.harness\cli\cli.js`. The desktop's
 `HarnessCliRunner` resolves `cli\current` plus `runtime\current-node` (its first tier), or runs
-`bin\harness.cmd`. The commands it relies on (`start`, `stop`, `version`, `auth status --json`) are
+`bin\harness.exe`. The commands it relies on (`start`, `stop`, `version`, `auth status --json`) are
 unchanged.
 
 ### Launchers
 
-- **`harness.cmd`** reads `cli\current` and `runtime\current-node`, then runs
-  `"<node.exe>" "<cli>\<version>\cli.js" %*`. It contains only paths the installer wrote; it does not
-  parse user arguments (they pass through `%*`).
+- **`harness.exe`**: a small Rust console binary in the `pty/` workspace. It reads `cli\current` and
+  `runtime\current-node` (the same reader as `harness-launch.exe`), runs `node.exe cli.js <args>` in the
+  same console with the caller's arguments passed straight through `CreateProcess`, ignores Ctrl-C itself
+  so Node handles it, and exits with Node's exit code. **Not a `.cmd`:** cmd.exe re-parses a batch file's
+  arguments in the caller's own command line, so an argument holding `"` followed by `&`, `|`, `<` or `>`
+  would run commands or truncate files — and agents call `harness send <name> "<text>"` with text they did
+  not write (found while building B1.8).
 - **`harness-launch.exe`**: a small Rust binary (GUI subsystem, so no console window) built in the
   `pty/` workspace and shipped beside the host. It resolves the same pointers and starts
   `node.exe cli.js <args>` with `CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP`,
@@ -111,7 +113,7 @@ Run as `irm https://cdn.autonomous.ai/harness/cli/install.ps1 | iex`. Steps, in 
 1. Host check: Windows 10 1809 or later (ConPTY), x64 or arm64, `tar.exe` present (built in since 1803).
 2. Download the Node runtime, the CLI and the pty payload named by their manifests; verify each file's
    SHA-256 and size; unpack into a staging folder and rename it into place.
-3. Write the pointer files, `bin\harness.cmd` and `bin\harness-launch.exe`.
+3. Write the pointer files, `bin\harness.exe` and `bin\harness-launch.exe`.
 4. Add `%USERPROFILE%\.harness\bin` to the user's PATH (`HKCU\Environment`), then broadcast
    `WM_SETTINGCHANGE` so new shells see it. Never touch the machine PATH.
 5. Register the harnessd task (section 3) and start it; verify with `harness version` and
