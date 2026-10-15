@@ -28,7 +28,9 @@ pub fn instance() -> String {
 }
 
 /// Write the discovery file atomically: a reader sees the old file or the whole new one, never a
-/// part. Owner-only on Unix (Task 17 gives it an owner-only DACL on Windows).
+/// part. Owner-only: mode 0600 on Unix; on Windows the pipe's DACL, `D:P(A;;GA;;;<user SID>)`,
+/// set on the temporary file before it is renamed into place (the token in it is the host's
+/// password).
 pub fn write(run_dir: &Path, discovery: &Discovery) -> io::Result<PathBuf> {
     let path = file_path(run_dir);
     let tmp = run_dir.join(format!(
@@ -52,7 +54,10 @@ pub fn write(run_dir: &Path, discovery: &Discovery) -> io::Result<PathBuf> {
         }
         file.write_all(&body)?;
         file.sync_all()?;
-        std::fs::rename(&tmp, &path)
+        drop(file);
+        #[cfg(windows)]
+        crate::transport::windows::OwnerOnly::new()?.apply_to(&tmp)?;
+        crate::files::rename(&tmp, &path)
     })();
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -88,6 +93,26 @@ mod tests {
         assert_eq!(v["instance"], format!("p{PROTOCOL}"));
         // No temporary file is left behind.
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_file_is_the_users_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), &sample("a")).unwrap();
+        let sid = crate::transport::windows::user_sid().unwrap();
+        let dacl = crate::transport::windows::dacl_of(&path.to_string_lossy());
+        // Protected (no entry inherited from the directory), one entry: the user's.
+        assert!(
+            dacl == format!("D:P(A;;FA;;;{sid})") || dacl == format!("D:P(A;;GA;;;{sid})"),
+            "{dacl}"
+        );
+        // Replacing the file keeps it so.
+        write(dir.path(), &sample("b")).unwrap();
+        assert_eq!(
+            crate::transport::windows::dacl_of(&path.to_string_lossy()),
+            dacl
+        );
     }
 
     #[cfg(unix)]

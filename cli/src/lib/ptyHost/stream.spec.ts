@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { Duplex, PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PtyHostBackend } from '../ptyHostBackend.js'
 import { rewrapTmuxHistory } from '../historyRewrap.js'
+import { removeTree, SHELL, WAIT_MS } from '../terminalBackend.contract.js'
 import { KEYFRAME_MAX_BYTES, type PtyRuntimeRef, type TerminalStreamSnapshot } from '../terminalTypes.js'
 import { CONVERSATION_HISTORY_LINES, SNAPSHOT_HISTORY_LINES, tmuxKeyframe, type PaneMeta } from '../tmuxStream.js'
 import { readDiscovery } from './launch.js'
@@ -531,19 +532,20 @@ describe('PtyHostStream close', () => {
 // HARNESS_PTY_BIN=$(pwd)/../pty/target/debug/harness-pty npx vitest run src/lib/ptyHost/stream.spec.ts
 describe.skipIf(!process.env.HARNESS_PTY_BIN)('PtyHostStream with the real harness-pty', () => {
   let home: string | null = null
-  afterEach(() => {
+  afterEach(async () => {
     if (!home) return
     const pid = readDiscovery(home, PTY_PROTOCOL)?.pid
     if (pid) try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
-    rmSync(home, { recursive: true, force: true })
+    const dir = home
     home = null
+    await removeTree(dir)
   })
 
   it('opens a stream on a shell, snapshots, types, resizes and closes', async () => {
     home = mkdtempSync(path.join(tmpdir(), 'pty-stream-'))
     const backend = new PtyHostBackend({ home, owner: () => 'test' })
     expect(await backend.prepare({ ownedPanes: new Map() })).toEqual({ state: 'ready' })
-    const created = await backend.create({ command: ['/bin/sh'], cwd: home })
+    const created = await backend.create({ command: SHELL, cwd: home })
     if (created.state !== 'succeeded') throw new Error(JSON.stringify(created))
     const chunks: Buffer[] = []
     const closes: string[] = []
@@ -558,7 +560,8 @@ describe.skipIf(!process.env.HARNESS_PTY_BIN)('PtyHostStream with the real harne
     expect(snapshot).toMatchObject({ state: 'succeeded', value: { cols: 90, rows: 20 } })
     stream.endSnapshot()
     expect(await stream.writeRaw(Buffer.from('echo live-$((1+1))\r'))).toMatchObject({ state: 'succeeded' })
-    await expect.poll(() => Buffer.concat(chunks).toString(), { timeout: 5_000 }).toContain('live-2')
+    // `$((1+1))`: arithmetic to sh, a subexpression to PowerShell.
+    await expect.poll(() => Buffer.concat(chunks).toString(), { timeout: WAIT_MS }).toContain('live-2')
     expect(await stream.resize({ cols: 70, rows: 15 })).toMatchObject({ state: 'succeeded' })
     stream.beginSnapshot()
     const resized = await stream.snapshot()
@@ -568,5 +571,5 @@ describe.skipIf(!process.env.HARNESS_PTY_BIN)('PtyHostStream with the real harne
     await stream.close()
     expect(closes).toEqual(['closed'])
     expect((await backend.kill(created.runtime)).state).toBe('succeeded')
-  })
+  }, WAIT_MS * 2)
 })

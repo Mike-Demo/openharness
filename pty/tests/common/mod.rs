@@ -1,21 +1,69 @@
-//! Helpers shared by the integration tests: a host on a temporary home, and control calls.
+//! Helpers shared by the integration tests: a host on a temporary home, connections to it on
+//! either transport (a Unix socket, a named pipe on Windows), and control calls.
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use harness_pty::protocol::PROTOCOL;
+pub use harness_pty::transport::Connection;
+
+/// A client connection to the host's endpoint.
+#[cfg(unix)]
+pub type Conn = std::os::unix::net::UnixStream;
+/// A client connection to the host's endpoint: the pipe opened as a file (`OpenOptions`), with
+/// overlapped I/O so that a read can time out as a socket's does.
+#[cfg(windows)]
+pub type Conn = harness_pty::transport::windows::PipeConn;
+
+/// Connect to `endpoint` (a socket path, or a pipe name on Windows).
+pub fn open(endpoint: &str) -> std::io::Result<Conn> {
+    #[cfg(unix)]
+    {
+        std::os::unix::net::UnixStream::connect(endpoint)
+    }
+    #[cfg(windows)]
+    {
+        harness_pty::transport::windows::connect(endpoint)
+    }
+}
+
+/// How long a host has to come up, or a pane to show output. Windows children (PowerShell,
+/// ConPTY) start much slower than `/bin/sh`.
+pub const WAIT: Duration = if cfg!(windows) {
+    Duration::from_secs(20)
+} else {
+    Duration::from_secs(5)
+};
 
 pub struct Host {
     pub child: Child,
     pub home: tempfile::TempDir,
+    /// The pid serving: the child, or (Windows) the copy of itself it started out of its job.
+    pub pid: u32,
 }
 impl Drop for Host {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        kill_pid(self.pid);
+    }
+}
+
+/// End the process `pid`, if it is still there.
+pub fn kill_pid(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
     }
 }
 
@@ -23,21 +71,33 @@ pub fn discovery_file(home: &std::path::Path) -> std::path::PathBuf {
     home.join(format!("run/pty-host-{PROTOCOL}.json"))
 }
 
-pub fn start() -> (Host, serde_json::Value) {
-    let home = tempfile::tempdir().unwrap();
-    let child = Command::new(env!("CARGO_BIN_EXE_harness-pty"))
-        .args(["serve", "--home"])
-        .arg(home.path())
-        .spawn()
-        .unwrap();
-    let file = discovery_file(home.path());
-    let end = Instant::now() + Duration::from_secs(5);
-    while !file.exists() {
+/// The discovery file of `home` once it is there.
+pub fn wait_discovery(home: &std::path::Path) -> serde_json::Value {
+    let file = discovery_file(home);
+    let end = Instant::now() + WAIT;
+    loop {
+        if let Ok(bytes) = std::fs::read(&file)
+            && let Ok(disc) = serde_json::from_slice(&bytes)
+        {
+            return disc;
+        }
         assert!(Instant::now() < end, "no discovery file");
         std::thread::sleep(Duration::from_millis(20))
     }
-    let disc: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-    (Host { child, home }, disc)
+}
+
+pub fn host_command(home: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_harness-pty"));
+    command.args(["serve", "--home"]).arg(home);
+    command
+}
+
+pub fn start() -> (Host, serde_json::Value) {
+    let home = tempfile::tempdir().unwrap();
+    let child = host_command(home.path()).spawn().unwrap();
+    let disc = wait_discovery(home.path());
+    let pid = disc["pid"].as_u64().unwrap() as u32;
+    (Host { child, home, pid }, disc)
 }
 
 pub fn hello(token: &str, role: &str) -> String {
@@ -46,9 +106,14 @@ pub fn hello(token: &str, role: &str) -> String {
     )
 }
 
-pub fn connect(disc: &serde_json::Value) -> (UnixStream, BufReader<UnixStream>) {
-    let s = UnixStream::connect(disc["endpoint"].as_str().unwrap()).unwrap();
-    s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+/// A raw connection to the endpoint `disc` names, before any hello.
+pub fn dial(disc: &serde_json::Value) -> Conn {
+    open(disc["endpoint"].as_str().unwrap()).unwrap()
+}
+
+pub fn connect(disc: &serde_json::Value) -> (Conn, BufReader<Conn>) {
+    let s = dial(disc);
+    s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
     let mut w = s.try_clone().unwrap();
     writeln!(w, "{}", hello(disc["token"].as_str().unwrap(), "control")).unwrap();
     let mut r = BufReader::new(s);
@@ -58,14 +123,42 @@ pub fn connect(disc: &serde_json::Value) -> (UnixStream, BufReader<UnixStream>) 
     (w, r)
 }
 
-pub fn call(w: &mut UnixStream, r: &mut BufReader<UnixStream>, req: &str) -> serde_json::Value {
+pub fn call(w: &mut Conn, r: &mut BufReader<Conn>, req: &str) -> serde_json::Value {
     writeln!(w, "{req}").unwrap();
     loop {
         let mut line = String::new();
         r.read_line(&mut line).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_slice(line.as_bytes()).unwrap_or_else(|e| panic!("{e}: {line:?}"));
         if v.get("id").is_some() {
             return v;
         }
     }
 }
+
+/// A command line that runs `unix` with `/bin/sh -c`, or `windows` with PowerShell.
+pub fn script(unix: &str, windows: &str) -> serde_json::Value {
+    if cfg!(windows) {
+        serde_json::json!([
+            "powershell.exe",
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            windows
+        ])
+    } else {
+        serde_json::json!(["/bin/sh", "-c", unix])
+    }
+}
+
+/// An interactive shell: `/bin/sh`, or `cmd.exe` on Windows.
+pub fn shell() -> serde_json::Value {
+    if cfg!(windows) {
+        serde_json::json!(["cmd.exe", "/d"])
+    } else {
+        serde_json::json!(["/bin/sh"])
+    }
+}
+
+/// The line ending a pane takes as Enter.
+pub const ENTER: &str = if cfg!(windows) { "\r" } else { "\n" };

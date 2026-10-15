@@ -1,12 +1,33 @@
+import { rmSync } from 'node:fs'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import type { TerminalBackend } from './terminalBackend.js'
 import type { TerminalRuntimeRef } from './terminalTypes.js'
 
-const SHELL = process.platform === 'win32' ? ['powershell.exe', '-NoLogo', '-NoProfile'] : ['/bin/sh']
+/** An interactive shell on this platform. */
+export const SHELL = process.platform === 'win32' ? ['powershell.exe', '-NoLogo', '-NoProfile'] : ['/bin/sh']
+/** How long a shell has to show what a case waits for. PowerShell in a fresh console can take seconds to start. */
+export const WAIT_MS = process.platform === 'win32' ? 15_000 : 5_000
 /** Each case's own limit: a backend that hangs fails that case, not the run. */
-const CASE_TIMEOUT_MS = 15_000
+const CASE_TIMEOUT_MS = process.platform === 'win32' ? 40_000 : 15_000
 
-async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, ms = 5_000): Promise<T> {
+/**
+ * Remove [dir], trying again for a while: on Windows a directory cannot be removed while a process has it as its
+ * working directory, and a killed host's panes (and their consoles) take a moment to end.
+ */
+export async function removeTree(dir: string, ms = 8_000): Promise<void> {
+  const end = Date.now() + ms
+  for (;;) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (Date.now() > end) throw error
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+  }
+}
+
+async function until<T>(read: () => Promise<T>, ok: (v: T) => boolean, ms = WAIT_MS): Promise<T> {
   const end = Date.now() + ms
   for (;;) {
     const value = await read()
@@ -54,6 +75,8 @@ export function runTerminalBackendContract(name: string, make: () => Promise<{ b
 
     it('submitText reaches the program and capture shows it', async () => {
       const r = await pane()
+      // The shell works the sum out, so the output is not the echo of what was typed: `$((40+2))` is arithmetic to
+      // sh, and a subexpression around `(40+2)` to PowerShell.
       await backend.submitText(r, 'echo contract-$((40+2))')
       expect(await until(() => text(r), (t) => t.includes('contract-42'))).toContain('contract-42')
       await backend.kill(r)

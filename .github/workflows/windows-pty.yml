@@ -62,11 +62,7 @@ jobs:
       - name: CLI install
         working-directory: cli
         run: npm ci
-      # continue-on-error: ptyhost `serve` is "unsupported" on Windows until the named
-      # pipe lands (Task 17), so this is expected to fail until then. It becomes
-      # required (remove continue-on-error) after Task 17.
       - name: Contract suite against the real host
-        continue-on-error: true
         working-directory: cli
         shell: pwsh
         env:

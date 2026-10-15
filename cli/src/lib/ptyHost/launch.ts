@@ -173,8 +173,10 @@ async function spawnAndWait(home: string, binary: string | null, waitMs: number)
     // do. On Windows the host also breaks away from the daemon's job by re-executing itself.
     // Without the daemon's own tmux identity (`TMUX`, `TMUX_PANE`), which a daemon started from a tmux pane has:
     // every pane the host spawns inherits its environment, and would read as that tmux pane's to a hook or a shell.
+    // In the home, not the daemon's directory: a running program's directory cannot be removed on Windows, and the
+    // daemon's may be an old install's.
     const child = spawn(binary, ['serve', '--home', home], {
-      detached: true, windowsHide: true, stdio: 'ignore', env: scrubTerminalContext({ ...process.env }),
+      cwd: home, detached: true, windowsHide: true, stdio: 'ignore', env: scrubTerminalContext({ ...process.env }),
     })
     child.once('error', err => { failed ??= `could not start ${binary}: ${err.message}` })
     child.once('exit', (code, signal) => {

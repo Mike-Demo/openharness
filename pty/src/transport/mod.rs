@@ -1,10 +1,12 @@
-//! Where clients reach the host: a Unix socket, or (Task 17) a named pipe on Windows.
+//! Where clients reach the host: a Unix socket, or a named pipe on Windows.
 
 use std::io::{self, Read, Write};
 use std::time::Duration;
 
 #[cfg(unix)]
 pub mod unix;
+#[cfg(windows)]
+pub mod windows;
 
 /// One client connection.
 pub trait Connection: Read + Write + Send + Sized + 'static {

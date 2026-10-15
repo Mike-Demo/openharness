@@ -1,10 +1,10 @@
-#![cfg(unix)]
 mod common;
-use common::{call, connect, discovery_file, hello, start};
+#[cfg(windows)]
+use common::Connection;
+use common::{
+    ENTER, WAIT, call, connect, dial, hello, host_command, script, shell, start, wait_discovery,
+};
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixStream;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use harness_pty::protocol::PROTOCOL;
@@ -12,7 +12,8 @@ use harness_pty::protocol::PROTOCOL;
 #[test]
 fn rejects_bad_token() {
     let (_h, disc) = start();
-    let mut s = UnixStream::connect(disc["endpoint"].as_str().unwrap()).unwrap();
+    let mut s = dial(&disc);
+    s.set_read_timeout(Some(WAIT)).unwrap();
     writeln!(s, "{}", hello("nope", "control")).unwrap();
     let mut line = String::new();
     BufReader::new(s).read_line(&mut line).unwrap();
@@ -22,7 +23,8 @@ fn rejects_bad_token() {
 #[test]
 fn rejects_other_protocol() {
     let (_h, disc) = start();
-    let mut s = UnixStream::connect(disc["endpoint"].as_str().unwrap()).unwrap();
+    let mut s = dial(&disc);
+    s.set_read_timeout(Some(WAIT)).unwrap();
     let token = disc["token"].as_str().unwrap();
     writeln!(
         s,
@@ -41,28 +43,63 @@ fn rejects_other_protocol() {
 
 #[test]
 fn discovery_names_the_host() {
-    let (h, disc) = start();
+    let (mut h, disc) = start();
     assert_eq!(disc["protocol"], PROTOCOL);
     assert_eq!(disc["instance"], format!("p{PROTOCOL}"));
-    assert_eq!(disc["pid"], h.child.id());
     assert_eq!(disc["version"], env!("CARGO_PKG_VERSION"));
-    let endpoint = std::path::PathBuf::from(disc["endpoint"].as_str().unwrap());
-    assert_eq!(
-        endpoint,
-        h.home.path().join(format!("run/pty-host-{PROTOCOL}.sock"))
-    );
-    let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode(&discovery_file(h.home.path())), 0o600);
-    assert_eq!(mode(&endpoint), 0o600);
+    if disc["pid"] != h.child.id() {
+        // On Windows a host started inside a job serves from a copy of itself started outside it;
+        // the one started exits at once, with success.
+        if !cfg!(windows) {
+            panic!("{disc} is not the child {}", h.child.id());
+        }
+        assert!(h.child.wait().unwrap().success());
+    }
+    let endpoint = disc["endpoint"].as_str().unwrap().to_owned();
+    #[cfg(unix)]
+    {
+        use common::discovery_file;
+        use std::os::unix::fs::PermissionsExt;
+        let endpoint = std::path::Path::new(&endpoint);
+        assert_eq!(
+            endpoint,
+            h.home.path().join(format!("run/pty-host-{PROTOCOL}.sock"))
+        );
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&discovery_file(h.home.path())), 0o600);
+        assert_eq!(mode(endpoint), 0o600);
+    }
+    #[cfg(windows)]
+    {
+        // `\\.\pipe\harness-pty-<16 hex>-p<protocol>`.
+        let hash = endpoint
+            .strip_prefix(r"\\.\pipe\harness-pty-")
+            .and_then(|rest| rest.strip_suffix(&format!("-p{PROTOCOL}")))
+            .unwrap_or_else(|| panic!("{endpoint}"));
+        assert!(
+            hash.len() == 16
+                && hash
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            "{endpoint}"
+        );
+    }
     // The hello reply names the same host.
-    let s = UnixStream::connect(&endpoint).unwrap();
+    let s = dial(&disc);
+    s.set_read_timeout(Some(WAIT)).unwrap();
     let mut w = s.try_clone().unwrap();
     writeln!(w, "{}", hello(disc["token"].as_str().unwrap(), "control")).unwrap();
     let mut line = String::new();
     BufReader::new(s).read_line(&mut line).unwrap();
     let v: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(v["hello"]["instance"], format!("p{PROTOCOL}"));
-    assert_eq!(v["hello"]["pid"], h.child.id());
+    assert_eq!(v["hello"]["pid"], disc["pid"]);
+}
+
+/// `data` as the `write` op carries it.
+fn b64(data: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
 }
 
 #[test]
@@ -72,16 +109,25 @@ fn create_capture_kill() {
     let created = call(
         &mut w,
         &mut r,
-        r#"{"id":1,"op":"create","command":["/bin/sh"],"cols":80,"rows":24,"owner":"t","hold":false}"#,
+        &serde_json::json!({"id": 1, "op": "create", "command": shell(), "cols": 80, "rows": 24, "owner": "t", "hold": false}).to_string(),
     );
     let pane = created["pane"].as_str().unwrap().to_string();
     assert!(pane.starts_with('%'));
+    // The shell works the number out: "hi-42" is in its output, not in what was typed.
+    let typed = if cfg!(windows) {
+        "set /a x=40+2 >nul\recho hi-%x%\r".to_owned()
+    } else {
+        format!("echo hi-$((40+2)){ENTER}")
+    };
     call(
         &mut w,
         &mut r,
-        &format!(r#"{{"id":2,"op":"write","pane":"{pane}","data":"ZWNobyBoaS0kKCg0MCsyKSkK"}}"#),
-    ); // "echo hi-$((40+2))\n"
-    let end = Instant::now() + Duration::from_secs(5);
+        &format!(
+            r#"{{"id":2,"op":"write","pane":"{pane}","data":"{}"}}"#,
+            b64(&typed)
+        ),
+    );
+    let end = Instant::now() + WAIT;
     loop {
         let cap = call(
             &mut w,
@@ -99,7 +145,7 @@ fn create_capture_kill() {
         &mut r,
         &format!(r#"{{"id":4,"op":"kill","pane":"{pane}","graceMs":200}}"#),
     );
-    let end = Instant::now() + Duration::from_secs(5);
+    let end = Instant::now() + WAIT;
     loop {
         let st = call(
             &mut w,
@@ -116,17 +162,124 @@ fn create_capture_kill() {
 
 #[test]
 fn second_host_exits_cleanly() {
-    let (h, _disc) = start();
-    let status = Command::new(env!("CARGO_BIN_EXE_harness-pty"))
-        .args(["serve", "--home"])
-        .arg(h.home.path())
-        .status()
-        .unwrap();
+    let (h, disc) = start();
+    let status = host_command(h.home.path()).status().unwrap();
     assert!(status.success());
+    // The first host still serves, and is the one the discovery file names.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(wait_discovery(h.home.path()), disc);
+    let (mut w, mut r) = connect(&disc);
+    assert_eq!(
+        call(&mut w, &mut r, r#"{"id":1,"op":"titles"}"#)["ok"],
+        true
+    );
+}
+
+/// The pane counter's ceiling: how many ids the hosts of a home have reserved.
+fn reserved(home: &std::path::Path) -> String {
+    std::fs::read_to_string(home.join(format!("run/pty-host-{PROTOCOL}.panes"))).unwrap()
 }
 
 #[test]
+fn hosts_started_together_serve_once() {
+    let home = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        // A socket file nobody answers on, as a crashed host leaves it: every host replaces it, and
+        // without the run directory's lock two of them could each bind one and serve the same home.
+        let run = home.path().join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        drop(
+            std::os::unix::net::UnixListener::bind(run.join(format!("pty-host-{PROTOCOL}.sock")))
+                .unwrap(),
+        );
+    }
+    let mut children: Vec<_> = (0..8)
+        .map(|_| host_command(home.path()).spawn().unwrap())
+        .collect();
+    let disc = wait_discovery(home.path());
+    let serving = disc["pid"].as_u64().unwrap() as u32;
+    let _guard = scopeguard(serving);
+    // Every other start exits, with success.
+    let end = Instant::now() + WAIT;
+    for child in &mut children {
+        if child.id() == serving {
+            continue;
+        }
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(Instant::now() < end, "a second host is still running");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(status.success(), "{status}");
+    }
+    // One host reserved one block of pane ids, and it is the one that answers.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        reserved(home.path()),
+        format!("{}\n", harness_pty::pane_ids::BLOCK)
+    );
+    let (mut w, mut r) = connect(&disc);
+    assert_eq!(
+        call(&mut w, &mut r, r#"{"id":1,"op":"titles"}"#)["ok"],
+        true
+    );
+    assert_eq!(wait_discovery(home.path()), disc);
+    for mut child in children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+// Unix only: the race this stands for (two hosts each replacing the other's socket file) needs a
+// socket file that can be removed; a pipe name cannot be taken while its first instance lives.
+#[cfg(unix)]
+#[test]
+fn a_host_that_lost_its_socket_file_still_owns_its_home() {
+    // What two hosts starting together on a stale socket could do: the second removes the
+    // first's socket file (taking it for the stale one) and binds its own.
+    let (h, disc) = start();
+    std::fs::remove_file(disc["endpoint"].as_str().unwrap()).unwrap();
+    let mut second = host_command(h.home.path()).spawn().unwrap();
+    let end = Instant::now() + WAIT;
+    let status = loop {
+        if let Some(status) = second.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > end {
+            let _ = second.kill();
+            let _ = second.wait();
+            panic!("the second host serves the same home");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.success(), "{status}");
+    // The second host did not serve: one block of ids reserved, and the file names the first.
+    assert_eq!(
+        reserved(h.home.path()),
+        format!("{}\n", harness_pty::pane_ids::BLOCK)
+    );
+    assert_eq!(wait_discovery(h.home.path()), disc);
+}
+
+/// Kills `pid` when dropped.
+fn scopeguard(pid: u32) -> impl Drop {
+    struct Kill(u32);
+    impl Drop for Kill {
+        fn drop(&mut self) {
+            common::kill_pid(self.0);
+        }
+    }
+    Kill(pid)
+}
+
+// Unix only: a named pipe goes away with its last handle, so Windows has no stale endpoint.
+#[cfg(unix)]
+#[test]
 fn stale_socket_is_replaced() {
+    use std::os::unix::net::UnixStream;
     let home = tempfile::tempdir().unwrap();
     let run = home.path().join("run");
     std::fs::create_dir_all(&run).unwrap();
@@ -140,17 +293,8 @@ fn stale_socket_is_replaced() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(path.exists());
-    let mut child = Command::new(env!("CARGO_BIN_EXE_harness-pty"))
-        .args(["serve", "--home"])
-        .arg(home.path())
-        .spawn()
-        .unwrap();
-    let file = discovery_file(home.path());
-    let end = Instant::now() + Duration::from_secs(5);
-    while !file.exists() {
-        assert!(Instant::now() < end, "no discovery file");
-        std::thread::sleep(Duration::from_millis(20))
-    }
+    let mut child = host_command(home.path()).spawn().unwrap();
+    wait_discovery(home.path());
     assert!(UnixStream::connect(&path).is_ok());
     let _ = child.kill();
     let _ = child.wait();
@@ -164,7 +308,10 @@ fn exit_events_reach_every_control_connection() {
     let created = call(
         &mut w,
         &mut r,
-        r#"{"id":1,"op":"create","command":["/bin/sh","-c","sleep 0.3; exit 7"],"cols":80,"rows":24,"owner":"t","hold":false}"#,
+        &serde_json::json!({"id": 1, "op": "create",
+            "command": script("sleep 0.3; exit 7", "Start-Sleep -Milliseconds 300; exit 7"),
+            "cols": 80, "rows": 24, "owner": "t", "hold": false})
+        .to_string(),
     );
     let pane = created["pane"].as_str().unwrap().to_string();
     for reader in [&mut r, &mut r2] {
@@ -194,12 +341,28 @@ fn held_pane_respawns_with_its_token() {
     const TOK: &str = "0b5f9d38-3c1e-4c55-9f1a-1d2e3f4a5b6c";
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
+    let command: Vec<String> = if cfg!(windows) {
+        vec![
+            "powershell.exe".into(),
+            "-NoProfile".into(),
+            "-Command".into(),
+            format!("echo first; exit 3 # harness-held {TOK}"),
+        ]
+    } else {
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "echo first; exit 3".into(),
+            "harness-held".into(),
+            TOK.into(),
+        ]
+    };
     let created = call(
         &mut w,
         &mut r,
-        &format!(
-            r#"{{"id":1,"op":"create","command":["/bin/sh","-c","echo first; exit 3","harness-held","{TOK}"],"cols":80,"rows":24,"owner":"o","label":"l","hold":true}}"#
-        ),
+        &serde_json::json!({"id": 1, "op": "create", "command": command, "cols": 80, "rows": 24,
+            "owner": "o", "label": "l", "hold": true})
+        .to_string(),
     );
     let pane = created["pane"].as_str().unwrap().to_string();
     // Created held; holdOpen holds it again, dead or not.
@@ -211,7 +374,7 @@ fn held_pane_respawns_with_its_token() {
     if held["ok"] != true {
         panic!("holdOpen: {held}");
     }
-    let end = Instant::now() + Duration::from_secs(5);
+    let end = Instant::now() + WAIT;
     let state = loop {
         let st = call(
             &mut w,
@@ -225,10 +388,7 @@ fn held_pane_respawns_with_its_token() {
         std::thread::sleep(Duration::from_millis(50));
     };
     assert_eq!(state["state"]["exitStatus"], 3);
-    assert_eq!(
-        state["state"]["startCommand"],
-        format!("/bin/sh -c echo first; exit 3 harness-held {TOK}")
-    );
+    assert_eq!(state["state"]["startCommand"], command.join(" "));
     let inv = call(&mut w, &mut r, r#"{"id":4,"op":"inventory"}"#);
     let row = inv["panes"]
         .as_array()
@@ -241,28 +401,33 @@ fn held_pane_respawns_with_its_token() {
     assert_eq!(row["owner"], "o");
     assert!(row["rootPid"].as_u64().is_some(), "{row}");
 
+    let next = script("echo second; sleep 30", "echo second; Start-Sleep 30");
     let wrong = call(
         &mut w,
         &mut r,
-        &format!(
-            r#"{{"id":5,"op":"respawn","pane":"{pane}","command":["/bin/sh","-c","echo second; sleep 30"],"expectedHeldToken":"11111111-2222-3333-4444-555555555555"}}"#
-        ),
+        &serde_json::json!({"id": 5, "op": "respawn", "pane": pane, "command": next,
+            "expectedHeldToken": "11111111-2222-3333-4444-555555555555"})
+        .to_string(),
     );
     assert_eq!(wrong["code"], "held_mismatch", "{wrong}");
     let ok = call(
         &mut w,
         &mut r,
-        &format!(
-            r#"{{"id":6,"op":"respawn","pane":"{pane}","command":["/bin/sh","-c","echo second; sleep 30"],"expectedHeldToken":"{TOK}"}}"#
-        ),
+        &serde_json::json!({"id": 6, "op": "respawn", "pane": pane, "command": next,
+            "expectedHeldToken": TOK})
+        .to_string(),
     );
     assert_eq!(ok["ok"], true, "{ok}");
-    let end = Instant::now() + Duration::from_secs(5);
+    // A new ConPTY starts on a cleared screen, so on Windows the old output is in the history.
+    let visible = !cfg!(windows);
+    let end = Instant::now() + WAIT;
     loop {
         let cap = call(
             &mut w,
             &mut r,
-            &format!(r#"{{"id":7,"op":"capture","pane":"{pane}","ansi":false,"visible":true}}"#),
+            &serde_json::json!({"id": 7, "op": "capture", "pane": pane, "ansi": false,
+                "visible": visible, "historyLines": 100})
+            .to_string(),
         );
         let text = cap["text"].as_str().unwrap();
         if text.contains("second") {
@@ -302,11 +467,14 @@ fn children_see_harness_pane() {
     let created = call(
         &mut w,
         &mut r,
-        r#"{"id":1,"op":"create","command":["/bin/sh","-c","echo \"hp=$HARNESS_PANE.\"; sleep 5"],"cols":80,"rows":24,"owner":"t","hold":false}"#,
+        &serde_json::json!({"id": 1, "op": "create",
+            "command": script(r#"echo "hp=$HARNESS_PANE."; sleep 5"#, r#"echo "hp=$env:HARNESS_PANE."; Start-Sleep 5"#),
+            "cols": 80, "rows": 24, "owner": "t", "hold": false})
+        .to_string(),
     );
     let pane = created["pane"].as_str().unwrap().to_string();
     let want = format!("hp=p{PROTOCOL}:{pane}.");
-    let end = Instant::now() + Duration::from_secs(5);
+    let end = Instant::now() + WAIT;
     loop {
         let cap = call(
             &mut w,
@@ -326,6 +494,10 @@ fn children_see_harness_pane() {
     );
 }
 
+// Unix only: the child ignores SIGHUP to outlast the grace and dies by SIGKILL (128 + 9). The
+// Windows kill (CTRL_CLOSE, then the pane's Job after the grace) is covered by
+// `panes::windows_tests`.
+#[cfg(unix)]
 #[test]
 fn kill_does_not_hold_up_the_connection_and_the_exit_still_arrives() {
     let (_h, disc) = start();

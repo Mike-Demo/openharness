@@ -99,7 +99,8 @@ fn write_ceiling(path: &Path, ceiling: u64) -> io::Result<()> {
         }
         file.write_all(format!("{ceiling}\n").as_bytes())?;
         file.sync_all()?;
-        std::fs::rename(&tmp, path)
+        drop(file);
+        crate::files::rename(&tmp, path)
     })();
     if written.is_err() {
         let _ = std::fs::remove_file(&tmp);

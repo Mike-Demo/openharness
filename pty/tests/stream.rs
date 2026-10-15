@@ -1,13 +1,14 @@
-#![cfg(unix)]
 mod common;
-use common::{call, connect, hello, start};
+#[cfg(windows)]
+use common::Connection;
+use common::{Conn, WAIT, call, connect, dial, hello, script, start};
 use harness_pty::protocol::{Kind, read_frame, write_frame};
 use std::io::{BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-fn stream(disc: &serde_json::Value) -> UnixStream {
-    let mut s = UnixStream::connect(disc["endpoint"].as_str().unwrap()).unwrap();
+fn stream(disc: &serde_json::Value) -> Conn {
+    let mut s = dial(disc);
+    s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
     writeln!(s, "{}", hello(disc["token"].as_str().unwrap(), "stream")).unwrap();
     // Byte by byte, so no frame that follows the hello line is read into a buffer here.
     let mut line = Vec::new();
@@ -22,8 +23,23 @@ fn stream(disc: &serde_json::Value) -> UnixStream {
     s
 }
 
+/// `script` as a pane's command: `/bin/sh -c unix`, or PowerShell running `windows`.
+fn create_with(
+    w: &mut Conn,
+    r: &mut BufReader<Conn>,
+    unix: &str,
+    windows: &str,
+    hold: bool,
+) -> String {
+    let req = serde_json::json!({"id": 1, "op": "create", "command": script(unix, windows), "cols": 80, "rows": 24, "owner": "t", "hold": hold});
+    call(w, r, &req.to_string())["pane"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
 fn subscribe_with(
-    s: &mut UnixStream,
+    s: &mut Conn,
     pane: &str,
     cols: u16,
     rows: u16,
@@ -36,25 +52,17 @@ fn subscribe_with(
     serde_json::from_slice(&payload).unwrap()
 }
 
-fn subscribe(s: &mut UnixStream, pane: &str) {
+fn subscribe(s: &mut Conn, pane: &str) {
     let ack = subscribe_with(s, pane, 80, 24, false);
     assert_eq!(ack["ok"], true, "{ack}");
 }
 
-fn create(w: &mut UnixStream, r: &mut BufReader<UnixStream>, script: &str, hold: bool) -> String {
-    let req = serde_json::json!({"id": 1, "op": "create", "command": ["/bin/sh", "-c", script], "cols": 80, "rows": 24, "owner": "t", "hold": hold});
-    call(w, r, &req.to_string())["pane"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
-
 /// Reads frames until `until` returns true for the text gathered so far, the stream ends, or a
 /// read times out. Returns (frames, text).
-fn read_until(s: &mut UnixStream, until: impl Fn(&str) -> bool) -> (Vec<(Kind, Vec<u8>)>, String) {
+fn read_until(s: &mut Conn, until: impl Fn(&str) -> bool) -> (Vec<(Kind, Vec<u8>)>, String) {
     let mut frames = Vec::new();
     let mut text = String::new();
-    let end = Instant::now() + Duration::from_secs(10);
+    let end = Instant::now() + WAIT;
     while Instant::now() < end {
         let Ok(Some((kind, payload))) = read_frame(s) else {
             break;
@@ -70,6 +78,10 @@ fn read_until(s: &mut UnixStream, until: impl Fn(&str) -> bool) -> (Vec<(Kind, V
     (frames, text)
 }
 
+/// PowerShell has no SIGWINCH: it prints the console's size each time it changes, as the Unix
+/// scripts' WINCH trap does.
+const WATCH_SIZE: &str = r#"$s = $Host.UI.RawUI.WindowSize; echo ready; while ($true) { $n = $Host.UI.RawUI.WindowSize; if ($n.Width -ne $s.Width -or $n.Height -ne $s.Height) { $s = $n; echo "size-$($n.Height)x$($n.Width)" }; Start-Sleep -Milliseconds 100 }"#;
+
 fn seq_of(payload: &[u8]) -> u64 {
     u64::from_be_bytes(payload[..8].try_into().unwrap())
 }
@@ -79,7 +91,7 @@ fn json(payload: &[u8]) -> serde_json::Value {
 }
 
 /// The next frame that is not output.
-fn next_reply(s: &mut UnixStream) -> (Kind, serde_json::Value) {
+fn next_reply(s: &mut Conn) -> (Kind, serde_json::Value) {
     loop {
         let (kind, payload) = read_frame(s).unwrap().expect("stream ended");
         if kind != Kind::Output {
@@ -88,7 +100,7 @@ fn next_reply(s: &mut UnixStream) -> (Kind, serde_json::Value) {
     }
 }
 
-fn snapshot(s: &mut UnixStream, id: u64) -> serde_json::Value {
+fn snapshot(s: &mut Conn, id: u64) -> serde_json::Value {
     let req = serde_json::json!({"id": id, "history": "none", "historyLines": 0});
     write_frame(s, Kind::Snapshot, req.to_string().as_bytes()).unwrap();
     loop {
@@ -100,8 +112,8 @@ fn snapshot(s: &mut UnixStream, id: u64) -> serde_json::Value {
     }
 }
 
-fn wait_capture(w: &mut UnixStream, r: &mut BufReader<UnixStream>, pane: &str, needle: &str) {
-    let end = Instant::now() + Duration::from_secs(10);
+fn wait_capture(w: &mut Conn, r: &mut BufReader<Conn>, pane: &str, needle: &str) {
+    let end = Instant::now() + WAIT;
     loop {
         let req = serde_json::json!({"id": 9, "op": "capture", "pane": pane, "ansi": false, "visible": true});
         let v = call(w, r, &req.to_string());
@@ -117,10 +129,11 @@ fn wait_capture(w: &mut UnixStream, r: &mut BufReader<UnixStream>, pane: &str, n
 fn snapshot_seq_cuts_output() {
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
-    let pane = create(
+    let pane = create_with(
         &mut w,
         &mut r,
         "sleep 0.3; i=1; while [ $i -le 200 ]; do echo line-$i; i=$((i+1)); done; sleep 3",
+        r#"Start-Sleep -Milliseconds 300; 1..200 | % { "line-$_" }; Start-Sleep 3"#,
         false,
     );
     let mut s = stream(&disc);
@@ -135,7 +148,7 @@ fn snapshot_seq_cuts_output() {
     let mut cut = None;
     let mut snapshot_text = String::new();
     let mut after = String::new();
-    let end = Instant::now() + Duration::from_secs(10);
+    let end = Instant::now() + WAIT;
     while Instant::now() < end
         && !(snapshot_text.contains("line-200") || after.contains("line-200"))
     {
@@ -161,18 +174,29 @@ fn snapshot_seq_cuts_output() {
     }
     let total = format!("{snapshot_text}{after}");
     assert_eq!(total.matches("line-200").count(), 1, "{total}");
-    // Nothing is lost either: the snapshot's history reaches back past line-50.
-    assert_eq!(total.matches("line-60\n").count(), 1, "{total}");
+    // Nothing is lost either: each line is there once, in the snapshot (its history reaches back
+    // past line-50) or in the output after its cut. (The snapshot's rows end in "\n", output's in
+    // "\r\n"; where the cut falls depends on how fast the child writes.)
+    for i in [1, 50, 60, 199] {
+        let once = total.matches(&format!("line-{i}\n")).count()
+            + total.matches(&format!("line-{i}\r")).count();
+        assert_eq!(once, 1, "line-{i}: {total}");
+    }
 }
 
+// Unix only: it needs a child that writes 20 MB faster than a subscriber reads. ConPTY renders a
+// child's output into screen frames, so on Windows what reaches the host is a few frames, not the
+// bytes written; the queue limit itself is covered by `stream`'s unit tests.
+#[cfg(unix)]
 #[test]
 fn overflow_drops_subscriber() {
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
-    let pane = create(
+    let pane = create_with(
         &mut w,
         &mut r,
         "sleep 0.3; yes 0123456789012345678901234567890123456789 | head -c 20000000; sleep 5",
+        "",
         false,
     );
     let mut s = stream(&disc);
@@ -236,11 +260,17 @@ fn overflow_drops_subscriber() {
 fn held_pane_keeps_stream_across_respawn() {
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
-    let pane = create(&mut w, &mut r, "sleep 0.3; echo first; exit 0", true);
+    let pane = create_with(
+        &mut w,
+        &mut r,
+        "sleep 0.3; echo first; exit 0",
+        "Start-Sleep -Milliseconds 300; echo first; exit 0",
+        true,
+    );
     let mut s = stream(&disc);
     subscribe(&mut s, &pane);
     read_until(&mut s, |t| t.contains("first"));
-    let end = Instant::now() + Duration::from_secs(5);
+    let end = Instant::now() + WAIT;
     loop {
         let st = call(
             &mut w,
@@ -253,7 +283,7 @@ fn held_pane_keeps_stream_across_respawn() {
         assert!(Instant::now() < end, "{st}");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let req = serde_json::json!({"id": 3, "op": "respawn", "pane": pane, "command": ["/bin/sh", "-c", "echo second; sleep 1"]});
+    let req = serde_json::json!({"id": 3, "op": "respawn", "pane": pane, "command": script("echo second; sleep 1", "echo second; Start-Sleep 1")});
     assert_eq!(call(&mut w, &mut r, &req.to_string())["ok"], true);
     let (frames, text) = read_until(&mut s, |t| t.contains("second"));
     assert!(text.contains("second"), "{text}");
@@ -264,7 +294,13 @@ fn held_pane_keeps_stream_across_respawn() {
 fn a_pane_that_exits_or_is_killed_closes_its_streams() {
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
-    let pane = create(&mut w, &mut r, "sleep 0.3; echo bye; exit 0", false);
+    let pane = create_with(
+        &mut w,
+        &mut r,
+        "sleep 0.3; echo bye; exit 0",
+        "Start-Sleep -Milliseconds 300; echo bye; exit 0",
+        false,
+    );
     let mut s = stream(&disc);
     subscribe(&mut s, &pane);
     let (frames, text) = read_until(&mut s, |_| false);
@@ -275,7 +311,7 @@ fn a_pane_that_exits_or_is_killed_closes_its_streams() {
         (Kind::Closed, serde_json::json!({"reason": "exited"}))
     );
 
-    let pane = create(&mut w, &mut r, "sleep 30", true);
+    let pane = create_with(&mut w, &mut r, "sleep 30", "Start-Sleep 30", true);
     let mut s = stream(&disc);
     subscribe(&mut s, &pane);
     let req = serde_json::json!({"id": 4, "op": "kill", "pane": pane, "graceMs": 500});
@@ -299,7 +335,7 @@ fn a_pane_that_exits_or_is_killed_closes_its_streams() {
 fn read_only_subscribers_cannot_type_paste_or_resize() {
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
-    let pane = create(&mut w, &mut r, "sleep 30", false);
+    let pane = create_with(&mut w, &mut r, "sleep 30", "Start-Sleep 30", false);
     let mut s = stream(&disc);
     // A read-only subscriber does not resize the pane to its own size.
     let ack = subscribe_with(&mut s, &pane, 120, 40, true);
@@ -331,10 +367,11 @@ fn read_only_subscribers_cannot_type_paste_or_resize() {
 fn subscribing_resizes_and_input_and_paste_reach_the_pane() {
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
-    let pane = create(
+    let pane = create_with(
         &mut w,
         &mut r,
         "stty -echo; echo ready; read a; echo got-$a; read b; echo pasted-$b; sleep 30",
+        "echo ready; $a = Read-Host; echo got-$a; $b = Read-Host; echo pasted-$b; Start-Sleep 30",
         false,
     );
     let mut s = stream(&disc);
@@ -380,10 +417,11 @@ fn subscribing_resizes_and_input_and_paste_reach_the_pane() {
 fn resize_is_acked_once_applied() {
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
-    let pane = create(
+    let pane = create_with(
         &mut w,
         &mut r,
         "trap 'echo size-$(stty size | tr \" \" x)' WINCH; echo ready; while :; do sleep 0.1; done",
+        WATCH_SIZE,
         false,
     );
     let mut s = stream(&disc);
@@ -418,10 +456,11 @@ fn resize_is_acked_once_applied() {
 fn same_size_subscribe_and_resize_change_nothing_and_say_so() {
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
-    let pane = create(
+    let pane = create_with(
         &mut w,
         &mut r,
         "trap 'echo size-$(stty size | tr \" \" x)' WINCH; echo ready; while :; do sleep 0.1; done",
+        WATCH_SIZE,
         false,
     );
     let mut s = stream(&disc);
@@ -470,10 +509,11 @@ fn same_size_subscribe_and_resize_change_nothing_and_say_so() {
 fn pause_holds_output_until_resume() {
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
-    let pane = create(
+    let pane = create_with(
         &mut w,
         &mut r,
         "stty -echo; echo ready; read x; i=1; while [ $i -le 50 ]; do echo out-$i; i=$((i+1)); done; sleep 30",
+        r#"echo ready; $x = Read-Host; 1..50 | % { "out-$_" }; Start-Sleep 30"#,
         false,
     );
     let mut s = stream(&disc);
@@ -514,10 +554,11 @@ fn pause_holds_output_until_resume() {
 fn two_subscribers_get_the_same_outputs() {
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
-    let pane = create(
+    let pane = create_with(
         &mut w,
         &mut r,
         "sleep 0.5; i=1; while [ $i -le 100 ]; do echo line-$i; i=$((i+1)); done; sleep 30",
+        r#"Start-Sleep -Milliseconds 500; 1..100 | % { "line-$_" }; Start-Sleep 30"#,
         false,
     );
     let mut a = stream(&disc);
@@ -525,7 +566,7 @@ fn two_subscribers_get_the_same_outputs() {
     let mut b = stream(&disc);
     let ack = subscribe_with(&mut b, &pane, 80, 24, true);
     assert_eq!(ack["ok"], true);
-    let outputs = |s: &mut UnixStream| -> Vec<(u64, Vec<u8>)> {
+    let outputs = |s: &mut Conn| -> Vec<(u64, Vec<u8>)> {
         let (frames, text) = read_until(s, |t| t.contains("line-100\r"));
         assert!(text.contains("line-100"), "{text}");
         frames
@@ -567,8 +608,21 @@ fn frames_before_subscribe_are_refused() {
 fn conversation_snapshots_carry_the_joined_history() {
     let (_h, disc) = start();
     let (mut w, mut r) = connect(&disc);
-    let req = serde_json::json!({"id": 1, "op": "create", "command": ["/bin/sh", "-c",
-        "sleep 0.3; printf 'h1\\nCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\\ns2\\ns3\\ns4\\ns5\\ns6'; sleep 30"],
+    let command = if cfg!(windows) {
+        serde_json::json!([
+            "cmd.exe",
+            "/d",
+            "/c",
+            "ping -n 2 127.0.0.1 >nul& echo h1& echo CCCCCCCCCCCCCCCCCCCCCCCCCCCCCC& echo s2& echo s3& echo s4& echo s5& <nul set /p =s6& ping -n 30 127.0.0.1 >nul"
+        ])
+    } else {
+        serde_json::json!([
+            "/bin/sh",
+            "-c",
+            "sleep 0.3; printf 'h1\\nCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC\\ns2\\ns3\\ns4\\ns5\\ns6'; sleep 30"
+        ])
+    };
+    let req = serde_json::json!({"id": 1, "op": "create", "command": command,
         "cols": 20, "rows": 6, "owner": "t", "hold": false});
     let pane = call(&mut w, &mut r, &req.to_string())["pane"]
         .as_str()
@@ -577,7 +631,7 @@ fn conversation_snapshots_carry_the_joined_history() {
     let mut s = stream(&disc);
     assert_eq!(subscribe_with(&mut s, &pane, 20, 6, false)["ok"], true);
     read_until(&mut s, |t| t.contains("s6"));
-    let ask = |s: &mut UnixStream, id: u64, history: &str| {
+    let ask = |s: &mut Conn, id: u64, history: &str| {
         let req = serde_json::json!({"id": id, "history": history, "historyLines": 100});
         write_frame(s, Kind::Snapshot, req.to_string().as_bytes()).unwrap();
         loop {
@@ -588,13 +642,19 @@ fn conversation_snapshots_carry_the_joined_history() {
         }
     };
     let v = ask(&mut s, 1, "conversation");
+    // ConPTY starts with `ESC[2J` on the empty screen, and the grid's clear scrolls the cursor's
+    // (blank) row into the history: on Windows the history starts with it.
+    let lead = if cfg!(windows) { "\n" } else { "" };
     // Rows: the wrapped line's first row is the history's last line, its second the screen's first.
-    assert_eq!(v["history"], "h1\nCCCCCCCCCCCCCCCCCCCC\n");
+    assert_eq!(v["history"], format!("{lead}h1\nCCCCCCCCCCCCCCCCCCCC\n"));
     assert_eq!(v["capture"], "CCCCCCCCCC\ns2\ns3\ns4\ns5\ns6\n");
-    assert_eq!(v["historyJoined"], "h1\nCCCCCCCCCCCCCCCCCCCC\n");
+    assert_eq!(
+        v["historyJoined"],
+        format!("{lead}h1\nCCCCCCCCCCCCCCCCCCCC\n")
+    );
     assert_eq!(v["lastContinues"], true);
     let v = ask(&mut s, 2, "plain");
-    assert_eq!(v["history"], "h1\nCCCCCCCCCCCCCCCCCCCC\n");
+    assert_eq!(v["history"], format!("{lead}h1\nCCCCCCCCCCCCCCCCCCCC\n"));
     assert!(
         v.get("historyJoined").is_none() && v.get("lastContinues").is_none(),
         "{v}"

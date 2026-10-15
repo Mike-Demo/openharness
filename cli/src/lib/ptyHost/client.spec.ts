@@ -29,13 +29,16 @@ interface FakeHost {
 
 const line = (socket: net.Socket, value: unknown) => socket.write(`${JSON.stringify(value)}\n`)
 
+/** A fresh endpoint to listen at: a named pipe on Windows, a socket file elsewhere. */
+const tempEndpoint = () => process.platform === 'win32'
+  ? `\\\\.\\pipe\\pty-${randomUUID()}`
+  // A socket path has 104 bytes on macOS and the temporary folder takes about half.
+  : path.join(tmpdir(), `pty-${randomUUID().slice(0, 8)}.sock`)
+
 /** A `net.Server` that speaks the host's hello and control NDJSON, on a temporary socket. */
 async function fakeHost(options: FakeHostOptions = {}): Promise<FakeHost> {
   const token = options.token ?? 'tok'
-  const endpoint = process.platform === 'win32'
-    ? `\\\\.\\pipe\\pty-${randomUUID()}`
-    // A socket path has 104 bytes on macOS and the temporary folder takes about half.
-    : path.join(tmpdir(), `pty-${randomUUID().slice(0, 8)}.sock`)
+  const endpoint = tempEndpoint()
   const hellos: FakeHost['hellos'] = []
   const sockets = new Set<net.Socket>()
   const server = net.createServer(socket => {
@@ -139,7 +142,7 @@ describe('PtyHostClient.connect', () => {
   })
 
   it('reports a hello reply that never ends as incompatible', async () => {
-    const endpoint = path.join(tmpdir(), `pty-${randomUUID().slice(0, 8)}.sock`)
+    const endpoint = tempEndpoint()
     const server = net.createServer(socket => { socket.on('error', () => {}); socket.resume(); socket.write('x'.repeat(100_000)) })
     server.listen(endpoint)
     await once(server, 'listening')
@@ -149,7 +152,7 @@ describe('PtyHostClient.connect', () => {
   })
 
   it('reports an unreadable hello reply as incompatible', async () => {
-    const endpoint = path.join(tmpdir(), `pty-${randomUUID().slice(0, 8)}.sock`)
+    const endpoint = tempEndpoint()
     // resume(): a socket nobody reads never sees the client's end, and server.close() waits for it.
     const server = net.createServer(socket => { socket.on('error', () => {}); socket.resume(); socket.write('not json\n') })
     server.listen(endpoint)

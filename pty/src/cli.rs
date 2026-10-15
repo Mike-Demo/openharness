@@ -20,7 +20,13 @@ pub fn version_line() -> String {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
-    Serve { home: PathBuf, history_limit: usize },
+    Serve {
+        home: PathBuf,
+        history_limit: usize,
+        /// Whether a Windows host started in a job may start a copy of itself outside it.
+        /// `--no-reexec` (that copy's own flag) turns it off.
+        reexec: bool,
+    },
     Version,
     Ps,
 }
@@ -36,8 +42,10 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         Some("serve") => {
             let mut home = None;
             let mut history_limit = DEFAULT_HISTORY_LIMIT;
+            let mut reexec = true;
             while let Some(arg) = args.next() {
                 match arg {
+                    "--no-reexec" => reexec = false,
                     "--home" => {
                         home = Some(PathBuf::from(
                             args.next().ok_or("--home needs a directory")?,
@@ -55,6 +63,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             Ok(Command::Serve {
                 home: home.ok_or("serve needs --home")?,
                 history_limit,
+                reexec,
             })
         }
         _ => Err(USAGE.into()),
@@ -73,8 +82,9 @@ pub fn main() {
         Ok(Command::Serve {
             home,
             history_limit,
+            reexec,
         }) => {
-            if let Err(err) = serve(&home, history_limit) {
+            if let Err(err) = serve(&home, history_limit, reexec) {
                 eprintln!("harness-pty: {err}");
                 std::process::exit(1);
             }
@@ -101,20 +111,73 @@ fn run_dir(home: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// Bind the endpoint, publish the discovery file, and serve until killed. Returns at once, with
-/// success, when another host already serves this home.
-#[cfg(unix)]
-pub fn serve(home: &Path, history_limit: usize) -> std::io::Result<()> {
-    use crate::transport::{Bound, Listener, unix};
+/// success, when another host already serves this home (or, on Windows, when a copy of this host
+/// started outside the job this one is in serves it: `breakaway`).
+pub fn serve(home: &Path, history_limit: usize, reexec: bool) -> std::io::Result<()> {
+    #[cfg(windows)]
+    if reexec && leave_job(home, history_limit) {
+        return Ok(());
+    }
+    #[cfg(not(windows))]
+    let _ = reexec;
     let run = run_dir(home)?;
-    // Owner-only from its creation, so no other user can connect before the chmod. The umask is
-    // the process's: set while this is the only thread, restored before panes are spawned.
-    let old = unsafe { libc::umask(0o177) };
-    let bound = unix::bind(&unix::socket_path(&run));
-    unsafe { libc::umask(old) };
-    let listener = match bound? {
-        Bound::Listening(listener) => listener,
-        Bound::Taken => return Ok(()),
+    // Before the endpoint and the pane counter: one host per home.
+    let Some(_lock) = crate::host_lock::take(&run)? else {
+        return Ok(());
     };
+    #[cfg(unix)]
+    let bound = {
+        use crate::transport::unix;
+        // Owner-only from its creation, so no other user can connect before the chmod. The umask
+        // is the process's: set while this is the only thread, restored before panes are spawned.
+        let old = unsafe { libc::umask(0o177) };
+        let bound = unix::bind(&unix::socket_path(&run));
+        unsafe { libc::umask(old) };
+        bound
+    };
+    #[cfg(windows)]
+    let bound = crate::transport::windows::bind(&crate::transport::windows::pipe_name_for(home)?);
+    match bound? {
+        crate::transport::Bound::Listening(listener) => {
+            publish_and_serve(listener, &run, history_limit)
+        }
+        crate::transport::Bound::Taken => {
+            eprintln!("harness-pty: another host has this home's endpoint");
+            Ok(())
+        }
+    }
+}
+
+/// Windows: start a copy of this host outside the job it is in, if it is in one. True when the
+/// copy serves and this process should exit.
+#[cfg(windows)]
+fn leave_job(home: &Path, history_limit: usize) -> bool {
+    use crate::breakaway::{Left, in_job, spawn_copy};
+    let in_job = in_job().unwrap_or_else(|err| {
+        eprintln!("harness-pty: warning: cannot tell whether the host is in a job: {err}");
+        false
+    });
+    let args: Vec<std::ffi::OsString> = vec![
+        "serve".into(),
+        "--home".into(),
+        home.as_os_str().to_owned(),
+        "--history-limit".into(),
+        history_limit.to_string().into(),
+        "--no-reexec".into(),
+    ];
+    let left = crate::breakaway::leave_job(
+        in_job,
+        |flags| spawn_copy(&args, flags),
+        |warning| eprintln!("harness-pty: warning: {warning}"),
+    );
+    matches!(left, Left::BrokeAway | Left::Detached)
+}
+
+fn publish_and_serve<L: crate::transport::Listener>(
+    listener: L,
+    run: &Path,
+    history_limit: usize,
+) -> std::io::Result<()> {
     let info = crate::server::HostInfo {
         token: uuid::Uuid::new_v4().to_string(),
         instance: crate::discovery::instance(),
@@ -123,9 +186,9 @@ pub fn serve(home: &Path, history_limit: usize) -> std::io::Result<()> {
     };
     // Before the host is published: a host that cannot keep its pane counter must not serve.
     let (panes, events) =
-        crate::panes::Panes::persistent(history_limit, info.instance.clone(), &run)?;
+        crate::panes::Panes::persistent(history_limit, info.instance.clone(), run)?;
     crate::discovery::write(
-        &run,
+        run,
         &crate::discovery::Discovery {
             protocol: PROTOCOL,
             instance: info.instance.clone(),
@@ -136,16 +199,6 @@ pub fn serve(home: &Path, history_limit: usize) -> std::io::Result<()> {
         },
     )?;
     crate::server::run(listener, panes, events, info)
-}
-
-/// The named pipe transport is Task 17.
-#[cfg(not(unix))]
-pub fn serve(home: &Path, _history_limit: usize) -> std::io::Result<()> {
-    run_dir(home)?;
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "serve is not supported on this platform yet",
-    ))
 }
 
 #[cfg(test)]
@@ -171,14 +224,24 @@ mod tests {
             parse(&args(&["serve", "--home", "/h"])),
             Ok(Command::Serve {
                 home: "/h".into(),
-                history_limit: DEFAULT_HISTORY_LIMIT
+                history_limit: DEFAULT_HISTORY_LIMIT,
+                reexec: true,
             })
         );
         assert_eq!(
             parse(&args(&["serve", "--history-limit", "50", "--home", "/h"])),
             Ok(Command::Serve {
                 home: "/h".into(),
-                history_limit: 50
+                history_limit: 50,
+                reexec: true,
+            })
+        );
+        assert_eq!(
+            parse(&args(&["serve", "--home", "/h", "--no-reexec"])),
+            Ok(Command::Serve {
+                home: "/h".into(),
+                history_limit: DEFAULT_HISTORY_LIMIT,
+                reexec: false,
             })
         );
         assert!(parse(&args(&["serve"])).is_err());

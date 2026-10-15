@@ -1,9 +1,10 @@
 import { once } from 'node:events'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { removeTree } from '../terminalBackend.contract.js'
 import { PtyHostClient } from './client.js'
 import { ensurePtyHost, ptyHostBinary, reachable, readDiscovery } from './launch.js'
 import { PTY_PROTOCOL } from './protocol.js'
@@ -16,7 +17,7 @@ afterEach(async () => {
 
 function tempDir(prefix: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), prefix))
-  cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
+  cleanup.push(() => removeTree(dir))
   return dir
 }
 
@@ -108,6 +109,7 @@ fs.mkdirSync(run, { recursive: true })
 fs.appendFileSync(path.join(home, 'spawns'), process.pid + '\\n')
 // What the host was started with, for the spawn-environment test.
 fs.writeFileSync(path.join(home, 'env.json'), JSON.stringify({ TMUX: process.env.TMUX ?? null, TMUX_PANE: process.env.TMUX_PANE ?? null, KEPT: process.env.PTY_LAUNCH_KEPT ?? null }))
+fs.writeFileSync(path.join(home, 'cwd'), process.cwd())
 if (${JSON.stringify(mode)} === 'fail') process.exit(4)
 if (${JSON.stringify(mode)} === 'quiet') process.exit(0)
 const endpoint = path.join(run, 'h.sock')
@@ -187,6 +189,13 @@ describe.skipIf(process.platform === 'win32')('ensurePtyHost', () => {
       expect(JSON.parse(readFileSync(path.join(dir, 'env.json'), 'utf8'))).toEqual({ TMUX: null, TMUX_PANE: null, KEPT: 'yes' })
       expect(process.env.TMUX_PANE).toBe('%42')
     } finally { vi.unstubAllEnvs() }
+  })
+
+  it('starts the host in its home, not in the daemon\'s directory', async () => {
+    const dir = home()
+    await clientOf(await ensurePtyHost(dir, { binary: fakeBinary('serve') }))
+    expect(readFileSync(path.join(dir, 'cwd'), 'utf8')).toBe(realpathSync(dir))
+    expect(realpathSync(process.cwd())).not.toBe(realpathSync(dir))
   })
 
   it('starts a host when there is no discovery file, and waits for it', async () => {
@@ -324,7 +333,8 @@ describe.skipIf(!process.env.HARNESS_PTY_BIN)('ensurePtyHost with the real harne
     const exits: Array<string> = []
     const known = new Set<string>()
     client.onEvent(e => { if (e.event === 'exit') exits.push(`${known.has(e.pane) ? 'known' : 'unknown'} ${e.pane} ${e.status}`) })
-    const created = await client.call({ op: 'create', command: ['/bin/sh', '-c', 'exit 3'], cols: 80, rows: 24, owner: 'test', hold: false })
+    const command = process.platform === 'win32' ? ['cmd.exe', '/d', '/c', 'exit 3'] : ['/bin/sh', '-c', 'exit 3']
+    const created = await client.call({ op: 'create', command, cols: 80, rows: 24, owner: 'test', hold: false })
     if (created.state !== 'ok') throw new Error(JSON.stringify(created))
     known.add(created.value.pane)
     await expect.poll(() => exits, { timeout: 5_000 }).toEqual([`known ${created.value.pane} 3`])

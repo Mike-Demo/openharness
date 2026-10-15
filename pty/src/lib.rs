@@ -1,5 +1,8 @@
+pub mod breakaway;
 pub mod cli;
 pub mod discovery;
+mod files;
+pub mod host_lock;
 #[cfg(windows)]
 pub mod job;
 pub mod pane;
