@@ -79,8 +79,11 @@ signing and the desktop's release.
   runtime\pty\current-pty               ← pointer file (written by A's reader, now by the installer)
 ```
 
-Pointer files are written by write-to-temp then rename, and read with the same "must resolve inside its
-own root" check `managedNodePath()` applies today.
+Pointer files are written by write-to-temp then rename. The pointer readers in Node and in Rust
+(`harness-launch.exe`) read them with the "single segment, must resolve inside its own root" check
+`managedNodePath()` applies today.
+`harness.cmd` cannot do that containment check in cmd: it relies on `if not exist` checks of the files the
+pointers resolve to.
 
 **Contract for the desktop (C):** on Windows there is no `~\.harness\cli\cli.js`. The desktop's
 `HarnessCliRunner` resolves `cli\current` plus `runtime\current-node` (its first tier), or runs
@@ -203,8 +206,8 @@ protocol only grows, platform supervision is how the CLI starts and stops a supe
 ### Master replacement
 
 Windows has no exec. Where `reexec.ts` would exec in place, the master on Windows starts its
-replacement through `harness-launch.exe` and exits once the replacement has taken the spawn lock and
-written the pid file. It still happens only in the gap before a core starts. The pid changes; the pid
+replacement through `harness-launch.exe` while holding the spawn lock, and exits once the replacement has
+written the pid file, releasing the lock as it leaves (the replacement does not take it again). It still happens only in the gap before a core starts. The pid changes; the pid
 file and every pid check follow it. The lean bundle is off on Windows (it relies on hard links), and
 process names stay `node` (`processName.ts` already does that).
 

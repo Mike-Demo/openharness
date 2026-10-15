@@ -50,20 +50,28 @@ on: `docs/superpowers/specs/2026-10-14-windows-native-pty-host-design.md`)
 - **`hn` is not ported**; `harness tui` says so on Windows.
 - **VM:** `ssh admin@192.168.65.3`; never touch `C:\work\e2e` (a signed-in daemon) or the admin profile's
   engine settings without backup and restore.
+- **Test-only exception:** B5.14 sets and removes Winlogon autologon in HKLM as admin.
 
 ## Review Focus
 
 1. **A second Windows user on the same machine installs too** — gets their own task, pipe and daemon; neither
-   sees the other's. (Task names are machine-wide.) Test: B3.12 "Review Focus 1"; B5.14 scenario 6.
+   sees the other's. Task names are machine-wide, so each user's task is `taskName(<user>)`,
+   `Harness harnessd (<user>)` in the root folder. Test: B3.12's main text (`taskName` and its spec case, used by
+   B3.13, B3.21, B5.9, B5.12 and B5.14); B5.14 Step 7 (scenario 6), where the second user installs and runs its own
+   daemon.
 2. **Arguments with `&`, `%`, `^`, `!`, `"` or spaces through `harness.cmd`** reach the CLI unchanged, or the
-   characters cmd cannot carry are pinned and documented, and the desktop and daemon never go through
-   `harness.cmd`. Test: B1.8 "Review Focus 2 and 3".
+   characters cmd cannot carry are pinned and listed in the B1 notes, and the desktop and daemon never go through
+   `harness.cmd`. Test: B1.8 Step 6 "Review Focus 2 and 3".
 3. **`irm | iex` under the default `Restricted` execution policy on Windows PowerShell 5.1** installs, and
-   `harness` then runs from a Restricted PowerShell. Test: B1.8 "Review Focus 2 and 3".
-4. **Running the installer again over a live install** fails on no file in use, moves to the new build by the
-   normal handover, and never restarts an agent. Test: B5.14 "Review Focus 4".
-5. **Uninstalling a broken or half install** (no pointer, no daemon, no task) removes what is there and exits 0.
-   Test: B5.9 "Review Focus 5".
+   `harness` then runs from a Restricted PowerShell. Test: B1.8 Step 6 "Review Focus 2 and 3".
+4. **Running the installer again over a live install** fails on no file in use and never restarts an agent. When
+   the version changed and a daemon runs, install.ps1 moves the daemon to the new build by restarting it once
+   (`harness stop`, then `harness start`; the terminal host and its agents are independent of it); the same version
+   restarts nothing. Code and unit test: B3.15. Test: B5.14 Step 8 "Review Focus 4".
+5. **Uninstalling a broken or half install** (no pointer, no daemon, no task) removes what is there and exits 0,
+   with no error line and no new message. Pinned at the command level: B5.9 Step 6 "Review Focus 5". `harness.cmd`
+   without `cli\current` keeps telling the person to run the installer again; re-running install.ps1 repairs the
+   install, and `harness uninstall` then works (B5.14 Step 9).
 
 ## Phases and order
 
@@ -271,7 +279,9 @@ describe('currentCli', () => {
  *     runtime\pty\current-pty  the pty host's version folder (ptyHost/launch.ts currentPtyVersion)
  *
  * install.ps1 and the updater (B3) write these files. harness.cmd, harness-launch.exe (pty/src/launcher.rs) and
- * the desktop app read them, and the readers outside Node apply the rules this file applies.
+ * the desktop app read them. The pointer readers in Node and in Rust (harness-launch.exe) apply the rules this file
+ * applies: one segment, resolved inside its root. harness.cmd cannot do the containment check in cmd; it relies on
+ * `if not exist` checks of the files the pointers resolve to.
  */
 import { existsSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, sep } from 'node:path'
@@ -549,7 +559,8 @@ describe.runIf(process.platform === 'win32')('ensureManagedRuntime on Windows', 
 - [ ] **Step 2: Run them and see them fail.** Run `cd cli && npx vitest run src/lib/runtimeInstall.spec.ts -t "on Windows"`.
   Expected: these fail:
   - `platformKey is not a function`, and likewise for `unpackCommand` and `runtimeLayout`;
-  - the grid case fails because `fetchSpy` was called (the manifest was fetched).
+  - the grid case fails on `toBeNull` (the old `platformKey` has no win32 key, so nothing is fetched; the grid left
+    installed is what comes back).
 
 - [ ] **Step 3: Implement.** In `cli/src/lib/runtimeInstall.ts`:
 
@@ -646,7 +657,7 @@ export function runtimeLayout(platform: NodeJS.Platform = process.platform): { a
   - `harness_pty::cli::VERSION: &str`. It is `HARNESS_PTY_VERSION` at build time when that is set and not empty,
     otherwise `CARGO_PKG_VERSION`.
   - `harness_pty::cli::release_version(given: Option<&'static str>) -> &'static str`.
-- Consumed by: B1.10 (`windows-pty.yml` release mode builds with `HARNESS_PTY_VERSION=<CLI version>`, so the version
+- Consumed by: B1.13 (`windows-pty.yml` release mode builds with `HARNESS_PTY_VERSION=<CLI version>`, so the version
   folder and A's discovery `version` agree with `current-pty`).
 
 - [ ] **Step 1: Write the failing test.** In `pty/src/cli.rs`'s `mod tests`, replace the
@@ -1146,8 +1157,9 @@ const LAUNCH: &str = env!("CARGO_BIN_EXE_harness-launch");
 const CLI_JS: &str = "const fs = require('node:fs')\n\
 fs.writeFileSync(process.env.HARNESS_LAUNCH_TEST_OUT, JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() }))\n";
 
-/// A Node to run the fake CLI with: $NODE, or the first one on PATH. With none, the test is skipped (a Rust-only
-/// machine). Windows CI and the VM both have one.
+/// A Node to run the fake CLI with: $NODE, or the first one on PATH. With none, the test is skipped on a Rust-only
+/// machine, and fails when `CI` is set: Windows CI and the VM both have one, so a missing Node there is a broken
+/// runner, not a reason to pass.
 fn node() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("NODE").map(PathBuf::from).filter(|path| path.is_file()) {
         return Some(path);
@@ -1191,6 +1203,7 @@ fn report(out: &Path) -> serde_json::Value {
 #[test]
 fn starts_the_cli_with_its_arguments_from_the_root_and_returns_at_once() {
     let Some(node) = node() else {
+        assert!(std::env::var_os("CI").is_none(), "no node on PATH, and CI is set: the runner must have one");
         eprintln!("skipped: no node on PATH");
         return;
     };
@@ -1525,6 +1538,11 @@ writes the real `HKCU\Environment`: `HARNESS_INSTALL_ENV_KEY` points PATH edits 
 **Files**
 - Create: `cli/scripts/install.ps1`
 - Create: `cli/src/scripts/installPs1.spec.ts`
+- Modify: `.gitattributes` (repository root; it exists and marks design files binary): add the line endings of the
+  Windows scripts. GitHub's Windows images check out with `core.autocrlf=true`; without a rule, `install.ps1`
+  arrives there with CRLF.
+- Modify (index line endings only, by renormalization): the tracked `.cmd` files in
+  `cli/scripts/windows-pty-e2e/` and `cli/src/lib/windows/fixtures/`.
 
 **Interfaces**
 - Produces these PowerShell functions, for B1.8 and B5:
@@ -1561,19 +1579,19 @@ const source = readFileSync(installer, 'utf8')
 
 describe('install.ps1, as written', () => {
   it('is pure ASCII: Windows PowerShell 5.1 reads a script without a BOM in the ANSI code page', () => {
-    const offending = source.split('\n').flatMap((line, i) => (/[^\t\r\x20-\x7e]/.test(line) ? [`${i + 1}: ${line}`] : []))
+    const offending = source.split(/\r?\n/).flatMap((line, i) => (/[^\t\r\x20-\x7e]/.test(line) ? [`${i + 1}: ${line}`] : []))
     expect(offending).toEqual([])
   })
 
   it('has exactly one manifest-base line, the production one, for the staging upload to rewrite', () => {
-    const lines = source.split('\n').filter((line) => line.startsWith("$HarnessManifestBase = '"))
+    const lines = source.split(/\r?\n/).filter((line) => line.startsWith("$HarnessManifestBase = '"))
     expect(lines).toEqual(["$HarnessManifestBase = 'https://storage.googleapis.com/s3-autonomous-upgrade-3/harness/'"])
   })
 
   it('never writes machine-wide state: no machine PATH, no HKLM write, no elevation', () => {
     expect(source).not.toMatch(/'Machine'|\[EnvironmentVariableTarget\]::Machine|LocalMachine/)
     expect(source).not.toMatch(/-Verb\s+RunAs/i)
-    for (const line of source.split('\n').filter((l) => l.includes('HKLM:'))) expect(line).toContain('Get-ItemProperty')
+    for (const line of source.split(/\r?\n/).filter((l) => l.includes('HKLM:'))) expect(line).toContain('Get-ItemProperty')
   })
 
   it('runs its install only outside library mode, and never exits a session it was iex-ed into', () => {
@@ -1944,16 +1962,36 @@ if ($env:HARNESS_INSTALL_LIBRARY -ne '1') {
 ```
 
 - [ ] **Step 4: Run it and see it pass.** Run `cd cli && npx vitest run src/scripts/installPs1.spec.ts`.
-  Expected: on macOS the four static cases pass and the Windows block is skipped.
+  Expected: on macOS the four static cases pass and the Windows block is skipped. The static cases split on
+  `/\r?\n/`, so they hold for a CRLF checkout too.
 
-- [ ] **Step 5: Windows verification.**
+- [ ] **Step 5: Pin the scripts' line endings.** Append to the root `.gitattributes`:
+
+```
+# Windows scripts. install.ps1 is published byte for byte and its spec reads it as LF; cmd needs CRLF to parse a
+# batch file's labels reliably. Without these, core.autocrlf (GitHub's Windows images set it) decides.
+*.ps1 text eol=lf
+*.cmd text eol=crlf
+```
+
+  The tracked `.cmd` files (`cli/scripts/windows-pty-e2e/*.cmd`, `cli/src/lib/windows/fixtures/*.cmd`) are stored
+  with CRLF in the index today; `text` stores them as LF and checks them out as CRLF, so renormalize them once:
+  `git add --renormalize .gitattributes cli/scripts/windows-pty-e2e cli/src/lib/windows/fixtures pty/scripts`.
+  Then run `git check-attr eol -- cli/scripts/install.ps1 cli/scripts/windows-pty-e2e/env.cmd` and
+  `git ls-files --eol cli/scripts/windows-pty-e2e cli/src/lib/windows/fixtures`.
+  Expected: `eol: lf` for `install.ps1` and `eol: crlf` for `env.cmd`; every listed `.cmd` shows `i/lf w/crlf` and
+  every `.ps1` `i/lf w/lf`. The working-tree files keep their bytes; `git diff --cached --ignore-cr-at-eol --stat`
+  lists only `.gitattributes` with changes.
+
+- [ ] **Step 6: Windows verification.**
   `ssh admin@192.168.65.3 "cd /d C:\work\oh\cli && (if not exist node_modules npm ci) && npx vitest run src/scripts/installPs1.spec.ts"`.
   Expected: all 11 cases pass in Windows PowerShell 5.1 on ARM64. The PATH case writes only under
   `HKCU\Software\HarnessInstallTest\<uuid>`, and `afterAll` deletes that subkey. Confirm with
   `reg query HKCU\Software\HarnessInstallTest`: it should report that the key is not found, or list no subkeys.
 
-- [ ] **Step 6: Commit.**
-  `git add cli/scripts/install.ps1 cli/src/scripts/installPs1.spec.ts`
+- [ ] **Step 7: Commit.**
+  `git add .gitattributes cli/scripts/install.ps1 cli/src/scripts/installPs1.spec.ts`
+  `git add --renormalize cli/scripts/windows-pty-e2e cli/src/lib/windows/fixtures pty/scripts`
   `git commit -m "feat(cli): install.ps1 foundations: host check, manifests, verified downloads, pointers, user PATH"`
 
 ### Task B1.8: `install.ps1` installs Node, the CLI and the pty payload, writes `harness.cmd`, and sets up PATH and the service
@@ -2055,6 +2093,17 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
 
   const platform = () => ps('Get-HarnessPlatform').stdout
 
+  /**
+   * The Path value under HKCU\<subkey>, as stored (not expanded). Not through `reg.exe query`: it prints to a pipe in
+   * the OEM code page, which turns `\u00f6` and `\u65e5` into other bytes, so the profile path would never match.
+   * PowerShell prints the value as base64 of its UTF-16 bytes, which no code page can change.
+   */
+  function userPathValue(subkey: string): string {
+    const script = `$k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('${subkey}'); $v = if ($k) { [string]$k.GetValue('Path', '', 'DoNotExpandEnvironmentNames') } else { '' }; [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($v))`
+    const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { encoding: 'utf8' })
+    return Buffer.from(run.stdout.trim(), 'base64').toString('utf16le')
+  }
+
   it('lays the version folders, the pointers and both launchers down, and harness works through harness.cmd', () => {
     const home = profile()
     const subkey = `Software\\HarnessInstallTest\\${randomUUID()}`
@@ -2083,8 +2132,8 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
     const failing = spawnSync('cmd.exe', ['/d', '/s', '/c', `""${command}" fail"`], { encoding: 'utf8', windowsVerbatimArguments: true })
     expect(failing.status).toBe(7)
 
-    const path = spawnSync('reg.exe', ['query', `HKCU\\${subkey}`, '/v', 'Path'], { encoding: 'utf8' }).stdout
-    expect(path).toContain(join(root, 'bin'))
+    const path = userPathValue(subkey)
+    expect(path.split(';')).toContain(join(root, 'bin'))
     expect(run.stdout).toContain('harness 9.8.7 installed')
   })
 
@@ -2101,8 +2150,8 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
     expect(again.stdout).not.toContain('Downloading')
     const after = spawnSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Item -LiteralPath '${command}').LastWriteTimeUtc.Ticks`], { encoding: 'utf8' }).stdout.trim()
     expect(after).toBe(before)
-    const path = spawnSync('reg.exe', ['query', `HKCU\\${subkey}`, '/v', 'Path'], { encoding: 'utf8' }).stdout
-    expect(path.split(join(home, '.harness', 'bin')).length - 1).toBe(1)
+    const path = userPathValue(subkey)
+    expect(path.split(';').filter((entry) => entry === join(home, '.harness', 'bin'))).toHaveLength(1)
   })
 
   it('says, in a sentence, which step failed, and points nothing at a CLI it did not verify', () => {
@@ -2387,7 +2436,8 @@ function Install-Harness {
   1. On macOS, run `cd cli && npx vitest run src/scripts/installPs1.spec.ts`. Expected: the six static cases pass.
   2. On the VM, run
      `ssh admin@192.168.65.3 "cd /d C:\work\oh\cli && npx vitest run src/scripts/installPs1.spec.ts"`.
-     Expected: all 17 cases pass. The profile is named `Jo-umlaut CJK & co`.
+     Expected: all 17 cases pass (19 once Step 6 adds the Review Focus cases). The profile is named
+     `Jo-umlaut CJK & co`.
   3. If the first install case fails on the `harness.cmd` reads, `set /p` under `chcp 65001` did not decode the
      pointer on this build. In that case:
      - record the observed bytes in the PR;
@@ -2399,26 +2449,77 @@ function Install-Harness {
   `irm | iex`-shaped case: the script text is piped to `Invoke-Expression` in a live session. B1.9 Step 5 then
   installs real artifacts the same way.
 
-- [ ] **Step 6: Commit.**
+- [ ] **Step 6: Review Focus 2 and 3 (before this task's commit).**
+  - **Arguments through `harness.cmd` reach the CLI unchanged.** cmd re-parses `%*`; a person, the desktop's
+    second runner tier, or a script may pass `&`, `%`, `^`, `!`, `"` or spaces. Every caller goes through
+    `cmd.exe /d /s /c`: Node refuses to spawn a `.cmd` with `shell: false` (CVE-2024-27980), and PowerShell and
+    Explorer hand a `.cmd` to cmd too. If cmd mangles one of the cases below (it can for `%` and `"`), do not add
+    another wrapper (any batch file re-parses `%*`): keep the case as a pinned expectation of what cmd does, list
+    the characters cmd cannot carry in the B1 notes, and make sure the desktop and the daemon never call
+    `harness.cmd` (they run `node.exe cli.js` directly, the runner's first tier).
+  - **`irm | iex` under the default execution policy.** Windows client editions default to `Restricted`, which
+    `iex` of downloaded text is not subject to, but any `.ps1` the installer dot-sources or runs would be. The case
+    installs into a throwaway profile, PATH key and local build (`HARNESS_INSTALL_ENV_KEY`,
+    `HARNESS_INSTALL_MANIFEST`), so it never writes the real `HKCU\Environment` or reads a published manifest, and it
+    runs `harness version` by the command's full path.
+
+  Add both cases at the end of the `describe.runIf(windows)('install.ps1, installing for real from a local
+  manifest', ...)` block B1.8 appended (they use its `build`, `profile`, `install` and `platform`):
+
+```ts
+  it('passes arguments through harness.cmd as every caller does, through cmd.exe /d /s /c: unchanged', () => {
+    const home = profile()
+    const subkey = `Software\\HarnessInstallTest\\${randomUUID()}`
+    subkeys.push(subkey)
+    expect(install(home, build(platform()), subkey).status).toBe(0)
+    const command = join(home, '.harness', 'bin', 'harness.cmd')
+    // Each argument quoted the way the C runtime reads it back: in double quotes, an inner `"` as `\"`.
+    const quote = (arg: string) => `"${arg.replace(/"/g, '\\"')}"`
+    const through = (args: string[]) =>
+      spawnSync('cmd.exe', ['/d', '/s', '/c', `""${command}" ${args.map(quote).join(' ')}"`], { encoding: 'utf8', windowsVerbatimArguments: true })
+    // [what is passed, what the CLI receives]. A case cmd cannot carry is pinned here as what cmd does, and its
+    // characters are listed in the B1 notes.
+    const cases: Array<[string[], string[]]> = [
+      [['a b'], ['a b']],
+      [['a&b'], ['a&b']],
+      [['50%'], ['50%']],
+      [['x^y'], ['x^y']],
+      [['wow!'], ['wow!']],
+      [['say "hi"'], ['say "hi"']],
+    ]
+    for (const [args, expected] of cases) {
+      const run = through(args)
+      expect(run.status, `${JSON.stringify(args)}: ${run.stderr}`).toBe(0)
+      expect(JSON.parse(run.stdout.trim()), JSON.stringify(args)).toEqual(expected)
+    }
+  })
+
+  it('installs by irm | iex under the Restricted execution policy, and harness then runs from a Restricted PowerShell', () => {
+    const home = profile()
+    const subkey = `Software\\HarnessInstallTest\\${randomUUID()}`
+    subkeys.push(subkey)
+    const manifest = build(platform())
+    const text = `Get-Content -Raw -LiteralPath '${installer}' | Invoke-Expression; Write-Output "after $LASTEXITCODE"`
+    const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Restricted', '-EncodedCommand', Buffer.from(text, 'utf16le').toString('base64')], {
+      encoding: 'utf8', env: { ...process.env, USERPROFILE: home, HARNESS_INSTALL_ENV_KEY: subkey, HARNESS_INSTALL_MANIFEST: manifest }, timeout: 300_000,
+    })
+    expect(run.stdout.trim().endsWith('after 0'), `${run.stdout}\n${run.stderr}`).toBe(true)
+    // The launcher is a .cmd, never a .ps1, so a Restricted PowerShell runs it.
+    const command = join(home, '.harness', 'bin', 'harness.cmd')
+    const version = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Restricted', '-Command', `& '${command}' version; exit $LASTEXITCODE`], { encoding: 'utf8' })
+    expect(version.status, version.stderr).toBe(0)
+    expect(version.stdout.trim()).toBe('9.8.7')
+  })
+```
+
+  Run `ssh admin@192.168.65.3 "cd /d C:\work\oh\cli && npx vitest run src/scripts/installPs1.spec.ts"` after
+  `vm-sync.sh --cli`. Expected: all 19 cases pass. If an argument case fails, set that case's expected list to
+  what came back, write its characters in the B1 notes ("characters `harness.cmd` cannot carry"), and run again.
+  On macOS the file still reports the six static cases.
+
+- [ ] **Step 7: Commit.**
   `git add cli/scripts/install.ps1 cli/src/scripts/installPs1.spec.ts`
   `git commit -m "feat(cli): install.ps1 installs Node, the CLI and the pty payload, writes harness.cmd, and sets up PATH"`
-
-- [ ] **Review Focus 2 and 3 (do these before this task's commit).**
-  - **Arguments through `harness.cmd` reach the CLI unchanged.** cmd re-parses `%*`; a person, the desktop's
-    second runner tier, or a script may pass `&`, `%`, `^`, `!`, `"` or spaces. Add a Windows-only case to the
-    install spec: after the install, run `harness.cmd` (through `cmd.exe /d /s /c` as `spawnSync` does with
-    `shell: false` on a `.cmd`) with a stub `cli\<ver>\cli.js` that prints `JSON.stringify(process.argv.slice(2))`,
-    for the argument lists `['a b']`, `['a&b']`, `['50%']`, `['x^y']`, `['wow!']`, `['say "hi"']`. Expected: each list
-    comes back exactly. If cmd mangles one (it can for `%` and `"`), do not add another wrapper (any batch file
-    re-parses `%*`): keep the case as a pinned expectation of what cmd does, list the characters cmd cannot carry in
-    the B1 notes and in `harness help` on Windows, and make sure the desktop and the daemon never call `harness.cmd`
-    (they run `node.exe cli.js` directly, the runner's first tier).
-  - **`irm | iex` under the default execution policy.** Windows client editions default to `Restricted`, which
-    `iex` of downloaded text is not subject to, but any `.ps1` the installer dot-sources or runs would be. Add a
-    Windows-only case that runs the whole install as `powershell.exe -NoProfile -ExecutionPolicy Restricted -Command
-    "<the install.ps1 text> | Invoke-Expression"` (text passed by `-EncodedCommand`, as the existing iex case does)
-    and expects success, then runs `harness version` from a new `powershell.exe -ExecutionPolicy Restricted`.
-    Expected: both succeed (the launcher is a `.cmd`, never a `.ps1`).
 
 ### Task B1.9: An install manifest from a local build, and the VM install from real artifacts
 
@@ -3846,8 +3947,11 @@ jobs:
   read it. B3 and B5 address Windows' `.harness\bin` through `installLayout.harnessLaunchPath()`.
 - Decision: `retireSuperseded` is untouched. It runs only for grid, which is off on Windows. Retiring Node and CLI
   folders on Windows belongs to B3's self-update.
-- Decision: `harness tui` saying it is not available on Windows (spec decision 5) is not in B1's contract and is
-  left to the phase that owns the CLI's commands (B4 or B5). The installer simply installs no hn.
+- Decision: `harness tui` saying it is not available on Windows (spec decision 5) is not in B1's contract. It is
+  owned by B4.16. The installer simply installs no hn.
+- Decision: the characters `harness.cmd` cannot carry are listed here, and only here (no `harness help` change).
+  B1.8 Step 6 pins each argument case; when a case comes back changed, its characters are added to this line.
+  Characters `harness.cmd` cannot carry: none known before B1.8 Step 6 runs.
 
 
 ---
@@ -4081,9 +4185,12 @@ export function newPipeNonce(endpoint: string): string {
 - Modify: `cli/src/lib/secureState.spec.ts` (import at line 5; new `describe` at the end)
 - Modify: `cli/src/lib/hookAuth.ts` (imports at line 4; `readHookCredential` at lines 22-43)
 - Modify: `cli/src/lib/hookAuth.spec.ts` (imports at lines 1-6; new test before the FIFO test at line 64)
+- Create: `cli/src/testing/windowsOpen.ts` (the "open as Windows does" test helper, shared with B2.3)
 
 **Interfaces**
 - Produces: `requireWindowsStateFile(file: string): void` in `secureState.ts` (throws). B2.3 consumes it.
+- Produces (tests only): `windowsOpenFs(real)` and `asWindows(dataDir, body)` in `cli/src/testing/windowsOpen.ts`.
+  B2.3 consumes them.
 
 - [ ] **Step 1: failing tests.**
 
@@ -4119,38 +4226,58 @@ describe('requireWindowsStateFile', () => {
 })
 ```
 
-In `cli/src/lib/hookAuth.spec.ts`, change line 2 to
-`import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'`, line 5
-to `import { afterEach, describe, expect, it, vi } from 'vitest'`, and add after line 6:
+Create `cli/src/testing/windowsOpen.ts`, the helper this spec and B2.3's `daemonToken.spec.ts` share:
 
 ```ts
-/** Windows' open has no O_NOFOLLOW (fs.constants leaves it out there): a test says when to open as Windows does. */
-const fsState = vi.hoisted(() => ({ windowsOpen: false }))
-vi.mock('node:fs', async (importOriginal) => {
-  const real = await importOriginal<typeof import('node:fs')>()
+/**
+ * Specs that read a state file as Windows would: its platform, and its open without O_NOFOLLOW (fs.constants
+ * leaves it out there). A spec mocks node:fs with [windowsOpenFs] and wraps its Windows part in [asWindows]:
+ *
+ *   vi.mock('node:fs', async (importOriginal) =>
+ *     (await import('../testing/windowsOpen.js')).windowsOpenFs(await importOriginal<typeof import('node:fs')>()))
+ *
+ * The factory imports this module itself because vi.mock is hoisted above the spec's imports. It is the same module
+ * instance the spec imports [asWindows] from, so the two share [state]. This file imports nothing, node:fs least of all.
+ */
+const state = { windowsOpen: false }
+
+/** node:fs, with O_NOFOLLOW undefined while [asWindows] runs. */
+export function windowsOpenFs<T extends typeof import('node:fs')>(real: T): T {
   // A copy: fs.constants' own properties cannot be redefined.
   const constants = Object.defineProperty({ ...real.constants }, 'O_NOFOLLOW', {
-    enumerable: true, get: () => (fsState.windowsOpen ? undefined : real.constants.O_NOFOLLOW),
+    enumerable: true, get: () => (state.windowsOpen ? undefined : real.constants.O_NOFOLLOW),
   }) as typeof real.constants
-  return { ...real, constants, default: { ...real, constants } }
-})
+  return { ...real, constants, default: { ...real, constants } } as T
+}
 
 /** Run [body] as Windows would: its platform, its open, and [dataDir] as the configured data folder. */
-function asWindows(dataDir: string, body: () => void): void {
+export function asWindows(dataDir: string, body: () => void): void {
   const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
   const configured = process.env.ADAPTER_DATA_DIR
   try {
     Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
     process.env.ADAPTER_DATA_DIR = dataDir
-    fsState.windowsOpen = true
+    state.windowsOpen = true
     body()
   } finally {
-    fsState.windowsOpen = false
+    state.windowsOpen = false
     Object.defineProperty(process, 'platform', platform)
     if (configured === undefined) delete process.env.ADAPTER_DATA_DIR
     else process.env.ADAPTER_DATA_DIR = configured
   }
 }
+```
+
+In `cli/src/lib/hookAuth.spec.ts`, change line 2 to
+`import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'`, line 5
+to `import { afterEach, describe, expect, it, vi } from 'vitest'`, and add after line 6:
+
+```ts
+import { asWindows } from '../testing/windowsOpen.js'
+
+// Windows' open has no O_NOFOLLOW: asWindows says when to open as Windows does (src/testing/windowsOpen.ts).
+vi.mock('node:fs', async (importOriginal) =>
+  (await import('../testing/windowsOpen.js')).windowsOpenFs(await importOriginal<typeof import('node:fs')>()))
 ```
 
 and, before the FIFO test (line 64):
@@ -4209,7 +4336,7 @@ export function requireWindowsStateFile(file: string): void {
 - [ ] **Step 4: run, expect pass.** `npx vitest run src/lib/secureState.spec.ts src/lib/hookAuth.spec.ts src/hookServer.spec.ts`.
 
 - [ ] **Step 5: commit.**
-  `git add cli/src/lib/secureState.ts cli/src/lib/secureState.spec.ts cli/src/lib/hookAuth.ts cli/src/lib/hookAuth.spec.ts`
+  `git add cli/src/lib/secureState.ts cli/src/lib/secureState.spec.ts cli/src/lib/hookAuth.ts cli/src/lib/hookAuth.spec.ts cli/src/testing/windowsOpen.ts`
   `git commit -m "fix(cli): on Windows a hook credential that is a link or outside the profile is refused"`
 
 ### Task B2.3: The daemon token file
@@ -4219,7 +4346,8 @@ export function requireWindowsStateFile(file: string): void {
 - Create: `cli/src/lib/windows/daemonToken.spec.ts`
 
 **Interfaces**
-- Consumes: `requireWindowsStateFile` (B2.2), `readPrivateStateFile`, `secureStateDirectory`, `syncStateDirectory`.
+- Consumes: `requireWindowsStateFile` (B2.2), `readPrivateStateFile`, `secureStateDirectory`, `syncStateDirectory`;
+  in its spec, `windowsOpenFs` and `asWindows` (B2.2, `cli/src/testing/windowsOpen.ts`).
 - Produces (contract): `readDaemonToken(dataDir: string): Buffer | null`, `ensureDaemonToken(dataDir: string): Buffer`;
   plus `DAEMON_TOKEN_FILE = 'daemon-token'`, `daemonTokenPath(dataDir: string): string`. The file holds 64 lowercase
   hex digits and a newline (phase C's desktop reads it the same way).
@@ -4232,36 +4360,15 @@ export function requireWindowsStateFile(file: string): void {
 import { chmodSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { asWindows } from '../../testing/windowsOpen.js'
 import { daemonTokenPath, ensureDaemonToken, readDaemonToken } from './pipeAuth.js'
 
-const fsState = vi.hoisted(() => ({ windowsOpen: false }))
-vi.mock('node:fs', async (importOriginal) => {
-  const real = await importOriginal<typeof import('node:fs')>()
-  const constants = Object.defineProperty({ ...real.constants }, 'O_NOFOLLOW', {
-    enumerable: true, get: () => (fsState.windowsOpen ? undefined : real.constants.O_NOFOLLOW),
-  }) as typeof real.constants
-  return { ...real, constants, default: { ...real, constants } }
-})
+vi.mock('node:fs', async (importOriginal) =>
+  (await import('../../testing/windowsOpen.js')).windowsOpenFs(await importOriginal<typeof import('node:fs')>()))
 
 const dirs: string[] = []
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })))
 const scratch = (prefix = '/tmp/htoken-') => { const dir = mkdtempSync(prefix); dirs.push(dir); return dir }
-
-function asWindows(dataDir: string, body: () => void): void {
-  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
-  const configured = process.env.ADAPTER_DATA_DIR
-  try {
-    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
-    process.env.ADAPTER_DATA_DIR = dataDir
-    fsState.windowsOpen = true
-    body()
-  } finally {
-    fsState.windowsOpen = false
-    Object.defineProperty(process, 'platform', platform)
-    if (configured === undefined) delete process.env.ADAPTER_DATA_DIR
-    else process.env.ADAPTER_DATA_DIR = configured
-  }
-}
 
 describe.skipIf(process.platform === 'win32')('the daemon token', () => {
   it('is made once: 32 random bytes, as hex, owner-only, and read back', () => {
@@ -4446,8 +4553,9 @@ describe('recordedProcessDead', () => {
 - [ ] **Step 2: run, expect failure.** `npx vitest run src/lib/processProof.spec.ts`. It fails:
   `Failed to load url ./processProof.js`.
 
-- [ ] **Step 3: implementation.** Create `cli/src/lib/processProof.ts` with lines 116-150 of `launch.ts` moved
-  verbatim (`pidAlive`, `HostProcessRow`, `HostLiveness`, `startMarkerMs`, `START_SLACK_MS`, with their comments),
+- [ ] **Step 3: implementation.** Create `cli/src/lib/processProof.ts` with lines 116-137 and 139-150 of `launch.ts`
+  moved verbatim (`pidAlive`, `HostProcessRow`, `HostLiveness`, `startMarkerMs`, `START_SLACK_MS`, with their
+  comments; line 138, `DEFAULT_LIVENESS`, stays in `launch.ts`),
   plus the generalized proof:
 
 ```ts
@@ -4516,8 +4624,10 @@ export async function recordedProcessDead(file: string, pid: number, liveness: H
 }
 ```
 
-In `cli/src/lib/ptyHost/launch.ts`: delete lines 116-150 (moved). Remove `statSync` from the line 7 import only if
-nothing else uses it; `removeUnusedPtyVersions` (line 375) still does, so it stays. Add after line 14:
+In `cli/src/lib/ptyHost/launch.ts`: delete lines 116-137 and 139-150 (moved). Keep line 138,
+`const DEFAULT_LIVENESS: HostLiveness = { alive: (pid) => pidAlive(pid) }`, where it is: it is not moved, and
+lines 163, 202, 303 and 326 use it (it now reads the imported `pidAlive` and `HostLiveness`). Remove `statSync` from
+the line 7 import only if nothing else uses it; `removeUnusedPtyVersions` (line 375) still does, so it stays. Add after line 14:
 
 ```ts
 import { pidAlive, recordedProcessDead, startMarkerMs, type HostLiveness, type HostProcessRow } from '../processProof.js'
@@ -5023,6 +5133,7 @@ Also extend the comment at lines 310-311 to say "…or, on Windows, the request 
 `localSocketPath()` on win32 returns the pipe the running daemon recorded (contract). Six callers assume a
 filesystem socket: `ws+unix://` URLs, `existsSync`, and the services' socket. They move to `unixSocketPath()`, which
 keeps today's meaning. It is identical on mac/Linux and null on Windows, so their behavior does not change on any OS.
+The core's own listen (`core/main.ts:1935`) moves to `unixSocketPath()` too, until B2.10 gives it the listen path.
 
 **Files**
 - Create: `cli/src/lib/daemonRecord.ts`
@@ -5032,7 +5143,7 @@ keeps today's meaning. It is identical on mac/Linux and null on Windows, so thei
 - Modify: `cli/src/lib/localSocket.spec.ts` (imports lines 6-9; new test in `describe('localSocketPath')` after line 65)
 - Modify: `cli/src/masterProcess.ts` (lines 23, 79), `cli/src/serviceProcess.ts` (lines 15, 83),
   `cli/src/serviceProcess.spec.ts` (line 7), `cli/src/messages/rpc.ts` (lines 9, 17),
-  `cli/src/agentClient/daemon.ts` (lines 14, 60)
+  `cli/src/agentClient/daemon.ts` (lines 14, 60), `cli/src/core/main.ts` (lines 200, 1935)
 
 **Interfaces**
 - Produces: `daemonRecord.ts`: `interface DaemonRecord { port: number; pipe: string | null; pid: number | null }`,
@@ -5196,12 +5307,17 @@ Callers that need a filesystem socket switch to `unixSocketPath` (import and cal
   `:17` `const socketPath = target.dataDir ? unixSocketPath(target.dataDir, target.port) : null`.
 - `cli/src/agentClient/daemon.ts:14` `import { unixSocketPath } from '../lib/localSocket.js'`;
   `:60` `const path = unixSocketPath(where.dataDir, where.port)`.
+- `cli/src/core/main.ts:200` adds `unixSocketPath` to the `../lib/localSocket.js` import; `:1935` becomes
+  `}, { socketPath: unixSocketPath(env.ADAPTER_DATA_DIR, env.PORT), allowPortFallback: true })`. Until B2.10 the core
+  listens where it does today (a Unix socket, none on Windows). Left on `localSocketPath`, a Windows core would listen
+  on the previous daemon's recorded pipe between this task and B2.10. Line 496 (`refuseServedDataFolder`) keeps
+  `localSocketPath`: it asks the recorded pipe, which is B2.9's change.
 
 - [ ] **Step 4: run, expect pass.**
   `npx vitest run src/lib/daemonEndpoint.spec.ts src/lib/localSocket.spec.ts src/masterProcess.spec.ts src/serviceProcess.spec.ts src/messages/rpc.spec.ts src/agentClient/daemon.spec.ts src/multiUserDaemon.spec.ts src/authCommand.spec.ts src/cliCommand.spec.ts && npx tsc --noEmit`.
 
 - [ ] **Step 5: commit.**
-  `git add cli/src/lib/daemonRecord.ts cli/src/lib/daemonEndpoint.ts cli/src/lib/daemonEndpoint.spec.ts cli/src/lib/localSocket.ts cli/src/lib/localSocket.spec.ts cli/src/masterProcess.ts cli/src/serviceProcess.ts cli/src/serviceProcess.spec.ts cli/src/messages/rpc.ts cli/src/agentClient/daemon.ts`
+  `git add cli/src/lib/daemonRecord.ts cli/src/lib/daemonEndpoint.ts cli/src/lib/daemonEndpoint.spec.ts cli/src/lib/localSocket.ts cli/src/lib/localSocket.spec.ts cli/src/masterProcess.ts cli/src/serviceProcess.ts cli/src/serviceProcess.spec.ts cli/src/messages/rpc.ts cli/src/agentClient/daemon.ts cli/src/core/main.ts`
   `git commit -m "feat(cli): the daemon record names the Windows pipe; filesystem-socket callers keep their path"`
 
 ### Task B2.9: Start-up asks the recorded pipe who serves the data folder, with auth
@@ -5219,7 +5335,7 @@ counts as nothing serving.
 **Interfaces**
 - Produces: `askDataFolderServer(path, timeoutMs, token?: Buffer | null)`,
   `servedFolderDeps(dataDir: string, platform?: NodeJS.Platform): ServedFolderDeps`.
-- Consumes: `readDaemonToken` (B2.3), `newPipeNonce`, `pipeAuthValue`, `pipeProven` (B2.1).
+- Consumes: `readDaemonToken` (B2.3), `pipeIdOf` (B2.1), `pipeRequest`, `PipeUnproven`, `pipeAbsent` (B2.6).
 
 - [ ] **Step 1: failing test.** In `cli/src/lib/localSocket.spec.ts` add the imports
   `import { randomBytes } from 'node:crypto'`, `import { createServer } from 'node:http'` (merge with line 1),
@@ -5256,39 +5372,39 @@ describe('who serves a data folder, over the Windows pipe', () => {
 - [ ] **Step 2: run, expect failure.** `npx vitest run src/lib/localSocket.spec.ts -t "Windows pipe"`. It fails:
   `servedFolderDeps is not a function`, and the first ask gets `'unknown'` from the 401.
 
-- [ ] **Step 3: implementation.** In `cli/src/lib/localSocket.ts` add `newPipeNonce, pipeAuthValue, pipeProven,
-  readDaemonToken` to the `./windows/pipeAuth.js` import. Change `askDataFolderServer` (lines 181-205):
+- [ ] **Step 3: implementation.** In `cli/src/lib/localSocket.ts` add `pipeIdOf, readDaemonToken` to the
+  `./windows/pipeAuth.js` import, and add `import { pipeAbsent, pipeRequest, PipeUnproven } from './windows/pipeClient.js'`
+  (B2.6; `pipeClient.ts` imports only `pipeAuth.js`, so there is no cycle). The proof-checked request is B2.6's
+  `pipeRequest`, not a second copy of its nonce, auth and proof handling. Replace `askDataFolderServer`
+  (lines 181-205) with:
 
 ```ts
+/** What a status answer says: a daemon and its master, or `unknown` when it does not say both pids. */
+function folderServerOf(body: string): DataFolderServer {
+  try {
+    const status = JSON.parse(body) as { pid?: unknown; corePid?: unknown }
+    const pid = Number(status.pid)
+    // A daemon from before harnessd says no core of its own: it is its own master.
+    const corePid = status.corePid === undefined ? pid : Number(status.corePid)
+    return Number.isSafeInteger(pid) && pid > 0 && Number.isSafeInteger(corePid) && corePid > 0 ? { pid, corePid } : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
 /** Ask the daemon on a data folder's socket who it is. A socket that takes no connection serves nothing
  *  (no socket, a stale one, one that cannot be reached: start-up goes on, and the bind decides); one that
- *  takes it and does not say is `unknown`. With [token] (the Windows pipe) the ask proves it, and an answer
- *  without the daemon's proof serves nothing: whatever took a dead daemon's name must not keep this one down. */
+ *  takes it and does not say is `unknown`. With [token] the socket is the Windows pipe: see [askPipeServer]. */
 export function askDataFolderServer(path: string, timeoutMs: number, token: Buffer | null = null): Promise<DataFolderServer> {
+  if (token) return askPipeServer(path, timeoutMs, token)
   return new Promise((resolve) => {
     let connected = false
-    let nonce: string | null = null
-    try { nonce = token ? newPipeNonce(path) : null } catch { resolve('none'); return }
-    const headers = token && nonce ? { [PIPE_AUTH_HEADER]: pipeAuthValue(token, nonce) } : {}
     // A connection of its own, never one kept alive from an earlier ask: that one may be to a daemon gone.
-    const request = http.request({ socketPath: path, path: '/api/status', method: 'GET', timeout: timeoutMs, agent: false, headers }, (response) => {
-      if (token && nonce && !pipeProven(response.headers, token, nonce)) {
-        resolve('none')
-        request.destroy()
-        return
-      }
+    const request = http.request({ socketPath: path, path: '/api/status', method: 'GET', timeout: timeoutMs, agent: false }, (response) => {
       let body = ''
       response.setEncoding('utf8')
       response.on('data', (chunk: string) => { if (body.length < 65_536) body += chunk })
-      response.on('end', () => {
-        try {
-          const status = JSON.parse(body) as { pid?: unknown; corePid?: unknown }
-          const pid = Number(status.pid)
-          // A daemon from before harnessd says no core of its own: it is its own master.
-          const corePid = status.corePid === undefined ? pid : Number(status.corePid)
-          resolve(Number.isSafeInteger(pid) && pid > 0 && Number.isSafeInteger(corePid) && corePid > 0 ? { pid, corePid } : 'unknown')
-        } catch { resolve('unknown') }
-      })
+      response.on('end', () => resolve(folderServerOf(body)))
       response.on('error', () => resolve('unknown'))
     })
     request.on('socket', (socket: Socket) => socket.once('connect', () => { connected = true }))
@@ -5297,10 +5413,26 @@ export function askDataFolderServer(path: string, timeoutMs: number, token: Buff
     request.end()
   })
 }
+
+/**
+ * The Windows pipe: the ask proves the token and takes only an answer with the daemon's proof (pipeClient.ts).
+ * An answer without it serves nothing: whatever took a dead daemon's name must not keep this one down. So does a
+ * name that is no Harness pipe, or nothing listening there. Anything else, once the ask reached a listener (no
+ * answer in time, one too large), is `unknown`, as on a Unix socket.
+ */
+async function askPipeServer(pipe: string, timeoutMs: number, token: Buffer): Promise<DataFolderServer> {
+  if (!pipeIdOf(pipe)) return 'none'
+  try {
+    const reply = await pipeRequest({ pipe, token }, { method: 'GET', path: '/api/status', timeoutMs, maxBytes: 65_536 })
+    return folderServerOf(reply.body)
+  } catch (error) {
+    return error instanceof PipeUnproven || pipeAbsent(error) ? 'none' : 'unknown'
+  }
+}
 ```
 
-Everything from `let body = ''` down is lines 186-203 as they are. The new parts are the `token` parameter, the
-headers, and the proof check at the top of the response.
+The Unix path is lines 181-205 as they are, with the status parse moved into `folderServerOf`. The new parts are
+the `token` parameter and `askPipeServer`.
 
 After `SERVED_FOLDER_DEFAULTS` (line 213):
 
@@ -5391,7 +5523,8 @@ Lines 416-417 become:
 
 Line 1200 becomes `listenLocalSocket(handle, socketPath, { token: options.pipeToken ?? undefined }).then(`.
 
-`cli/src/core/main.ts`: line 200 imports `localSocketListenPath` as well; add
+`cli/src/core/main.ts`: line 200 imports `localSocketListenPath` in place of `unixSocketPath` (B2.8's, used only at
+line 1935); add
 `import { ensureDaemonToken } from '../lib/windows/pipeAuth.js'`. Before line 1848 (`const { server: hookServer, … } = await startHookServer(`):
 
 ```ts
@@ -5400,7 +5533,7 @@ Line 1200 becomes `listenLocalSocket(handle, socketPath, { token: options.pipeTo
   const pipeToken = process.platform === 'win32' ? ensureDaemonToken(env.ADAPTER_DATA_DIR) : null
 ```
 
-Line 1935 becomes
+Line 1935 (B2.8 left it on `unixSocketPath`) becomes
 `}, { socketPath: localSocketListenPath(env.ADAPTER_DATA_DIR, env.PORT), pipeToken, allowPortFallback: true })`, and
 line 1936 becomes:
 
@@ -6026,8 +6159,9 @@ export function isMasterMessage(value: unknown): value is MasterMessage {
   })
 ```
 
-- [ ] Run `npx vitest run src/harnessd/supervisor.spec.ts`. Expected: 4 failures (`stopByMessage` and `stopRequested`
-  are not known; the core is signalled; `harnessd:stop` is ignored).
+- [ ] Run `npx vitest run src/harnessd/supervisor.spec.ts`. Expected: 3 failures (`stopByMessage` and `stopRequested`
+  are not known; the core is signalled; `harnessd:stop` is ignored). "signals the core everywhere else, as before"
+  already passes: it pins today's behavior.
 
 - [ ] **Implementation.** `SupervisorDeps`, after `unasked?`:
 
@@ -6299,6 +6433,9 @@ object, after `onUpdate`:
 
 ### Task B3.6: The core serves `POST /api/daemon/stop` on its trusted endpoint, and leaves on shutdown
 
+The route exists on Windows only. A Mac or Linux `harness stop` signals the master through its pid file, as before,
+and a core there serves no such route (Global Constraints: mac/Linux change only by `harness uninstall`).
+
 **Files**
 - Create: `cli/src/core/daemonStopRoute.ts`, `cli/src/core/daemonStopRoute.spec.ts`
 - Modify: `cli/src/hookServer.ts:158-163` (`HookHandlers`), `:1100-1104` (route beside `/api/auth/handoff`)
@@ -6306,9 +6443,12 @@ object, after `onUpdate`:
 - Modify: `cli/src/core/main.ts:1911` (handler), `:2769` (shutdown), `:2913` (safe mode)
 
 **Interfaces**
-- Produces: route `POST /api/daemon/stop` (trusted local endpoint + `x-adapter-local: 1`, else 403; 202
-  `{ ok: true }`); `HookHandlers.onDaemonStop?: () => Promise<PairOutcome>`;
-  `daemonStopHandler(deps: DaemonStopDeps): () => Promise<{ status: number; body: unknown }>`.
+- Produces: route `POST /api/daemon/stop`, win32 only (trusted local endpoint + `x-adapter-local: 1`, else 403;
+  202 `{ ok: true }`; no route, so 404, where no `onDaemonStop` is given);
+  `HookHandlers.onDaemonStop?: () => Promise<PairOutcome>`;
+  `daemonStopHandler(deps: DaemonStopDeps): () => Promise<PairOutcome>`;
+  `daemonStopRoute(deps: DaemonStopDeps, platform?: NodeJS.Platform): { onDaemonStop?: () => Promise<PairOutcome> }`
+  (the handler on win32, nothing elsewhere).
 - Consumes: B3.4 `stopAll`, `onShutdown`; B2's `isTrustedLocal()` (true on Windows only for an authenticated pipe
   request, unchanged on mac).
 
@@ -6316,7 +6456,7 @@ object, after `onUpdate`:
 
 ```ts
 import { describe, expect, it, vi } from 'vitest'
-import { daemonStopHandler } from './daemonStopRoute.js'
+import { daemonStopHandler, daemonStopRoute } from './daemonStopRoute.js'
 
 describe('harness stop, as the core hears it', () => {
   it('answers first, then asks its master to stop everything', async () => {
@@ -6337,6 +6477,14 @@ describe('harness stop, as the core hears it', () => {
     await handle()
     await new Promise((done) => setImmediate(done))
     expect(stopHere).toHaveBeenCalledOnce()
+  })
+
+  it('is served on Windows only: a Mac or Linux core has no such route and stops by signal, as before', () => {
+    const deps = { askMaster: () => true, stopHere: vi.fn() }
+    expect(daemonStopRoute(deps, 'darwin')).toEqual({})
+    expect(daemonStopRoute(deps, 'linux')).toEqual({})
+    expect(daemonStopRoute(deps, 'win32').onDaemonStop).toBeTypeOf('function')
+    expect(Object.keys(daemonStopRoute(deps))).toEqual(process.platform === 'win32' ? ['onDaemonStop'] : [])
   })
 })
 ```
@@ -6363,10 +6511,24 @@ describe('harness stop, as the core hears it', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('has no `harness stop` route where no handler is given: a Mac or Linux core, unchanged', async () => {
+    const dir = mkdtempSync('/tmp/hsock-')
+    const socketPath = join(dir, 'daemon.sock')
+    const started = await startHookServer(0, { onRegistered: vi.fn(), onSessionEnd: vi.fn() }, { socketPath })
+    server = started.server
+    try {
+      expect(await viaSocket(socketPath, 'POST', '/api/daemon/stop', { 'x-adapter-local': '1' })).toBe(404)
+    } finally {
+      await started.localSocket?.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 ```
 
 - [ ] Run `npx vitest run src/core/daemonStopRoute.spec.ts src/hookServer.spec.ts -t "harness stop"`. Expected: the
-  module is missing; the route answers 404.
+  module is missing; the first route case answers 404 where it expects 202. The no-handler case already passes: it
+  pins today's 404.
 
 - [ ] **Implementation.** `cli/src/core/daemonStopRoute.ts`:
 
@@ -6386,12 +6548,23 @@ export interface DaemonStopDeps {
   defer?: (run: () => void) => void
 }
 
-export function daemonStopHandler(deps: DaemonStopDeps): () => Promise<{ status: number; body: unknown }> {
+/** What the route answers: hookServer.ts `PairOutcome`'s shape, kept here so the core imports no server type. */
+export interface DaemonStopAnswer { status: number; body: Record<string, unknown> }
+
+export function daemonStopHandler(deps: DaemonStopDeps): () => Promise<DaemonStopAnswer> {
   const defer = deps.defer ?? ((run: () => void) => { setImmediate(run) })
   return async () => {
     defer(() => { if (!deps.askMaster()) deps.stopHere() })
     return { status: 202, body: { ok: true } }
   }
+}
+
+/**
+ * The handler for the server's handlers object, on Windows only. Elsewhere `harness stop` signals the master (the
+ * pid file), and the core serves no such route: hookServer.ts registers it only when the handler is given.
+ */
+export function daemonStopRoute(deps: DaemonStopDeps, platform: NodeJS.Platform = process.platform): { onDaemonStop?: () => Promise<DaemonStopAnswer> } {
+  return platform === 'win32' ? { onDaemonStop: daemonStopHandler(deps) } : {}
 }
 ```
 
@@ -6399,7 +6572,8 @@ export function daemonStopHandler(deps: DaemonStopDeps): () => Promise<{ status:
 
 ```ts
   /** POST /api/daemon/stop — `harness stop` on Windows (core/daemonStopRoute.ts). Trusted local only: over TCP any
-   *  process on the machine, another user's included, could stop this user's daemon. */
+   *  process on the machine, another user's included, could stop this user's daemon. Given on Windows only; without
+   *  it the route does not exist (404), as before on a Mac or Linux. */
   onDaemonStop?: () => Promise<PairOutcome>
 ```
 
@@ -6408,18 +6582,18 @@ export function daemonStopHandler(deps: DaemonStopDeps): () => Promise<{ status:
 ```ts
       // Stopping the daemon ends every agent's link to it: like the phone code above, the daemon's own trusted
       // endpoint only (the owner's socket; on Windows its pipe, with the token's proof, lib/localSocket.ts).
-      if (req.method === 'POST' && url === '/api/daemon/stop') {
+      // Windows only: the route exists when its handler is given (core/daemonStopRoute.ts daemonStopRoute).
+      if (req.method === 'POST' && url === '/api/daemon/stop' && handlers.onDaemonStop) {
         if (!trustedLocal || !localOk) { json(403, { error: 'FORBIDDEN' }); return }
-        if (!handlers.onDaemonStop) { json(503, { error: 'UNAVAILABLE' }); return }
         await proxied(handlers.onDaemonStop); return
       }
 ```
 
-  `core/main.ts`: import `daemonStopHandler` from `'./daemonStopRoute.js'`. In the handlers object after
+  `core/main.ts`: import `daemonStopRoute` from `'./daemonStopRoute.js'`. In the handlers object after
   `onAuthHandoff` (line 1911):
 
 ```ts
-    onDaemonStop: daemonStopHandler({ askMaster: () => coreLink.stopAll(), stopHere: () => void shutdown('harness stop') }),
+    ...daemonStopRoute({ askMaster: () => coreLink.stopAll(), stopHere: () => void shutdown('harness stop') }),
 ```
 
   After line 2769 (`coreLink.onMasterGone(...)`):
@@ -6971,7 +7145,7 @@ waiting. A crashed holder is never reclaimed either. A pid alone is the owner's 
 (`processLiveness.ts:9`): a crashed holder's pid reused by another process would hold `--if-down` back forever.
 
 **Files**
-- Modify: `cli/src/lib/daemonSpawnLock.ts:138-164` (`readSpawnLockOwner`), new exports after `:213`
+- Modify: `cli/src/lib/daemonSpawnLock.ts:138-164` (`readSpawnLockOwner`), new exports after `reclaimIfStale` (`:226`)
 - Modify: `cli/src/lib/daemonSpawnLock.spec.ts` (new cases)
 
 **Interfaces**
@@ -7118,7 +7292,8 @@ describe('the windowless launcher', () => {
     expect(thrown).toEqual({ ok: false, detail: 'L could not be run: EMFILE' })
     vi.useFakeTimers()
     try {
-      let hung: EventEmitter & { kill: ReturnType<typeof vi.fn> } | null = null
+      // Cast, not annotated: assigned only in a callback, an annotated `null` stays narrowed to null (TS2339 below).
+      let hung = null as (EventEmitter & { kill: ReturnType<typeof vi.fn> }) | null
       const pending = launchDetached('L', 'C:\\h', [], {}, fakeRun((child) => { hung = child as never }).run)
       await vi.advanceTimersByTimeAsync(LAUNCH_TIMEOUT_MS)
       await expect(pending).resolves.toEqual({ ok: false, detail: `L did not return within ${LAUNCH_TIMEOUT_MS} ms` })
@@ -7183,7 +7358,8 @@ export function launchDetached(
 
   The task XML (B3.12) passes the same `--root`.
 
-- [ ] Run the spec. Expected: pass.
+- [ ] Run `npx vitest run src/lib/windows/launcher.spec.ts && npm run typecheck`. Expected: pass, and the typecheck is
+  clean.
 - [ ] Commit: `windows: start the CLI through harness-launch.exe` —
   `git add cli/src/lib/windows/launcher.ts cli/src/lib/windows/launcher.spec.ts`
 
@@ -7198,16 +7374,19 @@ export function launchDetached(
 - Modify: `cli/src/harnessd/platform.spec.ts:46-50` (win32 is now Task Scheduler), new `describe` blocks
 
 **Interfaces**
-- Produces: `PlatformName = 'launchd' | 'systemd' | 'taskscheduler'`; `TASK_NAME = '\\Harness\\harnessd'`;
+- Produces: `PlatformName = 'launchd' | 'systemd' | 'taskscheduler'`; `taskName(user: string): string`
+  (`Harness harnessd (<account>)`, in Task Scheduler's root folder; `<account>` is `user` after its last `\`);
   `TASK_REPEAT = 'PT5M'`; `TASK_FILE`, `TASK_STOPPED_FILE`; `PLATFORM_LABEL`; `taskSchedulerXml(opts: TaskDefinition): string`;
   `stoppedThisBoot(text: string | null, bootMs: number): boolean`; `ServiceDefinition.launcherPath?: string`;
-  `PlatformDeps.user?`, `.dataDir?`, `.bootTime?`.
+  `PlatformDeps.user?`, `.dataDir?`, `.bootTime?`. `PlatformService.target` on Task Scheduler is
+  `taskName(deps.user ?? userInfo().username)`: one source for the task's name and its XML's `<UserId>`.
 - Consumes: B1's launcher usage `harness-launch.exe [--root <dir>] -- <cli args...>`.
 
 - [ ] **Failing tests.** In `platform.spec.ts` change the first case's third expectation to
   `expect(platformFor('win32')).toBe('taskscheduler')` (and its title to `'is launchd on macOS, systemd on Linux,
   Task Scheduler on Windows, and none elsewhere'`, adding `expect(platformFor('freebsd')).toBeNull()`). Add
-  `TASK_NAME, TASK_REPEAT, PLATFORM_LABEL, stoppedThisBoot, taskSchedulerXml` to the import, then:
+  `TASK_REPEAT, PLATFORM_LABEL, stoppedThisBoot, taskName, taskSchedulerXml` to the import, and `userInfo` to the
+  `node:os` import, then:
 
 ```ts
 const task = {
@@ -7219,6 +7398,16 @@ const task = {
 }
 
 describe('the scheduled task', () => {
+  // Task names are machine-wide, and a task folder one user creates can refuse another standard user: a fixed
+  // `\Harness\harnessd` would let only the first user on a computer install (Review Focus 1).
+  it('is named per user, in the root folder', () => {
+    expect(taskName('alice')).toBe('Harness harnessd (alice)')
+    expect(taskName('DESKTOP-1\\Demo User')).toBe('Harness harnessd (Demo User)')
+    expect(taskName('Nguy\u1ec5n V\u0103n A')).toBe('Harness harnessd (Nguy\u1ec5n V\u0103n A)')
+    expect(taskName('bob')).not.toBe(taskName('alice'))
+    expect(taskName('DESKTOP-1\\alice')).not.toContain('\\')
+  })
+
   it('starts `harness start --if-down` at logon and every five minutes, once at a time, with no time limit', () => {
     const text = taskSchedulerXml(task)
     expect(text).toMatch(/^<\?xml version="1\.0" encoding="UTF-8"\?>/)
@@ -7265,11 +7454,14 @@ describe('PlatformService over schtasks', () => {
     const made = stubDeps(answers, files, { user: task.user, dataDir: data, bootTime: () => 1_000 })
     return { ...made, service: new PlatformService('taskscheduler', made.deps) }
   }
+  // The name as stubDeps records it: its arguments joined by spaces, unquoted, as spawnSync passes them.
+  const NAME = taskName(task.user)
 
-  it('keeps its definition in the data folder, registers it under \\Harness, and knows it as this data folder\'s by its log', () => {
+  it('keeps its definition in the data folder, registers it under this user\'s name, and knows it as this data folder\'s by its log', () => {
     const { service, files, calls } = make()
     expect(service.file).toBe(join(data, 'harnessd-task.xml'))
-    expect(service.target).toBe(TASK_NAME)
+    expect(service.target).toBe(NAME)
+    expect(NAME).toBe('Harness harnessd (Demo User)')
     expect(PLATFORM_LABEL[service.platform]).toBe('Task Scheduler')
     expect(service.write(definition())).toBe(true)
     expect(service.write(definition())).toBe(false)
@@ -7278,19 +7470,19 @@ describe('PlatformService over schtasks', () => {
     expect(service.current(definition())).toBe(true)
     expect(files[service.file]).toBe(taskSchedulerXml(task))
     expect(service.register()).toEqual({ ok: true })
-    expect(calls).toEqual([`schtasks /Create /TN ${TASK_NAME} /XML ${service.file} /F`])
+    expect(calls).toEqual([`schtasks /Create /TN ${NAME} /XML ${service.file} /F`])
   })
 
   it('runs the task to start, rewriting it first when it changed, and forgets a stop', () => {
     const { service, calls, files } = make({}, { [join(data, 'harnessd-stopped.json')]: '{"boot":1000}\n' })
     expect(service.start(true)).toEqual({ ok: true })
-    expect(calls).toEqual([`schtasks /Create /TN ${TASK_NAME} /XML ${service.file} /F`, `schtasks /Run /TN ${TASK_NAME}`])
+    expect(calls).toEqual([`schtasks /Create /TN ${NAME} /XML ${service.file} /F`, `schtasks /Run /TN ${NAME}`])
     expect(files[join(data, 'harnessd-stopped.json')]).toBeUndefined()
     calls.length = 0
     expect(service.start(false)).toEqual({ ok: true })
-    expect(calls).toEqual([`schtasks /Run /TN ${TASK_NAME}`])
+    expect(calls).toEqual([`schtasks /Run /TN ${NAME}`])
     const refused = make({ 'schtasks /Create': fail(1, 'ERROR: The task XML is malformed.') })
-    expect(refused.service.start(true)).toEqual({ ok: false, detail: `schtasks /Create /TN ${TASK_NAME} /XML ${refused.service.file} /F failed (exit 1): ERROR: The task XML is malformed.` })
+    expect(refused.service.start(true)).toEqual({ ok: false, detail: `schtasks /Create /TN ${NAME} /XML ${refused.service.file} /F failed (exit 1): ERROR: The task XML is malformed.` })
     expect(refused.calls).toHaveLength(1)
   })
 
@@ -7309,8 +7501,8 @@ describe('PlatformService over schtasks', () => {
     expect(utf16.service.inspect()).toMatchObject({ registered: true, state: 'disabled' })
     expect(make({ 'schtasks /Query': fail(1, 'ERROR: The system cannot find the file specified.') }).service.inspect()).toMatchObject({ registered: false, unreachable: null })
     const gone = make({ 'schtasks /Query': { status: null, stdout: '', stderr: '', error: 'spawn schtasks ENOENT' } })
-    expect(gone.service.inspect().unreachable).toBe(`schtasks /Query /TN ${TASK_NAME} /XML could not be run: spawn schtasks ENOENT`)
-    expect(gone.service.preflight()).toEqual({ ok: false, detail: `schtasks /Query /TN ${TASK_NAME} could not be run: spawn schtasks ENOENT — Task Scheduler could not be asked` })
+    expect(gone.service.inspect().unreachable).toBe(`schtasks /Query /TN ${NAME} /XML could not be run: spawn schtasks ENOENT`)
+    expect(gone.service.preflight()).toEqual({ ok: false, detail: `schtasks /Query /TN ${NAME} could not be run: spawn schtasks ENOENT — Task Scheduler could not be asked` })
     expect(enabled.service.preflight()).toEqual({ ok: true })
     expect(make({ 'schtasks /Query': fail(1) }).service.preflight()).toEqual({ ok: true })
   })
@@ -7318,25 +7510,27 @@ describe('PlatformService over schtasks', () => {
   it('unregisters by deleting the task and its files, and leaves the running daemon alone', () => {
     const { service, calls, files } = make({ 'schtasks /Query': ok('<Task/>') }, { [join(data, 'harnessd-task.xml')]: 'x', [join(data, 'harnessd-stopped.json')]: 'y' })
     expect(service.unregister()).toEqual({ ok: true })
-    expect(calls).toEqual([`schtasks /Query /TN ${TASK_NAME} /XML`, `schtasks /Delete /TN ${TASK_NAME} /F`])
+    expect(calls).toEqual([`schtasks /Query /TN ${NAME} /XML`, `schtasks /Delete /TN ${NAME} /F`])
     expect(files).toEqual({})
     const absent = make({ 'schtasks /Query': fail(1) }, { [join(data, 'harnessd-task.xml')]: 'x' })
     expect(absent.service.unregister()).toEqual({ ok: true })
-    expect(absent.calls).toEqual([`schtasks /Query /TN ${TASK_NAME} /XML`])
+    expect(absent.calls).toEqual([`schtasks /Query /TN ${NAME} /XML`])
     const refused = make({ 'schtasks /Query': ok('<Task/>'), 'schtasks /Delete': fail(1, 'ERROR: Access is denied.') })
-    expect(refused.service.unregister()).toEqual({ ok: false, detail: `schtasks /Delete /TN ${TASK_NAME} /F failed (exit 1): ERROR: Access is denied.` })
+    expect(refused.service.unregister()).toEqual({ ok: false, detail: `schtasks /Delete /TN ${NAME} /F failed (exit 1): ERROR: Access is denied.` })
     const discarded = make({}, { [join(data, 'harnessd-task.xml')]: 'x' })
     discarded.service.discard()
     expect(discarded.files).toEqual({})
     expect(discarded.calls).toEqual([])
   })
 
-  it('cannot render a task without a launcher, and reads its data folder from the home by default', () => {
+  it('cannot render a task without a launcher, and takes this process\'s user and the home\'s data folder by default', () => {
     const { service } = make()
     expect(() => service.render({ ...definition(), launcherPath: undefined })).toThrow(/must be absolute/)
     const plain = new PlatformService('taskscheduler', stubDeps({}).deps)
     expect(plain.file).toBe(join('/Users/demo', '.harness', 'cli', 'data', 'harnessd-task.xml'))
-    expect(() => plain.render(definition())).toThrow(/the user it runs for/)
+    // No user given: the name and the XML's user are both this process's, from the one source.
+    expect(plain.target).toBe(taskName(userInfo().username))
+    expect(plain.render(definition())).toContain(`<UserId>${userInfo().username}</UserId>`)
     // Without a clock of its own, the stop is written against this computer's boot.
     expect(plain.stop()).toEqual({ ok: true })
   })
@@ -7361,7 +7555,7 @@ describe('PlatformService over schtasks', () => {
 - [ ] **Implementation.** `platform.ts` imports:
 
 ```ts
-import { homedir, uptime } from 'node:os'
+import { homedir, uptime, userInfo } from 'node:os'
 import { dirname, isAbsolute, join, win32 } from 'node:path'
 ```
 
@@ -7397,7 +7591,9 @@ export function platformFor(os: NodeJS.Platform): PlatformName | null {
 
 ```ts
 /**
- * Windows: the per-user task `\Harness\harnessd` (spec section 3, "Start and keep running"). Task Scheduler does not run
+ * Windows: the per-user task `Harness harnessd (<user name>)` in Task Scheduler's root folder (spec section 3, "Start
+ * and keep running"). Task names are machine-wide, and a task folder one user creates can refuse another standard
+ * user, so the name carries the user and there is no `\Harness\` folder. Task Scheduler does not run
  * the master as launchd and systemd do; it starts `harness start --if-down` through the windowless launcher at logon
  * and every five minutes, which starts the master when none runs (lib/startIfDown.ts) and does nothing otherwise. That
  * is what stands in for KeepAlive and Restart=: a master that dies is back within five minutes.
@@ -7407,7 +7603,10 @@ export function platformFor(os: NodeJS.Platform): PlatformName | null {
  * seconds: the launcher exits once it has started the CLI, and the master it starts is outside the task's job.
  * The time trigger's start is fixed, so the same install writes the same text and `current` can compare it.
  */
-export const TASK_NAME = '\\Harness\\harnessd'
+/** The task of [user] (`DOMAIN\user` or a bare name): `Harness harnessd (<name>)`, the domain left out. */
+export function taskName(user: string): string {
+  return `Harness harnessd (${user.slice(user.lastIndexOf('\\') + 1)})`
+}
 export const TASK_REPEAT = 'PT5M'
 /** In the data folder: the definition as written (schtasks registers it from there), and a stop to honour. */
 export const TASK_FILE = 'harnessd-task.xml'
@@ -7528,6 +7727,12 @@ export const bootTimeMs = (): number => Date.now() - uptime() * 1000
     return join(this.dataDir, TASK_STOPPED_FILE)
   }
 
+  /** Windows: the task's user, `DOMAIN\user`. One source for the task's name and its XML's UserId: the deps' user,
+   *  else this process's. */
+  private get taskUser(): string {
+    return this.deps.user ?? userInfo().username
+  }
+
   get file(): string {
     if (this.os) return OS_UNIT_FILE
     if (this.platform === 'taskscheduler') return join(this.dataDir, TASK_FILE)
@@ -7535,7 +7740,7 @@ export const bootTimeMs = (): number => Date.now() - uptime() * 1000
   }
 
   get target(): string {
-    if (this.platform === 'taskscheduler') return TASK_NAME
+    if (this.platform === 'taskscheduler') return taskName(this.taskUser)
     return this.platform === 'launchd' ? `gui/${this.deps.uid}/${LAUNCHD_LABEL}` : this.unit
   }
 
@@ -7543,7 +7748,7 @@ export const bootTimeMs = (): number => Date.now() - uptime() * 1000
     if (this.platform === 'taskscheduler') {
       const launcherPath = definition.launcherPath ?? ''
       // The launcher is `<root>\bin\harness-launch.exe` (lib/windows/installLayout.ts `harnessLaunchPath`).
-      return taskSchedulerXml({ launcherPath, root: win32.dirname(win32.dirname(launcherPath)), home: definition.home, logFile: definition.logFile, user: this.deps.user ?? '' })
+      return taskSchedulerXml({ launcherPath, root: win32.dirname(win32.dirname(launcherPath)), home: definition.home, logFile: definition.logFile, user: this.taskUser })
     }
     return this.platform === 'launchd' ? launchdPlist(definition) : systemdUnit(definition)
   }
@@ -7555,11 +7760,11 @@ export const bootTimeMs = (): number => Date.now() - uptime() * 1000
     if (this.platform === 'taskscheduler') return content.includes(`Its log: ${xml(logFile)}</Description>`)
 ```
 
-  `inspect`, first:
+  `inspect`, right after `const base = …` (line 387; the branch uses it):
 
 ```ts
     if (this.platform === 'taskscheduler') {
-      const args = ['/Query', '/TN', TASK_NAME, '/XML']
+      const args = ['/Query', '/TN', this.target, '/XML']
       const result = this.deps.run('schtasks', args)
       const none = { ...base, registered: false, pid: null, state: null, failed: false, lastExit: null }
       if (result.error) return { ...none, unreachable: failure('schtasks', args, result) }
@@ -7576,7 +7781,7 @@ export const bootTimeMs = (): number => Date.now() - uptime() * 1000
 
 ```ts
     if (this.platform === 'taskscheduler') {
-      const args = ['/Query', '/TN', TASK_NAME]
+      const args = ['/Query', '/TN', this.target]
       const result = this.deps.run('schtasks', args)
       return result.error ? { ok: false, detail: `${failure('schtasks', args, result)} — Task Scheduler could not be asked` } : { ok: true }
     }
@@ -7587,7 +7792,7 @@ export const bootTimeMs = (): number => Date.now() - uptime() * 1000
 ```ts
     // Registered and nothing more: the caller runs it once it has let go of the spawn lock, which the task's own
     // `harness start --if-down` takes (lib/serviceCommand.ts).
-    if (this.platform === 'taskscheduler') return this.checked('schtasks', ['/Create', '/TN', TASK_NAME, '/XML', this.file, '/F'])
+    if (this.platform === 'taskscheduler') return this.checked('schtasks', ['/Create', '/TN', this.target, '/XML', this.file, '/F'])
 ```
 
   `start`, first:
@@ -7599,7 +7804,7 @@ export const bootTimeMs = (): number => Date.now() - uptime() * 1000
         if (!created.ok) return created
       }
       this.deps.removeFile(this.stoppedFile)
-      return this.checked('schtasks', ['/Run', '/TN', TASK_NAME])
+      return this.checked('schtasks', ['/Run', '/TN', this.target])
     }
 ```
 
@@ -7620,7 +7825,7 @@ export const bootTimeMs = (): number => Date.now() - uptime() * 1000
     if (this.platform === 'taskscheduler') {
       // The daemon keeps running: Task Scheduler only ever started it.
       if (this.inspect().registered) {
-        const deleted = this.checked('schtasks', ['/Delete', '/TN', TASK_NAME, '/F'])
+        const deleted = this.checked('schtasks', ['/Delete', '/TN', this.target, '/F'])
         if (!deleted.ok) return deleted
       }
       this.deps.removeFile(this.file)
@@ -7631,32 +7836,19 @@ export const bootTimeMs = (): number => Date.now() - uptime() * 1000
 
   `discard` is unchanged (it removes the file, and reloads only under systemd).
 
+- [ ] **Review Focus 1 (a second Windows user on the same machine), in this task.** The per-user name above is the
+  ruling: each user gets their own task (`taskName(<user>)`), pipe and daemon, and neither sees the other's. The
+  callers in B3.13, B3.21, B5.9, B5.12 and B5.14 use `taskName(<user>)` (TypeScript) or
+  `"Harness harnessd ($env:USERNAME)"` (the PowerShell checks); B3.15 names no task. Schtasks gets the name as one
+  argument, unquoted in the code: spawnSync quotes an argument with spaces itself, and a literal quote would become
+  part of the name. B5.14 scenario 6 installs a second user, and both tasks are listed by
+  `schtasks /Query /FO LIST | findstr /C:"Harness harnessd ("`.
 - [ ] Run `npm run test:harnessd && npm run typecheck`. Expected: `platform.ts` at 100%. Type errors in
   `serviceCommand.ts`/`platformDaemon.ts` do not appear (they only compare with `'launchd'`); if `PlatformState`
   consumers switch on the name, B3.13 handles them.
 - [ ] Commit: `harnessd: the Task Scheduler platform` — `git add cli/src/harnessd/platform.ts cli/src/harnessd/platform.spec.ts`
 
 ---
-
-- [ ] **Review Focus 1 — a second Windows user on the same machine (do this before this task's commit).** Task
-  Scheduler names are machine-wide, and a task folder one user creates can refuse another standard user, so a fixed
-  `\Harness\harnessd` lets only the first user on a machine install. Ruling: `TASK_NAME` becomes
-  `taskName(user = userInfo().username): string` = `` `Harness harnessd (${user})` `` in the root folder (no
-  `\Harness\` folder); every caller here and in B3.13, B3.15, B5.9 and B5.12 calls `taskName()`. Add to
-  `platform.spec.ts`:
-
-```ts
-  it('names the task per user, in the root folder', () => {
-    expect(taskName('alice')).toBe('Harness harnessd (alice)')
-    expect(taskName('Nguyễn Văn A')).toBe('Harness harnessd (Nguyễn Văn A)')
-    expect(taskName('bob')).not.toBe(taskName('alice'))
-    expect(taskName('alice')).not.toContain('\\')
-  })
-```
-
-  and in the schtasks expectations above, quote the name (`/TN "Harness harnessd (u)"`, the name has spaces).
-  Run `npx vitest run src/harnessd/platform.spec.ts` (FAIL, then PASS). B5.14 scenario 6's second user also
-  installs and runs its own daemon; both tasks are listed by `schtasks /Query /FO LIST | findstr "Harness harnessd"`.
 
 ### Task B3.13: `harness service` and the platform's start and stop with Task Scheduler
 
@@ -7670,7 +7862,8 @@ export const bootTimeMs = (): number => Date.now() - uptime() * 1000
 - Produces: `startThroughTask(definition, deps & { lockHeld(): boolean }, waitMs?): Promise<TaskStart>`;
   `TASK_RUN_WAIT_MS = 10_000`; `taskStoppedThisBoot(dataDir?: string): boolean`; `clearTaskStopped(dataDir?: string): void`;
   `serviceDefinition({ …, platform?, launcherPath? })`.
-- Consumes: B3.12; B1 `currentCli`, `harnessLaunchPath(rootDir)` (`cli/src/lib/windows/installLayout.ts`).
+- Consumes: B3.12 (`taskName(user)`: every expectation names the task as `taskName(<user>)`, and the code as
+  `service.target`); B1 `currentCli`, `harnessLaunchPath(rootDir)` (`cli/src/lib/windows/installLayout.ts`).
 
 - [ ] **Failing tests.** `platformDaemon.spec.ts`:
 
@@ -7705,7 +7898,7 @@ describe('Windows', () => {
   it('starts through the task and waits for the master it starts', async () => {
     const { deps, calls } = taskDeps({ pids: [null, null, 700] })
     await expect(startThroughTask(definition(), deps)).resolves.toEqual({ ok: true, pid: 700 })
-    expect(calls).toEqual([`schtasks /Create /TN ${TASK_NAME} /XML /h/data/harnessd-task.xml /F`, `schtasks /Run /TN ${TASK_NAME}`])
+    expect(calls).toEqual([`schtasks /Create /TN ${taskName('D\\u')} /XML /h/data/harnessd-task.xml /F`, `schtasks /Run /TN ${taskName('D\\u')}`])
   })
 
   it('says to start it directly when the task did not run (no signed-in session) or could not be run', async () => {
@@ -7720,15 +7913,17 @@ describe('Windows', () => {
   })
 
   it('names the platform as a person would', () => {
-    expect(describeState({ platform: 'taskscheduler', file: 'f', target: TASK_NAME, installed: true, registered: false, pid: null, state: null, failed: false, lastExit: null, linger: null, unreachable: null })).toBe('not registered')
+    expect(describeState({ platform: 'taskscheduler', file: 'f', target: taskName('D\\u'), installed: true, registered: false, pid: null, state: null, failed: false, lastExit: null, linger: null, unreachable: null })).toBe('not registered')
   })
 })
 ```
 
-  (Add `PlatformService, TASK_NAME, type CommandResult, type ServiceDefinition` from `'../harnessd/platform.js'` and
+  (Add `PlatformService, taskName, type CommandResult, type ServiceDefinition` from `'../harnessd/platform.js'` and
   `describeState, serviceDefinition, startThroughTask` from `'./platformDaemon.js'` to the spec's imports.)
 
-  `serviceCommand.spec.ts` (a stub `run`; the fakes there are launchctl/systemctl only):
+  `serviceCommand.spec.ts` (a stub `run`; the fakes there are launchctl/systemctl only). Add `taskName` to its
+  `'../harnessd/platform.js'` import (line 5). The task's user is `demo` (`USERNAME`), so its name is
+  `taskName('demo')`, `Harness harnessd (demo)`:
 
 ```ts
 describe('harness service with Task Scheduler', () => {
@@ -7771,7 +7966,9 @@ describe('harness service with Task Scheduler', () => {
     const w = windows()
     try {
       await expect(serviceCommand(['install'], w.deps)).resolves.toBe(0)
-      expect(w.calls.filter((call) => !call.startsWith('schtasks /Query'))).toEqual([expect.stringMatching(/^schtasks \/Create \/TN \\Harness\\harnessd \/XML .*harnessd-task\.xml \/F$/), 'schtasks /Run /TN \\Harness\\harnessd'])
+      const name = taskName('demo')
+      expect(w.calls.filter((call) => !call.startsWith('schtasks /Query'))).toEqual([expect.stringMatching(/harnessd-task\.xml \/F$/), `schtasks /Run /TN ${name}`])
+      expect(w.calls.find((call) => call.startsWith('schtasks /Create'))!.startsWith(`schtasks /Create /TN ${name} /XML `)).toBe(true)
       expect(w.locks).toEqual(['start', 'start released'])
       expect(w.out[0]).toBe('✓ harnessd runs under Task Scheduler (pid 4343): it starts at logon, and again within 5 minutes if it stops.')
     } finally { rmSync(w.dir, { recursive: true, force: true }) }
@@ -7783,7 +7980,7 @@ describe('harness service with Task Scheduler', () => {
       await serviceCommand(['install'], w.deps)
       await serviceCommand(['install'], w.deps)
       expect(w.calls.some((call) => call.startsWith('schtasks /Run'))).toBe(false)
-      expect(w.out).toContain('harnessd is registered with Task Scheduler already (\\Harness\\harnessd); nothing to change.')
+      expect(w.out).toContain(`harnessd is registered with Task Scheduler already (${taskName('demo')}); nothing to change.`)
       expect(w.out).toContain('  ! the task starts harness with your Windows user environment, not this shell\'s: ADAPTER_DATA_DIR set only here does not reach it')
     } finally { rmSync(w.dir, { recursive: true, force: true }) }
   })
@@ -7795,7 +7992,7 @@ describe('harness service with Task Scheduler', () => {
       await expect(serviceCommand(['install'], w.deps)).resolves.toBe(1)
       expect(w.err[0]).toMatch(/^✗ No installed CLI at .*harness-launch\.exe/)
       await expect(serviceCommand(['uninstall'], w.deps)).resolves.toBe(0)
-      expect(w.calls).toContain('schtasks /Delete /TN \\Harness\\harnessd /F')
+      expect(w.calls).toContain(`schtasks /Delete /TN ${taskName('demo')} /F`)
       expect(w.out.at(-1)).toMatch(/Task Scheduler no longer runs harnessd/)
     } finally { rmSync(w.dir, { recursive: true, force: true }) }
   })
@@ -7805,7 +8002,7 @@ describe('harness service with Task Scheduler', () => {
     try {
       w.deps.service!.write(w.deps.definition())
       await serviceCommand(['status'], w.deps)
-      expect(w.out).toEqual(['harnessd · Task Scheduler', '  status      ● registered (enabled) · starts at logon, and again within 5 minutes if it stops', expect.stringMatching(/^  task        /), '  target      \\Harness\\harnessd'])
+      expect(w.out).toEqual(['harnessd · Task Scheduler', '  status      ● registered (enabled) · starts at logon, and again within 5 minutes if it stops', expect.stringMatching(/^  task        /), `  target      ${taskName('demo')}`])
     } finally { rmSync(w.dir, { recursive: true, force: true }) }
   })
 })
@@ -7893,7 +8090,7 @@ export function clearTaskStopped(dataDir: string = env.ADAPTER_DATA_DIR): void {
   if (!state.registered) parts.push(state.platform === 'launchd' ? 'not loaded' : state.platform === 'taskscheduler' ? 'not registered' : 'not enabled')
 ```
 
-  `serviceCommand.ts`: import `PLATFORM_LABEL, TASK_NAME` from `'../harnessd/platform.js'` and `CARRIED_ENV, PLATFORM_START_WAIT_MS`
+  `serviceCommand.ts`: import `PLATFORM_LABEL` from `'../harnessd/platform.js'` and `CARRIED_ENV, PLATFORM_START_WAIT_MS`
   from `'./platformDaemon.js'`. Usage lines 45-46:
 
 ```ts
@@ -7904,9 +8101,11 @@ export function clearTaskStopped(dataDir: string = env.ADAPTER_DATA_DIR): void {
   (the mac and Linux lines read the same; the tests import `SERVICE_USAGE`). The error on line 68 becomes
   `'harness service runs harnessd under launchd (macOS), systemd (Linux) or Task Scheduler (Windows); this computer has none of them.'`
   In `installService`, `uninstallService`, `serviceStatus`: `const name = PLATFORM_LABEL[service.platform]`. First
-  line of `installService`'s body: `if (deps.service!.platform === 'taskscheduler') return installTask(deps)`. Labels
-  in `:124` and `:175`: `service.platform === 'launchd' ? 'agent' : service.platform === 'taskscheduler' ? 'task ' : 'unit '`
-  (with the status line's widths). `statusLine`, before the `!state.registered` branch's return:
+  line of `installService`'s body: `if (deps.service!.platform === 'taskscheduler') return installTask(deps)`. Labels,
+  each at its line's width: `:124` (5 characters)
+  `service.platform === 'launchd' ? 'agent' : service.platform === 'taskscheduler' ? 'task ' : 'unit '`, and `:175`
+  (6 characters, the status test's `^  task        `)
+  `service.platform === 'launchd' ? 'agent ' : service.platform === 'taskscheduler' ? 'task  ' : 'unit  '`. `statusLine`, before the `!state.registered` branch's return:
 
 ```ts
   if (state.platform === 'taskscheduler') {
@@ -7956,7 +8155,7 @@ async function installTask(deps: ServiceCommandDeps): Promise<number> {
       return 1
     }
   }
-  if (registered === 'already') deps.out(`harnessd is registered with Task Scheduler already (${TASK_NAME}); nothing to change.`)
+  if (registered === 'already') deps.out(`harnessd is registered with Task Scheduler already (${service.target}); nothing to change.`)
   else {
     deps.out(`✓ harnessd runs under Task Scheduler (pid ${up}): it starts at logon, and again within 5 minutes if it stops.`)
     deps.out(`  task   ${service.target}`)
@@ -8072,9 +8271,14 @@ export const VERSION_FOLDER = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
 **Files**
 - Create: `cli/src/lib/startIfDown.ts`, `cli/src/lib/startIfDown.spec.ts`
 - Modify: `cli/src/cli.ts:999-1053` (`startCommand`), `:1447-1500` (`spawnDaemon`), `:2570-2577` (`case 'start'`), imports
+- Modify: `cli/scripts/install.ps1` (`Install-Harness`, B1.8; two new functions before it) and
+  `cli/src/scripts/installPs1.spec.ts` (one static case, one Windows block): re-running the installer over a live
+  install moves the daemon to the new build (Review Focus 4)
 
 **Interfaces**
-- Produces: `startIfDown(deps: IfDownDeps): Promise<IfDown>`, `processIfDownDeps(): IfDownDeps`; the `--if-down` flag.
+- Produces: `startIfDown(deps: IfDownDeps): Promise<IfDown>`, `processIfDownDeps(): IfDownDeps`; the `--if-down` flag;
+  in install.ps1, `Read-HarnessCurrentCli -Root <dir>` (`cli\current`'s version, or `''`) and
+  `Restart-HarnessDaemon -Command <harness.cmd> -Before <v> -After <v>` (returns whether it restarted).
 - Consumes: B3.7 `identifyDaemonProcess`; B3.10 `readSpawnLockOwner`, `spawnLockOwnerReused`,
   `releaseAbandonedSpawnLock`; B3.13 `startThroughTask`, `taskStoppedThisBoot`, `clearTaskStopped`,
   `installedPlatform`; B3.11 `launchDetached`; B1 `harnessLaunchPath(rootDir)` (`lib/windows/installLayout.ts`);
@@ -8260,11 +8464,125 @@ async function startCommand(foreground: boolean, repair: boolean = false, ifDown
 
   and remove the old `const entry = …` line (`:1476`). macOS and Linux reach exactly the code they reached before.
 
-- [ ] Run `npx vitest run src/lib/startIfDown.spec.ts && npm run typecheck && npm test -- src/lib`. Expected: pass.
+- [ ] **Failing tests: the installer run again over a live install.** The master re-execs only before a core starts,
+  and nothing tells it that `cli\current` moved, so a reinstall would leave the daemon on the old build until its next
+  restart. Ruling: after the new pointer is written, when the CLI version changed and `harness status` reports a
+  running daemon, install.ps1 runs `harness stop`, then `harness start`. Agents survive: the terminal host is
+  independent of the daemon, and the new core reattaches them. In `cli/src/scripts/installPs1.spec.ts`, add inside
+  `describe('install.ps1, as written', …)`:
+
+```ts
+  it('moves a running daemon to the new build when it is run again over an install', () => {
+    expect(source).toContain('$before = Read-HarnessCurrentCli -Root $root')
+    expect(source).toContain('$null = Restart-HarnessDaemon -Command $command -Before $before -After $version')
+  })
+```
+
+  and append:
+
+```ts
+describe.runIf(windows)('install.ps1, run again over a live install', () => {
+  /** A `harness` that logs each call, one per line, and reports the daemon as [state] to `status`. */
+  function fakeHarness(state: string): { command: string; calls: () => string[] } {
+    const dir = mkdtempSync(join(tmpdir(), 'harness-ps1-restart-'))
+    scratch.push(dir)
+    const log = join(dir, 'calls.log')
+    const command = join(dir, 'harness.cmd')
+    writeFileSync(command, ['@echo off', `echo %*>>"${log}"`, `if "%1"=="status" echo    status     ${state}`, 'exit /b 0', ''].join('\r\n'))
+    return { command, calls: () => { try { return readFileSync(log, 'utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean) } catch { return [] } } }
+  }
+  const last = (text: string) => text.split(/\r?\n/).at(-1)
+
+  it('restarts a running daemon once when the version changed: stop, then start', () => {
+    const harness = fakeHarness('running - backend connected')
+    const run = ps(`Restart-HarnessDaemon -Command '${harness.command}' -Before '1.0.0' -After '1.0.1'`)
+    expect(last(run.stdout), run.stderr).toBe('True')
+    expect(run.stdout).toContain('Moving the running Harness from 1.0.0 to 1.0.1')
+    expect(harness.calls()).toEqual(['status', 'stop', 'start'])
+  })
+
+  it('leaves the daemon alone on the same version, on a first install, and when no daemon runs', () => {
+    const same = fakeHarness('running - backend connected')
+    expect(ps(`Restart-HarnessDaemon -Command '${same.command}' -Before '1.0.1' -After '1.0.1'`).stdout).toBe('False')
+    expect(ps(`Restart-HarnessDaemon -Command '${same.command}' -Before '' -After '1.0.1'`).stdout).toBe('False')
+    expect(same.calls()).toEqual([])
+    const stopped = fakeHarness('stopped')
+    expect(ps(`Restart-HarnessDaemon -Command '${stopped.command}' -Before '1.0.0' -After '1.0.1'`).stdout).toBe('False')
+    expect(stopped.calls()).toEqual(['status'])
+  })
+
+  it('reads the version cli\\current names, and none before a first install', () => {
+    const root = mkdtempSync(join(tmpdir(), 'harness-ps1-current-'))
+    scratch.push(root)
+    expect(ps(`Read-HarnessCurrentCli -Root '${root}'`).stdout).toBe('')
+    mkdirSync(join(root, 'cli'))
+    writeFileSync(join(root, 'cli', 'current'), '1.0.0\r\n')
+    expect(ps(`Read-HarnessCurrentCli -Root '${root}'`).stdout).toBe('1.0.0')
+  })
+})
+```
+
+  Run `cd cli && npx vitest run src/scripts/installPs1.spec.ts`. Expected on macOS: the new static case fails (the
+  two lines are not in the source); the Windows block is skipped.
+
+- [ ] **Implementation: install.ps1.** In `cli/scripts/install.ps1`, add before `function Install-Harness {`:
+
+```powershell
+function Read-HarnessCurrentCli {
+  # The version cli\current names, or '' before a first install.
+  param([string]$Root)
+  $pointer = Join-Path $Root 'cli\current'
+  if (-not (Test-Path -LiteralPath $pointer -PathType Leaf)) { return '' }
+  return ([string](Get-Content -LiteralPath $pointer -TotalCount 1)).Trim()
+}
+
+function Restart-HarnessDaemon {
+  # Run again over a live install, the installer moves the daemon to the new build. The master re-execs only before
+  # a core starts, and nothing tells it that cli\current moved, so the daemon is restarted once: harness stop, then
+  # harness start. Agents keep running: the terminal host is independent of the daemon, and the new core reattaches
+  # them. Nothing happens on the same version, on a first install, or when no daemon runs.
+  param([string]$Command, [string]$Before, [string]$After)
+  if (-not $Before -or $Before -eq $After) { return $false }
+  $statusLine = @(& $Command status) | Where-Object { $_ -match '^\s*status\s' } | Select-Object -First 1
+  if ($LASTEXITCODE -ne 0 -or -not $statusLine -or $statusLine -match 'stopped|out of reach') { return $false }
+  Write-Host "  Moving the running Harness from $Before to $After (your agents keep running)..."
+  & $Command stop | ForEach-Object { Write-Host "  $_" }
+  & $Command start | ForEach-Object { Write-Host "  $_" }
+  if ($LASTEXITCODE -ne 0) { Write-Host "  Harness did not start again on version ${After}. Run 'harness start'." }
+  return $true
+}
+```
+
+  In `Install-Harness` (B1.8), the two CLI lines become:
+
+```powershell
+    $step = 'Installing the Harness CLI'
+    # The version a running daemon may be on, read before the pointer moves (Restart-HarnessDaemon below).
+    $before = Read-HarnessCurrentCli -Root $root
+    $version = Install-HarnessCli -Root $root -Entry $sources.cli.entry -Source $sources.cli.source
+```
+
+  and right after the `harness version` check (`if ($LASTEXITCODE -ne 0 -or $said.Trim() -ne $version) { throw … }`):
+
+```powershell
+    $step = 'Moving the running Harness to the new build'
+    # $null: Install-Harness returns a single integer (the guard takes the last value).
+    $null = Restart-HarnessDaemon -Command $command -Before $before -After $version
+```
+
+  No stderr redirection on the native calls: under `$ErrorActionPreference = 'Stop'`, Windows PowerShell 5.1 turns a
+  redirected stderr line into a terminating error. `${After}` is braced because `$After:` would parse as a drive
+  variable.
+
+- [ ] Run `npx vitest run src/lib/startIfDown.spec.ts src/scripts/installPs1.spec.ts && npm run typecheck && npm test -- src/lib`.
+  Expected: pass; on macOS `installPs1.spec.ts` reports its seven static cases. On the VM, after `vm-sync.sh --cli`:
+  `ssh admin@192.168.65.3 "cd /d C:\work\oh\cli && npx vitest run src/scripts/installPs1.spec.ts"`. Expected: all
+  22 cases pass (B1.8's 19, the new static case and the three cases above). B1.8's "runs again over itself" case still
+  passes: the version is the same, so nothing is restarted.
 - [ ] Mac regression: `npm run test:e2e -- e2e/cli.e2e.ts` (the forced launchd/systemd platform path) matches its
   baseline.
 - [ ] Commit: `cli: harness start --if-down, and the Windows start paths` —
-  `git add cli/src/lib/startIfDown.ts cli/src/lib/startIfDown.spec.ts cli/src/cli.ts`
+  `git add cli/src/lib/startIfDown.ts cli/src/lib/startIfDown.spec.ts cli/src/cli.ts cli/scripts/install.ps1 cli/src/scripts/installPs1.spec.ts`
 
 ---
 ### Task B3.16: Self-update over version folders, and rollback by pointer
@@ -8981,9 +9299,24 @@ describe('handing over, where there is no exec (Windows)', () => {
     expect(launched[0]!.KEEP).toBe('1')
     expect(calls).toEqual([
       REEXECUTING, 'stop children', 'lock', `marker ${JSON.stringify({ pid: 4242, from: 'old', to: 'new', at: 1_000, handover: 'tok' })}`,
-      '[harnessd] handed over to the new master (pid 5151) — leaving', 'leave',
+      '[harnessd] handed over to the new master (pid 5151) — leaving', 'unlock', 'leave',
     ])
     expect(outcomes).toEqual([])
+  })
+
+  it('lets go of the spawn lock as it leaves, once the new master holds the pid file, and not before', async () => {
+    // The replacement never takes the lock again: the old master's release, after the pid file names the new one, is
+    // what frees it. Released earlier, a `harness stop` could land on a master on its way out.
+    let pid = 4242
+    const pidWhenReleased: Array<number | null> = []
+    await run(make({
+      readPid: () => pid,
+      sleep: async (ms) => { clock.now += ms; if (clock.now >= 2_000) pid = 5151 },
+      lock: async () => { calls.push('lock'); return () => { pidWhenReleased.push(pid); calls.push('unlock') } },
+    }).reexec)
+    expect(pidWhenReleased).toEqual([5151])
+    expect(calls.slice(-3)).toEqual(['[harnessd] handed over to the new master (pid 5151) — leaving', 'unlock', 'leave'])
+    expect(calls.filter((call) => call === 'unlock')).toHaveLength(1)
   })
 
   it('keeps this master when the new one does not take over in time, taking its marker back first', async () => {
@@ -8996,7 +9329,7 @@ describe('handing over, where there is no exec (Windows)', () => {
 
   it('leaves after all when the new one claimed the pid file as it gave up', async () => {
     await run(make({ readPid: () => (calls.includes('remove marker') ? 5151 : 4242) }).reexec)
-    expect(calls.slice(-2)).toEqual(['remove marker', 'leave'])
+    expect(calls.slice(-3)).toEqual(['remove marker', 'unlock', 'leave'])
     expect(outcomes).toEqual([])
   })
 
@@ -9007,12 +9340,16 @@ describe('handing over, where there is no exec (Windows)', () => {
     await run(make({}, { writeMarker: () => { throw new Error('ENOSPC') } }).reexec)
     expect(calls.slice(-3)).toEqual(['unlock', '[harnessd] could not leave the re-execution marker (ENOSPC) — keeping this master', 'start children'])
     calls = []
+    // A throw that is not an Error still names itself in the log (the catch's String(error) branch).
+    await run(make({}, { writeMarker: () => { throw 'EROFS' } }).reexec)
+    expect(calls.slice(-3)).toEqual(['unlock', '[harnessd] could not leave the re-execution marker (EROFS) — keeping this master', 'start children'])
+    calls = []
     await run(make({}, { exists: () => false }).reexec)
     expect(calls.slice(-4)).toEqual(['remove marker', 'unlock', '[harnessd] C:\\h\\cli\\0.5.1\\cli.js is not there to hand over to — keeping this master', 'start children'])
     calls = []
     await run(make({ launch: async () => 'exit 3' }).reexec)
     expect(calls.slice(-4)).toEqual(['remove marker', 'unlock', '[harnessd] could not start the new master (exit 3) — keeping this master', 'start children'])
-    expect(outcomes).toEqual(['kept', 'kept', 'kept', 'kept'])
+    expect(outcomes).toEqual(['kept', 'kept', 'kept', 'kept', 'kept'])
   })
 
   it('does no more once the master is stopping', async () => {
@@ -9087,7 +9424,7 @@ export interface HandOverDeps {
   sleep(ms: number): Promise<void>
   /** A fresh token naming this handover in the marker and the state handed on. */
   token(): string
-  /** This master's end: the replacement holds the pid file. */
+  /** This master's end: the replacement holds the pid file. The spawn lock is released just before (./reexec.ts). */
   leave(): void
 }
 ```
@@ -9122,6 +9459,13 @@ export interface HandOverDeps {
       deps.log(`[harnessd] ${why} — keeping this master`)
       carryOn('kept')
     }
+    // The replacement holds the pid file: this master lets go of the spawn lock and leaves. The replacement never
+    // takes the lock again, so this release is what frees it, and it comes only once the pid file names a live
+    // successor: until then a `harness stop` waits rather than land on a master on its way out.
+    const leave = (): void => {
+      release()
+      h.leave()
+    }
     try {
       deps.writeMarker({ pid: deps.pid, from: deps.own, to: next, at, handover: token })
     } catch (error) {
@@ -9143,7 +9487,7 @@ export interface HandOverDeps {
       const pid = successor(h)
       if (pid !== null) {
         deps.log(`[harnessd] handed over to the new master (pid ${pid}) — leaving`)
-        h.leave()
+        leave()
         return
       }
       if (deps.now() >= deadline) break
@@ -9152,7 +9496,7 @@ export interface HandOverDeps {
       if (deps.stopping()) return
     }
     deps.removeMarker()
-    if (successor(h) !== null) { h.leave(); return }
+    if (successor(h) !== null) { leave(); return }
     release()
     deps.log(`[harnessd] the new master did not take over within ${HANDOVER_WAIT_MS} ms — keeping this master`)
     carryOn('kept')
@@ -9213,6 +9557,46 @@ export interface HandOverDeps {
     await until('running', () => supervisor.status().state === 'running')
     signals.get('SIGTERM')!()
     await until('the master to finish', () => exits.length > 0)
+  })
+
+  it('starts the services and the core from the current build when it has one, never from the lean bundle', async () => {
+    // Windows: cli\current names the build. A service process runs from it too (spawnService's currentScript branch),
+    // and is not recorded as a lean start; the core is told no lean CLI.
+    const pidFile = join(dir, 'adapter.pid')
+    const seen = join(dir, 'seen')
+    const body = (who: string) => `
+      const { appendFileSync } = require('node:fs')
+      const role = process.argv[2] === '__service' ? 'service:' + process.argv[3] : process.argv[2]
+      appendFileSync(${JSON.stringify(seen)}, JSON.stringify({ role, from: ${JSON.stringify(who)}, cli: process.env.${LEAN_CORE_SCRIPT_ENV} ?? null }) + '\\n')
+      if (role === '__run') { process.send({ type: 'harnessd:bound', protocol: ${HARNESSD_PROTOCOL}, port: 1 }); process.send({ type: 'harnessd:ready' }) }
+      setInterval(() => process.send({ type: 'harnessd:heartbeat', rssBytes: 1, heapUsedBytes: 1, loopDelayMs: 0 }), 50)
+      process.on('SIGTERM', () => process.exit(0))
+    `
+    const own = join(dir, 'cli.cjs')
+    const lean = join(dir, 'lean.cjs')
+    const current = join(dir, 'current.cjs')
+    writeFileSync(own, body('own'))
+    writeFileSync(lean, body('lean'))
+    writeFileSync(join(dir, LEAN_CORE_ENTRY), body('lean core').replace("require('node:fs')", "await import('node:fs')"))
+    writeFileSync(current, body('current'))
+    const exits: number[] = []
+    const signals = new Map<string, () => void>()
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      runMaster({
+        nodePath: process.execPath, execArgv: [], scriptPath: own, serviceScriptPath: lean, pidFile,
+        restoreUpdate: () => {}, confirmUpdate: () => {},
+        env: { ...process.env, HARNESSD_SERVICES: 'search' }, currentScript: () => current,
+        exit: (code) => exits.push(code), onSignal: (signal, listener) => signals.set(signal, listener),
+      })
+      const roles = (): Array<Record<string, string>> => jsonLines(seen)
+      await until('the core and the service', () => roles().length >= 2)
+      expect(roles().sort((a, b) => a.role.localeCompare(b.role))).toEqual([
+        { role: '__run', from: 'current', cli: null }, { role: 'service:search', from: 'current', cli: null },
+      ])
+      signals.get('SIGTERM')!()
+      await until('the master to finish', () => exits.length > 0)
+    } finally { log.mockRestore() }
   })
 
   it('on Windows, stops its core by message, and stops everything when the core asks, writing its children\'s output where told', async () => {
@@ -9342,7 +9726,8 @@ export interface HandOverDeps {
   })
 ```
 
-  (imports: `closeSync, openSync` from `node:fs`.)
+  (imports: `closeSync, openSync` from `node:fs`; `LEAN_CORE_ENTRY`, `LEAN_CORE_SCRIPT_ENV`, `vi` and `jsonLines` are
+  already in the spec, for the lean-bundle cases.)
 
 - [ ] Run `npx vitest run src/harnessd/master.spec.ts -t "Windows|current|takes over|leaves at once|hands over"`. Expected:
   failures (unknown config, the core runs from `scriptPath`).
@@ -9473,12 +9858,15 @@ export interface HandOverDeps {
   Task Scheduler starts `harness start --if-down` at logon and every five minutes (`platform.ts`
   `taskSchedulerXml`), which starts a master when none runs;". Rule 6, append: "Windows has no exec: there the
   master starts its replacement through `harness-launch.exe` and leaves once it holds the pid file
-  (`reexec.ts` `HandOverDeps`), under the spawn lock and with a token in the marker, so a replacement that comes
+  (`reexec.ts` `HandOverDeps`), under the spawn lock (released as the old master leaves; the replacement does not take
+  it) and with a token in the marker, so a replacement that comes
   up after the old master gave up leaves rather than run beside it. Windows has no SIGTERM either: the master stops
   its children with `harnessd:shutdown` (`stopByMessage`)."
 
 - [ ] Run `npm run test:harnessd && npm run typecheck`. Expected: pass, `master.ts` at 100% (the `currentScript` and
-  lean branches, `output` given and not, `tookOver` both ways, `handOver` given and not are all run).
+  lean branches of `spawnCore` and `spawnService` (the current-build case runs a service with `currentScript` set; the
+  existing lean cases run one without), `output` given and not, `tookOver` both ways, `handOver` given and not are all
+  run).
 - [ ] Commit: `harnessd: the master's Windows wiring` —
   `git add cli/src/harnessd/master.ts cli/src/harnessd/master.spec.ts cli/src/harnessd/AGENTS.md`
 
@@ -9566,7 +9954,10 @@ describe('the master on Windows', () => {
 })
 ```
 
-  (import `windowsMaster, type WindowsMasterDeps` in the dynamic import at the top; `join` from `node:path` is there.)
+  (add `windowsMaster` to the names destructured from `await import('./masterProcess.js')` at the top, and add
+  `import type { WindowsMasterDeps } from './masterProcess.js'` beside the static imports: a type cannot be
+  destructured from a dynamic import, and a type-only import loads nothing before the mocks. `join` from `node:path`
+  is there.)
 
 - [ ] Run `npx vitest run src/masterProcess.spec.ts`. Expected: failures.
 
@@ -9740,7 +10131,8 @@ describe.skipIf(!enabled)('TerminateProcess on Windows', () => {
   `taskScheduler.real.spec.ts`:
 
 ```ts
-// The task XML as Task Scheduler takes it, under a throwaway name (never \Harness\harnessd). Windows only:
+// The task XML as Task Scheduler takes it, under a throwaway name (never a user's own taskName(<user>),
+// `Harness harnessd (<user>)`). Windows only:
 //   cd cli && npx vitest run src/lib/windows/taskScheduler.real.spec.ts
 import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
@@ -9814,7 +10206,8 @@ icacls C:\Users\hb3\.ssh\authorized_keys /inheritance:r /grant hb3:F /grant SYST
      and the agent's process are still in `tasklist`.
   3. `harness start`; `taskkill /PID <core pid> /F` (the core alone) → the master logs a crash and starts a core again;
      the agent is reattached (`harness status`).
-  4. `harness service install` → the task is registered (`schtasks /Query /TN \Harness\harnessd`); over SSH the
+  4. `harness service install` → the task is registered under hb3's own name, `taskName('hb3')`
+     (`schtasks /Query /TN "Harness harnessd (hb3)"`); over SSH the
      `/Run` does not start it (no signed-in session), and `harness start` says "starting it directly".
   5. Sign in as `hb3` on the VM's console (UTM window), then end the master (`taskkill /PID <master pid> /F`): within
      5 minutes the task's `harness start --if-down` brings it back (`harness status`, and the log's start line).
@@ -9898,15 +10291,20 @@ Decisions where the spec is silent:
   task.
 - Decision: stopping is a new route `POST /api/daemon/stop` on the trusted endpoint (trusted + `x-adapter-local`),
   answered 202 before the core asks its master — why: the spec names "asks the core over the pipe", and this mirrors
-  `/api/auth/handoff`'s guard. On mac the route exists but `harness stop` still signals.
+  `/api/auth/handoff`'s guard. The route exists on win32 only (`daemonStopRoute`); on mac and Linux there is no such
+  route (404, as before) and `harness stop` still signals.
 - Decision: the master sends `harnessd:shutdown` to any core or service whatever its protocol, and ends it after the
   usual grace — why: one that does not know the message is then ended just as TerminateProcess ended it before, 2.5 s
   later. Gating on protocol would add a branch with no benefit.
 - Decision: the handover runs under the spawn lock (purpose `handoff`, 5 s wait) with a random token in the marker and
   the resume state; the replacement takes the pid file and the marker as its first act, or leaves when the token no
-  longer matches; the old master waits 30 s — why: the spec requires the replacement to have "taken the spawn lock and
-  written the pid file" before the old one exits. A pid file that names a live master at every instant keeps
-  `harness start` from starting a second one, and the lock keeps `harness stop` from landing mid-handover.
+  longer matches; the old master waits 30 s, and releases the spawn lock as it leaves, once the replacement has
+  written the pid file (`reexec.ts` `leave`); the replacement does not take the lock again — why: spec section 3 has
+  the replacement "taken the spawn lock and written the pid file" before the old one exits; the old master's lock,
+  held until the pid file names its successor, gives the same guarantee without a second acquisition (which the old
+  master's own hold would block), and the lock is never left held by a master that has gone. A pid file that names a
+  live master at every instant keeps `harness start` from starting a second one, and the lock keeps `harness stop`
+  from landing mid-handover.
 - Decision: the resume state handed over says `claimed: true`, and the replacement writes the pid file itself at start —
   why: under exec the pid file stayed valid through the swap; this keeps that property with a new pid.
 - Decision: on Windows the master opens the daemon log itself (append) and gives it to its children's stdout and
@@ -9946,8 +10344,36 @@ Conventions in this part (the same as B1):
 - **VM sync:** `cli/scripts/windows-pty-e2e/vm-sync.sh --cli` copies the tree to `C:\work\oh` on `admin@192.168.65.3`.
   Run it before any VM command.
 - **VM tests:** `ssh admin@192.168.65.3 "cd /d C:\work\oh\cli && (if not exist node_modules npm ci) && npx vitest run <paths>"`.
-  Scratch folders for this phase live under `C:\work\b4`. `C:\work\e2e` is used only in B4.12, B4.13 and B4.15, with
-  the E2E recipe of `docs/testing/windows-pty-e2e.md` (its daemon is stopped first and started again afterwards).
+  Scratch folders for this phase live under `C:\work\b4`. `C:\work\e2e` and its signed-in daemon are never touched
+  (Global Constraints), not even stopped.
+- **B4's own install (`C:\work\b4`).** B4.12, B4.13 and B4.15 drive engines on a daemon of their own: the E2E recipe of
+  `docs/testing/windows-pty-e2e.md`, with every path moved from `C:\work\e2e` to `C:\work\b4`, its own data folder
+  (`C:\work\b4\data`, from `env.cmd`) and port 18475 (18473 may be `C:\work\e2e`'s, and 18474 is B5's test user's).
+  "Build and copy the B4 install" means, on the Mac from the repository root, after `vm-sync.sh --cli` and the VM's
+  `cargo build --release` (recipe steps 1-2):
+
+```bash
+VM=admin@192.168.65.3
+(cd cli && . scripts/lib/build-label.sh && ADAPTER_VERSION="$(harness_build_label "$PWD")" npm run bundle)
+b4=$(mktemp -d)
+cp cli/scripts/windows-pty-e2e/*.cmd cli/scripts/windows-pty-e2e/*.ps1 "$b4/"
+sed -i '' 's/C:\\work\\e2e/C:\\work\\b4/g' "$b4"/*.cmd "$b4"/*.ps1
+printf 'set PORT=18475\r\n' >> "$b4/env.cmd"
+cli/scripts/windows-pty-e2e/build.sh "$b4" >/dev/null
+# The driver's defaults, in the bundle: its state, project and computer-id paths, and the port it dials.
+sed -i '' -e 's/C:\\\\work\\\\e2e/C:\\\\work\\\\b4/g' -e 's/127\.0\.0\.1:18473/127.0.0.1:18475/g' "$b4/e2e.mjs"
+grep -l 'work\\\\e2e\|work\\e2e\|:18473' "$b4"/* || echo "no C:\\work\\e2e and no 18473 left"
+ssh $VM "if not exist C:\work\b4\dist\pty mkdir C:\work\b4\dist\pty & if not exist C:\work\b4\proj mkdir C:\work\b4\proj"
+tar -cf - -C "$b4" . | ssh $VM "tar -xf - -C C:/work/b4"
+tar -cf - -C cli/dist . | ssh $VM "tar -xf - -C C:/work/b4/dist"
+ssh $VM "copy /y C:\work\oh\pty\target\release\harness-pty.exe C:\work\b4\dist\pty\ & copy /y C:\work\oh\pty\vendor\conpty\arm64\conpty.dll C:\work\b4\dist\pty\ & copy /y C:\work\oh\pty\vendor\conpty\arm64\OpenConsole.exe C:\work\b4\dist\pty\"
+```
+
+  Expected: `no C:\work\e2e and no 18473 left`. "Start the B4 daemon" is
+  `ssh $VM "powershell -NoProfile -ExecutionPolicy Bypass -File C:\work\b4\launch.ps1"` (recipe step 6), and
+  `ssh $VM "C:\work\b4\cli.cmd status"` then shows it running with state `C:\work\b4\data` (`env.cmd` gives it
+  `PORT=18475`). "Stop the B4
+  daemon" is `ssh $VM "C:\work\b4\stop.cmd"`. The scenarios run as `C:\work\b4\run.cmd <command>`.
 - **PowerShell over SSH:** `powershell -NoProfile -EncodedCommand <utf16le-b64>` (the VM's SSH shell is `cmd`).
 - **Commits:** each task ends with a commit step. Follow the user's standing rule: leave changes uncommitted until the
   user asks for commits, then commit per task with the message given and the session's attribution trailers.
@@ -10766,7 +11192,7 @@ describe('the adoption journal on Windows', () => {
 ```ts
 /**
  * A journal entry is a plain file or folder of this account's that no one else can write. Windows: NTFS gives Node no
- * owner (uid 0) and reports every file 0o666 and folder 0o777, so only the type is checked. The data folder's place in
+ * owner (uid 0) and reports every file 0o100666 and folder 0o40666, so only the type is checked. The data folder's place in
  * the profile (secureState.ts `windowsStateRoots`) is what protects it there. A link or junction is neither to lstat,
  * so it is still refused.
  */
@@ -10820,7 +11246,8 @@ The runner for each engine on Windows is below. Each row was verified on 2026-10
   `cli/src/engines/commandcode/contract.ts:41-60` (`"win32Runner": "cmd"`).
 - Modify: `cli/src/engines/nativeHooks.ts:37-39`. Hermes gets no hooks on win32.
 - Modify: `cli/src/engines/kit/notifyHooks.ts:11-20`. `HOOK_SCRIPT` names the stable `cli\notify.mjs` in the Windows
-  installed layout. Add `hookScriptCandidates` and `hooksNotOnWindows`.
+  installed layout. Add `hookScriptCandidates`, `hooksNotOnWindows` and `identitySettings` (a hook preparation's
+  identity stays byte for byte what it is today off Windows: no `win32Runner` in it).
 - Create: `cli/src/engines/kit/windowsHooks.spec.ts`
 
 **Interfaces**
@@ -10833,6 +11260,8 @@ The runner for each engine on Windows is below. Each row was verified on 2026-10
   - `installNativeHookSettings(rule, port, options?, platform?)`.
   - `hookScriptCandidates(cliDir, script, platform?, cliRoot?): string[]`.
   - `hooksNotOnWindows(engine: string): true`. It logs `[hooks] <engine> hooks are not installed on Windows yet`.
+  - `identitySettings(settings, platform?)`: the settings as a preparation's identity names them, without
+    `win32Runner` off Windows.
 
 - [ ] **Step 1: Write the failing test.** Create `cli/src/engines/kit/windowsHooks.spec.ts`:
 
@@ -10851,7 +11280,7 @@ import { DEVIN_HOOK_SETTINGS } from '../devin/contract.js'
 import { GROK_HOOK_SETTINGS } from '../grok/contract.js'
 import { notifyHookEntry } from './hookSettings.js'
 import { installNativeHookSettings } from './nativeHookSettings.js'
-import { hookScriptCandidates } from './notifyHooks.js'
+import { hookScriptCandidates, identitySettings } from './notifyHooks.js'
 
 const dirs: string[] = []
 afterEach(() => { vi.restoreAllMocks(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
@@ -10887,6 +11316,21 @@ describe('the hook each engine runs on Windows', () => {
     expect(await installNativeHookSettings({ ...GROK_HOOK_SETTINGS, file: join(dir, 'grok', 'hooks', 'harness.json') }, 19473, {}, 'win32')).toBe(true)
     expect(existsSync(join(dir, 'grok'))).toBe(false)
     expect(log).toHaveBeenCalledWith('[hooks] grok hooks are not installed on Windows yet')
+  })
+})
+
+describe('a hook preparation\'s identity', () => {
+  // installHookSettings and installNativeHookSettings name a preparation by JSON.stringify of the settings, among
+  // others. Off Windows that string must be byte for byte what it was before win32Runner existed (mac/Linux unchanged).
+  it('is the settings without win32Runner off Windows, byte for byte, and the whole declaration on Windows', () => {
+    const { win32Runner: _claude, ...claudeBefore } = claude.settings
+    const { win32Runner: _copilot, ...copilotBefore } = COPILOT_HOOK_SETTINGS
+    expect(JSON.stringify(identitySettings(claude.settings, 'darwin'))).toBe(JSON.stringify(claudeBefore))
+    expect(JSON.stringify(identitySettings(codex.settings, 'linux'))).not.toContain('win32Runner')
+    expect(JSON.stringify(identitySettings(COPILOT_HOOK_SETTINGS, 'darwin'))).toBe(JSON.stringify(copilotBefore))
+    expect(JSON.stringify(identitySettings(CURSOR_HOOK_SETTINGS, 'darwin'))).toBe(JSON.stringify(CURSOR_HOOK_SETTINGS))
+    expect(identitySettings(COPILOT_HOOK_SETTINGS, 'win32')).toBe(COPILOT_HOOK_SETTINGS)
+    expect(JSON.stringify(identitySettings(claude.settings, 'win32'))).toContain('"win32Runner":"argv"')
   })
 })
 
@@ -10963,11 +11407,24 @@ export function hooksNotOnWindows(engine: string): true {
   console.log(`[hooks] ${engine} hooks are not installed on Windows yet`)
   return true
 }
+
+/**
+ * A hook rule as a preparation's identity names it (`runHookPreparation`'s `identity`: a refresh and a launch with
+ * the same one share a preparation). Off Windows `win32Runner` is left out, so the identity is byte for byte what it
+ * was before Windows hooks: mac and Linux do not change. The other keys keep their order.
+ */
+export function identitySettings<T extends { win32Runner?: unknown }>(settings: T, platform: NodeJS.Platform = process.platform): T | Omit<T, 'win32Runner'> {
+  if (platform === 'win32') return settings
+  const { win32Runner: _runner, ...rest } = settings
+  return rest
+}
 ```
 
   `cli/src/engines/kit/hookSettings.ts`:
   - Line 16 becomes
-    `import { HOOK_SCRIPT, hookArgv, hooksNotOnWindows, isOurs, foreignHookBlocks, quoteHookCommand, type CommandHook, type Settings } from './notifyHooks.js'`.
+    `import { HOOK_SCRIPT, hookArgv, hooksNotOnWindows, identitySettings, isOurs, foreignHookBlocks, quoteHookCommand, type CommandHook, type Settings } from './notifyHooks.js'`.
+    Off Windows `entry.command` is the POSIX line `command(...)` gave before (B4.1), and `identitySettings` drops
+    `win32Runner`, so the identity string is unchanged there.
   - Line 21 becomes `export type HookEngine = Parameters<typeof hookArgv>[1]`.
   - Replace lines 28-47 (`installHookSettings`) with:
 
@@ -11000,7 +11457,7 @@ export async function installHookSettings(engine: HookEngine, settings: HookSett
       // installed there yet (Phase B4 notes).
       if (process.platform !== 'win32' && (settings.inbox || settings.allow)) await installMessagesBlock(settings, home, attempt, verifyRequired)
       return true
-    }, { ...options, identity: JSON.stringify([engine, settings, port, home, entry.args ? [entry.command, entry.args] : entry.command, env.HARNESS_AGENT_MESSAGES_DIR]) })
+    }, { ...options, identity: JSON.stringify([engine, identitySettings(settings), port, home, entry.args ? [entry.command, entry.args] : entry.command, env.HARNESS_AGENT_MESSAGES_DIR]) })
   } catch (err) {
     console.error(settings.messages.failed.replace(/\{(file|script|port)\}/g, (_, name: string) =>
       name === 'file' ? files[0] : name === 'script' ? HOOK_SCRIPT : String(port)), err)
@@ -11073,7 +11530,9 @@ async function installNotifyHooks(settings: HookSettings, port: number, home: st
 ```
 
   `cli/src/engines/kit/nativeHookSettings.ts`:
-  - Line 2 becomes `import { command, hooksNotOnWindows, isOurs, isManagedHookCommand, foreignHookBlocks, type HookRunner, type Settings, type HookBlock } from './notifyHooks.js'`.
+  - Line 2 becomes `import { command, hooksNotOnWindows, identitySettings, isOurs, isManagedHookCommand, foreignHookBlocks, type HookRunner, type Settings, type HookBlock } from './notifyHooks.js'`.
+  - Line 80: the identity becomes `identity: JSON.stringify([identitySettings(rule, platform), port, cmd])`: Copilot's and
+    Command Code's rules now declare `win32Runner`, which must not change their identity off Windows.
   - In `NativeHookSettings` (after `failClosed?: boolean`, line 15) add:
 
 ```ts
@@ -11358,6 +11817,7 @@ Amp is not changed (it is not installable on Windows).
 - Modify: `cli/src/engines/kilo/contract.ts:30-32,52`, `cli/src/engines/opencode/contract.ts:70-72,92,137-139,165`,
   `cli/src/engines/pi/contract.ts:37-42,68`
 - Create: `cli/src/engines/pluginPaneHints.spec.ts`
+- Modify: `cli/.gitignore` (add `src/.tmp/`, where the spec renders the plugins)
 - Modify (re-record): `cli/src/engines/__fixtures__/other-hooks.golden.json`
 
 **Interfaces**
@@ -11367,10 +11827,13 @@ Amp is not changed (it is not installable on Windows).
   next start.
 
 - [ ] **Step 1: Write the failing test.** Create `cli/src/engines/pluginPaneHints.spec.ts`. The rendered plugins are
-  written inside `src/engines` so vitest transforms the Pi extension's TypeScript:
+  written under `cli/src/.tmp/`, inside the project so vitest transforms the Pi extension's TypeScript, and outside
+  `src/engines`, which `architecture.spec.ts` walks and `tsc` compiles while specs run in parallel. `.tmp` is
+  git-ignored (add `src/.tmp/` to `cli/.gitignore`), and a dot folder is outside `tsconfig.json`'s `src/**/*`
+  include:
 
 ```ts
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -11383,7 +11846,9 @@ const TOKEN = 'c'.repeat(43)
 let dir = ''
 let fetch: ReturnType<typeof vi.fn>
 beforeEach(() => {
-  dir = mkdtempSync(join(import.meta.dirname, '.plugin-pane-'))
+  const tmp = join(import.meta.dirname, '..', '.tmp')
+  mkdirSync(tmp, { recursive: true })
+  dir = mkdtempSync(join(tmp, 'plugin-pane-'))
   writeFileSync(join(dir, 'hook-credential'), `${TOKEN}\n`)
   fetch = vi.fn(async () => ({ ok: true }))
   vi.stubGlobal('fetch', fetch)
@@ -11495,7 +11960,7 @@ describe('a plugin in a Harness pty host pane (Windows)', () => {
   exactly the added lines above. Then run `cd cli && npx vitest run src/engines/*.golden.spec.ts`. Expected: PASS.
 
 - [ ] **Step 5: Commit** (the commit says the golden was re-recorded on purpose).
-  `git add cli/src/engines/kilo/contract.ts cli/src/engines/opencode/contract.ts cli/src/engines/pi/contract.ts cli/src/engines/pluginPaneHints.spec.ts cli/src/engines/__fixtures__/other-hooks.golden.json`
+  `git add cli/.gitignore cli/src/engines/kilo/contract.ts cli/src/engines/opencode/contract.ts cli/src/engines/pi/contract.ts cli/src/engines/pluginPaneHints.spec.ts cli/src/engines/__fixtures__/other-hooks.golden.json`
   `git commit -m "feat(hooks): the OpenCode, Kilo and Pi plugins name a pty host pane" -m "Re-records other-hooks.golden.json: the plugin files gain the HARNESS_PANE fallback (unchanged behavior under tmux)."`
 
 ### Task B4.10: Hook files on real Windows
@@ -11806,7 +12271,10 @@ describe('an engine whose Windows build cannot run', () => {
 - [ ] **Step 5: Implement.** In `launch.ts`:
   - Add `closeSync, openSync, readSync` to the line-15 `node:fs` import.
   - After `WindowsBatchLaunchRefused` (line 35) add the code below. Use text C as written. For outcome B, replace the
-    detail with text B, and the comment's "C" with "B".
+    detail with text B, and the comment's "C" with "B". Text B lives here in the plan only, never in the code:
+
+    `'OpenCode\'s Arm build for Windows stops before its screen opens. Install its x64 build, which Windows on Arm '
+    + 'runs: <the command step 1.4 proved>, then try again.'`
 
 ```ts
 /** An engine whose Windows build cannot run here, refused before any pane opens (outcome of Task B4.12). */
@@ -11847,8 +12315,6 @@ function readHead(file: string): Buffer {
 export function windowsEngineUnavailable(engine: string, program: string, machine: (file: string) => ReturnType<typeof peMachine> = peMachine): string | null {
   if (engine === 'opencode' && /\.exe$/i.test(program) && machine(program) === 'arm64') {
     return 'OpenCode does not run on Windows on Arm yet: its Arm build stops before its screen opens. Use another engine on this computer.'
-    // Text B: 'OpenCode\'s Arm build for Windows stops before its screen opens. Install its x64 build, which Windows on Arm '
-    //   + 'runs: <the command step 1.4 proved>, then try again.'
   }
   return null
 }
@@ -11892,11 +12358,11 @@ export function windowsEngineArgv(engine: string, argv: readonly string[], optio
 
 - [ ] **Step 7: Windows check and record.**
   - Outcomes B and C:
-    - Build and copy the bundle (E2E recipe step 3), restart the E2E daemon, then run
-      `ssh admin@192.168.65.3 "C:\work\e2e\run.cmd create opencode"`.
+    - Build and copy the B4 install, and start (or restart) the B4 daemon (B4 conventions; `C:\work\e2e` is not
+      touched), then run `ssh admin@192.168.65.3 "C:\work\b4\run.cmd create opencode"`.
     - Expected: `create opencode → ENGINE_LAUNCH_REFUSED OpenCode does not run on Windows on Arm yet…` (or text B),
       and no new pane in `run.cmd list`.
-    - Append the output to `evidence/opencode-arm64.log`.
+    - Append the output to `evidence/opencode-arm64.log`, then stop the B4 daemon (`C:\work\b4\stop.cmd`).
   - In `docs/testing/windows-pty-e2e.md`, edit F14 (line 405-406) and the last known limit (line 428) to state the
     outcome, the version measured, and what a person sees. For outcome A, give the version that works.
 
@@ -11991,14 +12457,14 @@ export function launchSearchNames(command: string, recipeNames: readonly string[
 
 - [ ] **Step 5: Verify on the VM.** Record the output in `cli/scripts/windows-pty-e2e/evidence/commandcode.log`.
   1. `ssh admin@192.168.65.3 "npm i -g command-code@latest"` (it needs Node ≥ 22; the VM has 24.20.0).
-  2. Build and copy the bundle (E2E recipe step 3) and restart the E2E daemon. This task runs after B4.15 step 1, so
-     hooks are on.
-  3. `ssh admin@192.168.65.3 "C:\work\e2e\run.cmd create commandcode"`, then
-     `C:\work\e2e\run.cmd screen <id>` after 15 s, and `C:\work\e2e\run.cmd list`.
+  2. Build and copy the B4 install, and restart the B4 daemon (B4 conventions; `C:\work\e2e` is not touched). This
+     task runs after B4.15 step 1, so hooks are on.
+  3. `ssh admin@192.168.65.3 "C:\work\b4\run.cmd create commandcode"`, then
+     `C:\work\b4\run.cmd screen <id>` after 15 s, and `C:\work\b4\run.cmd list`.
   4. `type %USERPROFILE%\.commandcode\settings.json`. Expected: `SessionStart`/`PreToolUse`/`Stop` blocks whose
      command starts with `"…node.exe" "…notify.mjs"`.
-  5. Clean-up: `C:\work\e2e\run.cmd delete <id>`, then `npm uninstall -g command-code`, then
-     `rmdir /s /q %USERPROFILE%\.commandcode`.
+  5. Clean-up: `C:\work\b4\run.cmd delete <id>`, then `npm uninstall -g command-code`, then
+     `rmdir /s /q %USERPROFILE%\.commandcode`, then stop the B4 daemon (`C:\work\b4\stop.cmd`).
 
 - [ ] **Step 6: Decide.**
   - The screen shows Command Code's own interface (not `Microsoft Windows [Version …`) and `launch` is `ready`: F7 is
@@ -12285,11 +12751,12 @@ export async function hooks({ c, args, create, waitReady }: Ctx) {
        - Outcome A: the version that works.
        - Outcome B: the x64 install command.
        - Outcome C: OpenCode is checked on windows-latest instead (step 5).
-  3. `cli/scripts/windows-pty-e2e/vm-sync.sh --cli`. Build the bundle and copy it (recipe step 3). Copy `env.cmd` and
-     the scripts (step 4), rebuild `e2e.mjs` (step 5), and start the daemon with `launch.ps1` (step 6).
-  4. `ssh admin@192.168.65.3 "C:\work\e2e\run.cmd hooks > C:\work\e2e\hooks.out 2>&1 & type C:\work\e2e\hooks.out"`.
+  3. `cli/scripts/windows-pty-e2e/vm-sync.sh --cli`. Build and copy the B4 install (B4 conventions: the bundle, the
+     scripts with this task's `env.cmd`, and `e2e.mjs`, all under `C:\work\b4`), and start the B4 daemon with
+     `C:\work\b4\launch.ps1`. `C:\work\e2e` is not touched.
+  4. `ssh admin@192.168.65.3 "C:\work\b4\run.cmd hooks > C:\work\b4\hooks.out 2>&1 & type C:\work\b4\hooks.out"`.
      Copy the output to `cli/scripts/windows-pty-e2e/evidence/hooks.log`, together with the `[hooks]` lines of
-     `C:\work\e2e\daemon.log`. Expected:
+     `C:\work\b4\daemon.log`. Expected:
      - `SUMMARY 4/4 passed`. Outcome C on the arm64 VM is 3/3 with `hooks claude codex kilo`, and OpenCode in step 5.
      - The daemon log shows "installed Claude session + turn … hooks" and "recorded Harness's own Codex hooks as
        reviewed".
@@ -12302,16 +12769,16 @@ export async function hooks({ c, args, create, waitReady }: Ctx) {
      - **Codex review.** The Codex pane shows no "Hooks need review". If it does, `codex app-server` `hooks/list` names
        the key Codex expects. Compare it with the record in `config.toml`. If they differ, spell `settingsFile` for
        win32 in `prepareReviewed` (`kit/hookReview.ts`) the way Codex does, with a unit test, and run step 4 again.
-     - **F5/F6.** Stop (`run.cmd delete <claude id>`) is no longer refused, and resume reopens the conversation
-       (`run.cmd resume <id>`, `resumed: true`). F5 and F6 needed a bound `sessionId`.
+     - **F5/F6.** Stop (`C:\work\b4\run.cmd delete <claude id>`) is no longer refused, and resume reopens the
+       conversation (`C:\work\b4\run.cmd resume <id>`, `resumed: true`). F5 and F6 needed a bound `sessionId`.
      - **Plugin folders.** `dir %USERPROFILE%\.config\opencode\plugin %USERPROFILE%\.config\kilo\plugin` (B4.11 step 5).
   7. Clean up:
      - Delete the agents.
      - Restore the backups, and `del` any engine file that did not exist before.
      - `npm uninstall -g @kilocode/cli`.
      - `rmdir /s /q %USERPROFILE%\.config\kilo %USERPROFILE%\.local\share\kilo`.
-     - Stop the daemon with `stop.cmd`.
-     - Leave `C:\work\e2e` as the recipe leaves it.
+     - Stop the B4 daemon with `C:\work\b4\stop.cmd`.
+     - `C:\work\e2e` was never touched: record its daemon's pid before step 3 and after this step (the same).
 
 - [ ] **Step 5: Record.** In `docs/testing/windows-pty-e2e.md`:
   - Recipe step 7: drop `DISABLE_HOOK_INSTALL=true` from the list.
@@ -12858,6 +13325,7 @@ git commit -m "feat(cli): tell Harness's launchers in ~/.local/bin from everybod
   remover matches the folder whether B1 wrote it expanded or as `%USERPROFILE%\.harness\bin`, any case, with or
   without a trailing backslash or quotes.
 - Produces: `powershellPath(env?): string`, `encodedCommandArgs(script: string): string[]`,
+  `withUtf8Output(script: string): string` (every script `runPowershell` runs prints UTF-8),
   `type PowershellRun = (script: string, inputs?: Record<string, string>) => PowershellResult`, `runPowershell`;
   `expandWindowsVariables(entry, env)`, `withoutPathEntry(value: string, folder: string, env): string | null`,
   `removeUserPathEntry(folder: string, run: PowershellRun, env?, name?): PathRemoval`,
@@ -12869,7 +13337,7 @@ git commit -m "feat(cli): tell Harness's launchers in ~/.local/bin from everybod
 
 ```ts
 import { describe, expect, it } from 'vitest'
-import { encodedCommandArgs, powershellPath, type PowershellResult } from '../windows/powershell.js'
+import { encodedCommandArgs, powershellPath, withUtf8Output, type PowershellResult } from '../windows/powershell.js'
 import { expandWindowsVariables, removeUserPathEntry, withoutPathEntry } from './windowsPath.js'
 
 const env = { USERPROFILE: 'C:\\Users\\u', LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }
@@ -12899,6 +13367,11 @@ describe('powershell', () => {
     const args = encodedCommandArgs('Write-Output "é"')
     expect(args.slice(0, 5)).toEqual(['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand'])
     expect(Buffer.from(args[5], 'base64').toString('utf16le')).toBe('Write-Output "é"')
+  })
+
+  it('makes every script print UTF-8, so a non-ASCII PATH entry reaches Node unchanged', () => {
+    // Into a pipe, Windows PowerShell writes the console's OEM code page: a profile named `Jö` would come back changed.
+    expect(withUtf8Output('Write-Output 1')).toBe('[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\nWrite-Output 1')
   })
 })
 
@@ -12957,6 +13430,22 @@ describe.runIf(process.platform === 'win32')('removeUserPathEntry on this accoun
       runPowershell(`[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true).DeleteValue('${name}', $false)`)
     }
   })
+
+  it('removes a folder under a non-ASCII profile, and keeps a non-ASCII entry byte for byte', () => {
+    const name = `HarnessUninstallTestU${process.pid}`
+    const profile = 'C:\\Users\\J\u00f6 \u65e5'
+    const kept = `${profile}\\tools`
+    const inputs = { HARNESS_TEST_NAME: name, HARNESS_TEST_VALUE: `${kept};${profile}\\.harness\\bin` }
+    const set = runPowershell(`[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true).SetValue($env:HARNESS_TEST_NAME, $env:HARNESS_TEST_VALUE, [Microsoft.Win32.RegistryValueKind]::ExpandString)`, inputs)
+    expect(set.status, set.stderr).toBe(0)
+    try {
+      expect(removeUserPathEntry(`${profile}\\.harness\\bin`, runPowershell, process.env, name).state).toBe('removed')
+      const read = runPowershell(`[Console]::Out.Write([Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment').GetValue($env:HARNESS_TEST_NAME, '', 'DoNotExpandEnvironmentNames'))`, inputs)
+      expect(read.stdout).toBe(kept)
+    } finally {
+      runPowershell(`[Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true).DeleteValue($env:HARNESS_TEST_NAME, $false)`, inputs)
+    }
+  })
 })
 ```
 
@@ -12986,11 +13475,20 @@ export function encodedCommandArgs(script: string): string[] {
   return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]
 }
 
+/**
+ * [script], printing UTF-8. Into a pipe Windows PowerShell 5.1 writes the console's OEM code page, which Node would
+ * decode as UTF-8: a PATH entry under a profile named `Jö` or `日` would never match, and one written back would hold
+ * U+FFFD. Every script runPowershell runs starts with this line.
+ */
+export function withUtf8Output(script: string): string {
+  return `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n${script}`
+}
+
 export interface PowershellResult { status: number | null; stdout: string; stderr: string; error?: Error }
 export type PowershellRun = (script: string, inputs?: Record<string, string>) => PowershellResult
 
 export const runPowershell: PowershellRun = (script, inputs = {}) => {
-  const result = spawnSync(powershellPath(), encodedCommandArgs(script), {
+  const result = spawnSync(powershellPath(), encodedCommandArgs(withUtf8Output(script)), {
     env: { ...process.env, ...inputs }, encoding: 'utf8', timeout: POWERSHELL_TIMEOUT_MS, windowsHide: true,
   })
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '', ...(result.error ? { error: result.error } : {}) }
@@ -13070,12 +13568,12 @@ export function removeUserPathEntry(folder: string, run: PowershellRun, env: Nod
 - [ ] **Step 4: Run it to see it pass**
 
 Run: `cd cli && npx vitest run src/lib/uninstall/windowsPath.spec.ts src/lib/uninstall/windowsPath.real.spec.ts && npx tsc --noEmit`
-Expected: 7 pass, the real spec skipped on the Mac; typecheck clean.
+Expected: 8 pass, the real spec skipped on the Mac; typecheck clean.
 
 - [ ] **Step 5: Windows verification (VM)**
 
 Run: `cli/scripts/windows-pty-e2e/vm-sync.sh --cli && ssh admin@192.168.65.3 "cd /d C:\work\oh\cli && (if not exist node_modules npm ci) && npx vitest run src/lib/uninstall/windowsPath"`
-Expected: 8 pass, the real spec included. Afterwards
+Expected: 10 pass, the two real cases included (the non-ASCII one is the code page check). Afterwards
 `ssh admin@192.168.65.3 "reg query HKCU\Environment"` shows no `HarnessUninstallTest*` value.
 
 - [ ] **Step 6: Commit**
@@ -13440,12 +13938,12 @@ export function finalRemovalDeps(): FinalRemovalDeps {
 - [ ] **Step 4: Run it to see it pass**
 
 Run: `cd cli && npx vitest run src/lib/uninstall/removal.spec.ts src/lib/uninstall/removal.real.spec.ts && npx tsc --noEmit`
-Expected: 10 pass, the real spec skipped on the Mac; typecheck clean.
+Expected: 9 pass, the real spec skipped on the Mac; typecheck clean.
 
 - [ ] **Step 5: Windows verification (VM)**
 
 Run: `cli/scripts/windows-pty-e2e/vm-sync.sh --cli && ssh admin@192.168.65.3 "cd /d C:\work\oh\cli && npx vitest run src/lib/uninstall/removal"`
-Expected: 11 pass including "removes the tree once the process has exited". Then check that
+Expected: 10 pass including "removes the tree once the process has exited". Then check that
 `ssh admin@192.168.65.3 "dir %TEMP%\harness-uninstall-*"` reports `File Not Found`.
 
 - [ ] **Step 6: Commit**
@@ -13460,8 +13958,9 @@ git commit -m "feat(cli): plan what harness uninstall removes; on Windows, remov
 **Files**
 - Create: `cli/src/engines/kit/hookRemoval.ts`
 - Create: `cli/src/engines/kit/hookRemoval.spec.ts`
-- Modify: `cli/src/engines/kit/hookSettings.ts`. Line 113 `function harnessRules(` becomes `export function harnessRules(`.
-  Line 160 `const RULES_HEADER =` becomes `export const RULES_HEADER =`. No other change.
+- Modify: `cli/src/engines/kit/hookSettings.ts`. `function harnessRules(` becomes `export function harnessRules(`, and
+  `const RULES_HEADER =` becomes `export const RULES_HEADER =` (find each by name: B4.6 moved both from today's lines
+  113 and 160). No other change.
 
 **Interfaces**
 - Consumes: the recognizers `isOurs`, `isManagedHookCommand`, `foreignHookBlocks` (`engines/kit/notifyHooks.ts:74-133`),
@@ -13707,12 +14206,12 @@ export async function removeOwnedFile(file: string, owned: (content: string) => 
 - [ ] **Step 4: Run it to see it pass**
 
 Run: `cd cli && npx vitest run src/engines/kit/hookRemoval.spec.ts src/engines/kit/hookSettings.spec.ts src/engines/kit/hookReview.spec.ts && npx tsc --noEmit`
-Expected: the 9 new tests pass (the Windows runner block skipped); the existing hook suites are unchanged.
+Expected: the 7 new tests pass (the Windows runner block skipped); the existing hook suites are unchanged.
 
 - [ ] **Step 5: Windows verification (VM)**
 
 Run: `cli/scripts/windows-pty-e2e/vm-sync.sh --cli && ssh admin@192.168.65.3 "cd /d C:\work\oh\cli && npx vitest run src/engines/kit/hookRemoval.spec.ts"`
-Expected: 13 pass, including the 4 runner cases. If one fails, B4's recognizer does not accept that runner's form.
+Expected: 11 pass, including the 4 runner cases. If one fails, B4's recognizer does not accept that runner's form.
 Fix it in `notifyHooks.ts` (B4's code) with that case as its test, before going on.
 
 - [ ] **Step 6: Commit**
@@ -14414,7 +14913,7 @@ git commit -m "feat(cli): stop every harness through the daemon for harness unin
 **Interfaces**
 - Consumes: B5.1-B5.8; `platformDaemonDeps()` (`lib/platformDaemon.ts:84`) and its `PlatformService`
   `inspect()`, `unregister()`, `os` (`harnessd/platform.ts:324-520`). B3 adds `'taskscheduler'` there:
-  `unregister()` deletes `\Harness\harnessd`, and `stopDaemonProcess()` (`lib/daemonStop.ts:73`) stops a Windows
+  `unregister()` deletes this user's task, `taskName(<user>)` (`Harness harnessd (<user>)`), and `stopDaemonProcess()` (`lib/daemonStop.ts:73`) stops a Windows
   master over the pipe. Also `withSpawnLock` (`lib/daemonSpawnLock.ts:318`), `readPid`, `isAlive`
   (`lib/daemonState.ts:31,38`), `AUTH_DIR` (`lib/authSession.ts:53`), `warnIfGridSignInRemains`
   (`lib/gridCredentials.ts:86`), `env.HARNESS_BIN_DIR`, `ADAPTER_CLI_DIR`, `ADAPTER_DATA_DIR`, `HARNESS_PTY_DIR`.
@@ -14892,19 +15391,61 @@ Expected: `✓ removed the PATH line Harness added to ~/.zshrc`, `✓ removed ~/
 `$T/home` has no `.harness`, and `.zshrc` is empty. Run `npx tsx --version` first if `--import tsx` is unknown. With an
 older tsx, use `npx tsx src/cli.ts uninstall --yes` under the same `env -i` and `PATH` that holds node.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Review Focus 5 — uninstall of a broken or half install (before this task's commit).** An install
+  that failed midway, or one whose daemon is down, task missing and `cli\current` gone, must still uninstall: exit 0,
+  no error line and no new message, and what is there removed. This is pinned at the command level. `harness.cmd`
+  itself cannot run without `cli\current`: its `:broken` branch keeps telling the person to run the installer again
+  (B1.8). Re-running install.ps1 repairs a half install, and `harness uninstall` then works (B5.14 checks that end to
+  end). Add to `cli/src/lib/uninstall/command.spec.ts`, inside `describe('harness uninstall')`:
+
+```ts
+  it('uninstalls a half install: no daemon, no task, no terminal host, no cli\\current, only bin\\ and runtime\\', async () => {
+    const half = {
+      platform: 'win32' as const, cwd: 'C:\\Users\\u', root: 'C:\\Users\\u\\.harness', home: 'C:\\Users\\u',
+      cliDir: 'C:\\Users\\u\\.harness\\cli', dataDir: 'C:\\Users\\u\\.harness\\cli\\data', authDir: 'C:\\Users\\u\\.harness\\auth',
+      daemonPid: () => null, alive: () => false,
+      service: { name: 'Task Scheduler', present: () => false, unregister: () => { throw new Error('there is no task to unregister') } },
+      stopDaemon: async () => ({ pid: null, stopped: false }),
+      endPtyHosts: async () => [],
+      removeHooks: async () => [],
+      removePathEntry: () => ({ kind: 'windows' as const, result: { state: 'absent' as const, folder: 'C:\\Users\\u\\.harness\\bin' } }),
+      // cli\ is gone with its pointer: only bin\ and runtime\ are left.
+      listEntries: (dir: string) => (dir === 'C:\\Users\\u\\.harness' ? [{ name: 'bin', dir: true }, { name: 'runtime', dir: true }] : []),
+      exists: () => false,
+    }
+    let planned: string[] = []
+    const t = fake({
+      ...half,
+      scheduleFinalRemoval: (plan) => { planned = plan.remove.map((target) => target.path.split('\\').at(-1)!); return { ok: true, script: 'C:\\T\\h.cmd', log: 'C:\\T\\h.log', via: 'wmi' } },
+    })
+    expect(await uninstallCommand(['--yes'], t.deps)).toBe(0)
+    expect(t.err).toEqual([])
+    // Each step that found nothing said nothing: no harness, task, daemon, terminal host, hook or PATH line.
+    expect(t.out).toEqual(['✓ ~\\.harness goes once this command has exited (anything left is listed in C:\\T\\h.log)', 'Harness is uninstalled.'])
+    expect(t.calls).toEqual(['lock', 'afterword'])
+    expect(planned.sort()).toEqual(['bin', 'runtime'])
+    // A daemon that does not answer but whose pid is alive still ends it before anything is deleted (the existing rule).
+    const stuck = fake({
+      ...half, daemonPid: () => 4242, alive: (pid) => pid === 4242,
+      stopAgents: async () => ({ stopped: 0, failed: [], unreachable: 'no answer' }),
+      stopDaemon: async () => ({ pid: 4242, stopped: false }),
+    })
+    expect(await uninstallCommand(['--yes'], stuck.deps)).toBe(1)
+    expect(stuck.calls.some((call) => call.startsWith('final'))).toBe(false)
+    expect(stuck.err).toEqual(['✗ the Harness daemon (pid 4242) did not stop. Nothing was deleted: run harness uninstall again once it has stopped.'])
+  })
+```
+
+Run: `cd cli && npx vitest run src/lib/uninstall/command.spec.ts`
+Expected: pass. The case pins what Step 3 already does; if it fails, `uninstallCommand` prints or errors on a step
+that found nothing, and that is the defect to fix.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add cli/src/lib/uninstall/command.ts cli/src/lib/uninstall/command.spec.ts cli/src/lib/uninstall/deps.ts cli/src/cli.ts
 git commit -m "feat(cli): harness uninstall"
 ```
-
-- [ ] **Review Focus 5 — uninstall of a broken or half install (do this before this task's commit).** An install
-  that failed midway, or one whose daemon is down, task missing and `cli\current` gone, must still uninstall. Add to
-  the uninstall command spec, using the existing `fake(overrides)` deps: no daemon answers, no service registered, no
-  pty host discovery file, the CLI pointer missing, only `bin\` and `runtime\` present. Expected: exit 0, every
-  step that found nothing reports "nothing to remove" (not an error), and the files present are removed. A daemon that
-  does not answer but whose pid is alive still aborts before deleting (the existing rule).
 
 ### Task B5.10: End to end on mac and Linux (the e2e suite)
 
@@ -14999,7 +15540,9 @@ git commit -m "test(e2e): harness uninstall under launchd and systemd"
 - Modify: `cli/src/scripts/windowsWorkflows.spec.ts` (B1.13: the two references to `windows-pty.yml`)
 - Modify: `pty/src/cli.rs` (B1.3's doc comment on `VERSION`, which names `windows-pty.yml`)
 - Modify: `.github/workflows/ci.yml:90` (actionlint's list)
-- Modify: `docs/superpowers/specs/2026-10-16-windows-native-cli-design.md:36,130,265` (the file name), and
+- Modify: `docs/superpowers/specs/2026-10-16-windows-native-cli-design.md:36,135,273` (the file name: "Current
+  state", "Publishing" and "Testing"'s Rust line; not line 274, "`windows-pty.yml` becomes `windows.yml`", which
+  stays), and
   `docs/superpowers/specs/2026-10-14-windows-native-pty-host-design.md:341`
   (`"Windows PTY" (.github/workflows/windows-pty.yml)` → `"Windows" (.github/workflows/windows.yml, formerly windows-pty.yml)`)
 - `scripts/ci-plan.py`: no change. It names no workflow file (checked: `grep -n windows scripts/ci-plan.py` is empty),
@@ -15049,7 +15592,8 @@ Expected: no output, exit 0.
 Run: `cd cli && npx vitest run src/scripts/windowsWorkflows.spec.ts && cd ../pty && cargo +stable check --locked`
 Expected: both cases pass; the check is clean.
 Run: `git grep -n "windows-pty.yml" -- ':!docs/superpowers/plans'`
-Expected: only the "formerly windows-pty.yml" mention in the A spec.
+Expected: two hits: the A spec's "formerly windows-pty.yml", and the B spec's "`windows-pty.yml` becomes
+`windows.yml`" (line 274).
 
 - [ ] **Step 3: Commit**
 
@@ -15070,8 +15614,9 @@ git commit -m "ci: the Windows workflow is windows.yml, and runs the uninstall s
   (B1.9), which zips the payload folder and writes `<out>/install-manifest.json`: B1.7's `-Manifest` document, one JSON
   file with the `cli`, `node` and `pty` keys, its files beside it by relative name. `cli/scripts/install.ps1 -Manifest <path>`
   (B1.7, B1.8). B1.13's `windows-pty` job and its `harness-pty-windows-<arch>` artifacts, and its `release` input
-  (B5.11 renamed the file to `windows.yml`). Also from B1: `bin\harness.cmd`, the user PATH entry; from B3: the task
-  `\Harness\harnessd`. From B5.9: `harness uninstall --yes`.
+  (B5.11 renamed the file to `windows.yml`). Also from B1: `bin\harness.cmd`, the user PATH entry; from B3: this user's task
+  `taskName(<user>)`, `Harness harnessd (<user>)` in the root folder (B3.12; the checks name it
+  `"Harness harnessd ($env:USERNAME)"`). From B5.9: `harness uninstall --yes`.
 - Produces: the job `install` on windows-latest (x64) and windows-11-arm (arm64), on-demand runs only;
   `check-install.ps1 -Version <v>` and `check-uninstall.ps1 [-WaitSeconds n] [-HookFiles a,b]`, which the VM end to end
   (B5.14) runs too.
@@ -15094,9 +15639,11 @@ $v = ((& $harness version) | Select-Object -First 1).Trim()
 if ($v -ne $Version) { Fail "harness version says '$v', expected '$Version'" }
 Write-Host "ok   version $v"
 
-schtasks.exe /Query /TN '\Harness\harnessd' /FO LIST /V | Out-Host
-if ($LASTEXITCODE -ne 0) { Fail 'the task \Harness\harnessd is not registered' }
-Write-Host 'ok   task \Harness\harnessd'
+# This user's own task, in the root folder (harnessd/platform.ts taskName: the account name without its domain).
+$task = "Harness harnessd ($env:USERNAME)"
+schtasks.exe /Query /TN $task /FO LIST /V | Out-Host
+if ($LASTEXITCODE -ne 0) { Fail "the task '$task' is not registered" }
+Write-Host "ok   task $task"
 
 $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
 $raw = $k.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
@@ -15133,8 +15680,9 @@ $deadline = (Get-Date).AddSeconds($WaitSeconds)
 while ((Test-Path $root) -and (Get-Date) -lt $deadline) { Start-Sleep 1 }
 $left = @()
 if (Test-Path $root) { $left += "files: $root holds " + ((Get-ChildItem -Force -Recurse $root | Select-Object -First 20 | ForEach-Object FullName) -join ', ') }
-schtasks.exe /Query /TN '\Harness\harnessd' 2>$null | Out-Null
-if ($LASTEXITCODE -eq 0) { $left += 'task: \Harness\harnessd is still registered' }
+$task = "Harness harnessd ($env:USERNAME)"   # harnessd/platform.ts taskName
+schtasks.exe /Query /TN $task 2>$null | Out-Null
+if ($LASTEXITCODE -eq 0) { $left += "task: $task is still registered" }
 $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
 $raw = if ($k) { $k.GetValue('Path', '', 'DoNotExpandEnvironmentNames') } else { '' }
 $bin = (Join-Path $root 'bin').ToLower()
@@ -15269,7 +15817,7 @@ Expected: actionlint silent; B1's workflow and manifest specs still pass.
 Run: `gh workflow run windows.yml --ref feat/windows-native-cli && sleep 5 && gh run list --workflow windows.yml --limit 1`, then
 `gh run watch <id> --exit-status`.
 Expected: `windows-pty` (2 jobs) and `install` (2 jobs) green. In each install log: `ok   version 0.0.0-dev.ci<run>`,
-`ok   task \Harness\harnessd`, `ok   PATH has …`, `● running`, `ok   terminal … on harness-pty pid …`, then
+`ok   task Harness harnessd (<the runner's user>)`, `ok   PATH has …`, `● running`, `ok   terminal … on harness-pty pid …`, then
 `clean: no file, task, PATH entry, process or hook of Harness is left`. Record the run link in the PR. If the hosted
 runner's session cannot run a logon task, record the reason from the "Install" step (install.ps1's warning, then the
 `::notice::` line) and check that `harness start` started the daemon directly through `harness-launch.exe` (B3.15,
@@ -15490,7 +16038,9 @@ site=${SITE:?set SITE to a folder for the update server}
 bind=${VM_BIND:-192.168.65.1}
 port=${VM_PORT:-8799}
 cli="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)/cli"
-prepend() { node -e 'const [f, s] = process.argv.slice(1); const fs = require("fs"); fs.writeFileSync(f, s + "\n" + fs.readFileSync(f, "utf8"))' "$1" "$2"; }
+# A statement at the top of a bundle, after its `#!/usr/bin/env node` line: before it, the shebang would be line 2,
+# a SyntaxError, and break-core would fail the canary instead of dying on probation.
+prepend() { node -e 'const [f, s] = process.argv.slice(1); const fs = require("fs"); fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace(/^(#![^\n]*\n)?/, (m) => m + s + "\n"))' "$1" "$2"; }
 case "${1:-}" in
   build|break-canary|break-core)
     version=$2 out="$site/$2"
@@ -15523,6 +16073,9 @@ Expected: no output. If the `tsc` call cannot resolve `../../src/lib/controlPlan
 usage line, which shows the module loaded.
 Run: `SITE=$(mktemp -d) cli/scripts/windows-cli-e2e/serve-updates.sh build 9.9.1 && SITE=… cli/scripts/windows-cli-e2e/serve-updates.sh offer 9.9.1`
 (same `SITE`). Expected: two sha256 lines, then a manifest whose `cli.cli.url` is `http://192.168.65.1:8799/9.9.1/cli.js`.
+Run: `S=$(mktemp -d) && SITE=$S cli/scripts/windows-cli-e2e/serve-updates.sh break-core 9.9.2 >/dev/null && head -2 "$S/9.9.2/cli.js"`.
+Expected: line 1 is `#!/usr/bin/env node` and line 2 is `if (process.argv[2] === "__run") process.exit(1);`: the
+shebang stays first, so the broken build still passes the canary (`node cli.js version`) and dies only as the core.
 
 - [ ] **Step 4: Commit**
 
@@ -15580,7 +16133,7 @@ ssh hxe2e@$VM "setx PORT 18474 & setx ADAPTER_UPDATE_URL http://192.168.65.1:879
 ```
 Expected: both accounts in `Users` and not in `Administrators`; `whoami` answers `<computer>\hxe2e` and `…\hxe2e2` by key;
 `%USERPROFILE%` of hxe2e has no `.harness`. `PORT` and `ADAPTER_UPDATE_URL` are user variables, which the task's
-processes inherit. They are test settings, not Harness's, and Step 8 removes them.
+processes inherit. They are test settings, not Harness's, and Step 9 removes them.
 
 - [ ] **Step 2: Scenario 1. Install from staging with `irm`**
 
@@ -15589,6 +16142,9 @@ cmd='irm '"$STAGING_INSTALL_URL"' | iex'
 enc=$(printf '%s' "$cmd" | iconv -f UTF-8 -t UTF-16LE | base64 | tr -d '\n')
 time ssh hxe2e@$VM "powershell -NoProfile -EncodedCommand $enc" | tee "$EV/s1-install.log"
 N=$(ssh hxe2e@$VM "harness version" | tr -d '\r'); echo "N=$N" | tee -a "$EV/s1-install.log"
+# Over SSH there is no signed-in session, so the task cannot run, and install.ps1 starts nothing itself (B1.8): start
+# the daemon as the installer's guide says, as the CI install job does (B5.12). Step 3 shows the task at logon.
+ssh hxe2e@$VM "harness status | findstr running || harness start" | tee -a "$EV/s1-install.log"
 cli/scripts/windows-cli-e2e/vm.sh hxe2e cli/scripts/windows-ci/check-install.ps1 -Version "$N" | tee "$EV/s1-check.log"
 cli/scripts/windows-cli-e2e/vm.sh admin cli/scripts/windows-cli-e2e/procs.ps1 -User hxe2e | tee -a "$EV/s1-check.log"
 ssh admin@$VM "powershell -NoProfile -Command \"Get-WinEvent -LogName 'Microsoft-Windows-Windows Defender/Operational' -MaxEvents 30 | Where-Object Id -in 1116,1117 | Format-List TimeCreated,Message\"" | tee "$EV/s1-defender.log"
@@ -15661,7 +16217,7 @@ cli/scripts/windows-cli-e2e/serve-updates.sh break-canary "$N2" && cli/scripts/w
 sleep 180; ssh hxe2e@$VM "harness version & type %USERPROFILE%\.harness\cli\current & dir %USERPROFILE%\.harness\cli & findstr /i canary %USERPROFILE%\.harness\cli\data\harness.log" | tee -a "$EV/s4-canary.log"
 cli/scripts/windows-cli-e2e/serve-updates.sh break-core "$N3" && cli/scripts/windows-cli-e2e/serve-updates.sh offer "$N3" | tee "$EV/s4-probation.log"
 for i in $(seq 1 60); do ssh hxe2e@$VM "findstr /i \"rolled rollback rejected\" %USERPROFILE%\.harness\cli\data\harness.log" | grep -qi "$N3" && break; sleep 10; done
-ssh hxe2e@$VM "harness version & harness status & type %USERPROFILE%\.harness\cli\current & type %USERPROFILE%\.harness\cli\data\update-rejected.json & dir %USERPROFILE%\.harness\cli" | tee -a "$EV/s4-probation.log"
+ssh hxe2e@$VM "harness version & harness status & type %USERPROFILE%\.harness\cli\current & type %USERPROFILE%\.harness\cli\update-rejected.json & dir %USERPROFILE%\.harness\cli" | tee -a "$EV/s4-probation.log"
 ssh hxe2e@$VM "e2e\run.cmd list & e2e\run.cmd type <TERM> \"Write-Output ('ROLLBACK_' + (40+2))\r\" 3000" | tee -a "$EV/s4-probation.log"
 ```
 Pass: the canary-failing N+2 never becomes `cli\current` (it stays N+1, and the log names the canary failure). The
@@ -15700,21 +16256,68 @@ not run on this VM (OpenCode on ARM64 if B4 could not fix it, F14) is recorded w
 Also resume Claude Code once (`e2e\run.cmd delete <id>` then `e2e\run.cmd resume <id>`). It must come back `resumed: true`:
 hooks fix A's F6.
 
-- [ ] **Step 7: Scenario 6. Another local user cannot make a trusted call**
+- [ ] **Step 7: Scenario 6. A second user installs too, and cannot make a trusted call to the first**
 
 ```bash
+# hxe2e2 installs as well (Review Focus 1): its own task, pipe and daemon beside hxe2e's. Its own port, and no update
+# from anywhere during the run.
+ssh hxe2e2@$VM "setx PORT 18476 & setx ADAPTER_UPDATE_DISABLE true" | tee "$EV/s6-second-user.log"
+ssh hxe2e2@$VM "powershell -NoProfile -EncodedCommand $enc" | tee -a "$EV/s6-second-user.log"
+ssh hxe2e2@$VM "harness status | findstr running || harness start" | tee -a "$EV/s6-second-user.log"
+cli/scripts/windows-cli-e2e/vm.sh hxe2e2 cli/scripts/windows-ci/check-install.ps1 -Version "$N" | tee -a "$EV/s6-second-user.log"
+# Both tasks, each named for its user (harnessd/platform.ts taskName), in the root folder.
+ssh admin@$VM "schtasks /Query /FO LIST | findstr /C:\"Harness harnessd (\"" | tee -a "$EV/s6-second-user.log"
 cli/scripts/windows-cli-e2e/vm.sh hxe2e2 cli/scripts/windows-cli-e2e/trust-probe.mjs
 ssh hxe2e2@$VM "\"C:\Program Files\nodejs\node.exe\" e2e\trust-probe.mjs C:\Users\hxe2e 18474" | tee "$EV/s6-other-user.log"
 ssh hxe2e@$VM "harness status" | tee -a "$EV/s6-other-user.log"
+# hxe2e2 goes again; hxe2e's daemon and task are not touched by it.
+ssh hxe2e2@$VM "cd /d %USERPROFILE% & harness uninstall --yes" | tee -a "$EV/s6-second-user.log"
+cli/scripts/windows-cli-e2e/vm.sh hxe2e2 cli/scripts/windows-ci/check-uninstall.ps1 | tee -a "$EV/s6-second-user.log"
+ssh hxe2e@$VM "harness status & schtasks /Query /TN \"Harness harnessd (hxe2e)\"" | tee -a "$EV/s6-second-user.log"
+ssh hxe2e2@$VM "reg delete HKCU\Environment /v PORT /f & reg delete HKCU\Environment /v ADAPTER_UPDATE_DISABLE /f"
 ```
-Pass: every `read …` line is `refused EPERM` or `EACCES`. Every `POST /api/auth/handoff` over a pipe answers a refusal
+Pass, second user: hxe2e2's `check-install` is all `ok` with `ok   task Harness harnessd (hxe2e2)`; `schtasks` lists
+both `\Harness harnessd (hxe2e)` and `\Harness harnessd (hxe2e2)`; after hxe2e2's uninstall its `check-uninstall` prints
+`clean`, while hxe2e's daemon still runs and its task `Harness harnessd (hxe2e)` is still registered.
+Pass, trust: every `read …` line is `refused EPERM` or `EACCES`. Every `POST /api/auth/handoff` over a pipe answers a refusal
 (401 or 403). The loopback one answers `403`. hxe2e's own trusted path still works: `harness status` reports through
 the pipe, and the desktop's Add Phone code works as in Step 6. Record each status code and the pipe names the
 other user could list. If anything is `READABLE`, or a trusted call succeeds, stop. Record only "fail, reported" in
 the doc and tell the owner, with the evidence kept out of the repository. The repository is public, and a security
 finding is reported tersely, without exploit text.
 
-- [ ] **Step 8: Scenario 7. Uninstall leaves nothing**
+- [ ] **Step 8: Review Focus 4 — the installer run again over a live install.** People re-run the one-line installer
+  to "fix" or update. Ruling (B3.15): when the CLI version changed and `harness status` reports a running daemon,
+  install.ps1 moves the daemon to the new build by restarting it once, `harness stop` then `harness start`. Agents keep
+  running: the terminal host is independent of the daemon, and the new core reattaches them. The same version
+  restarts nothing. As hxe2e, with its daemon on N+1 (Steps 4-5) and a PowerShell agent printing a counter. Stop the
+  Mac's update server first (Ctrl-C in its terminal), so no update lands during this step.
+
+```bash
+ssh hxe2e@$VM "e2e\run.cmd create terminal" | tee "$EV/rf4-reinstall.log"     # → COUNTER id
+ssh hxe2e@$VM "e2e\run.cmd type <COUNTER> \"1..100000 | % { 'COUNT_' + \$_; Start-Sleep 1 }\r\" 3000" | tee -a "$EV/rf4-reinstall.log"
+ssh hxe2e@$VM "harness version & harness status" | tee -a "$EV/rf4-reinstall.log"
+cli/scripts/windows-cli-e2e/vm.sh admin cli/scripts/windows-cli-e2e/procs.ps1 -User hxe2e | tee -a "$EV/rf4-reinstall.log"
+# 1. The installer again, over the live install, onto another version: staging's N, while the daemon runs N+1.
+time ssh hxe2e@$VM "powershell -NoProfile -EncodedCommand $enc" | tee -a "$EV/rf4-reinstall.log"
+ssh hxe2e@$VM "harness version & harness status & dir %USERPROFILE%\.harness\cli & e2e\run.cmd list & e2e\run.cmd screen <COUNTER>" | tee -a "$EV/rf4-reinstall.log"
+sleep 5; ssh hxe2e@$VM "e2e\run.cmd screen <COUNTER>" | tee -a "$EV/rf4-reinstall.log"
+cli/scripts/windows-cli-e2e/vm.sh admin cli/scripts/windows-cli-e2e/procs.ps1 -User hxe2e | tee -a "$EV/rf4-reinstall.log"
+cli/scripts/windows-cli-e2e/vm.sh hxe2e cli/scripts/windows-ci/check-install.ps1 -Version "$N" | tee -a "$EV/rf4-reinstall.log"
+# 2. Once more, the same version: nothing to move.
+ssh hxe2e@$VM "powershell -NoProfile -EncodedCommand $enc" | tee -a "$EV/rf4-reinstall.log"
+ssh hxe2e@$VM "harness status" | tee -a "$EV/rf4-reinstall.log"
+cli/scripts/windows-cli-e2e/vm.sh admin cli/scripts/windows-cli-e2e/procs.ps1 -User hxe2e | tee -a "$EV/rf4-reinstall.log"
+```
+Pass: no install fails on a file in use (no "being used by another process" in either run). Run 1 prints
+`Moving the running Harness from <N+1> to <N> (your agents keep running)...`, then `harness version` and
+`harness status` say N, and the master and core pids changed exactly once (`procs.ps1` before and after). `cli\<N>\`
+and `cli\<N+1>\` are both there. The COUNTER terminal keeps its id, its `COUNT_` number is higher on the second
+screen than on the first and never went back to 1, and `harness-pty.exe` keeps its pid and start time. `check-install`
+is all `ok`, so PATH holds one Harness entry. Run 2 prints no `Moving` line, and the master pid is the same before and
+after. Record both runs under "Reinstall over a live install" in the doc (Step 12).
+
+- [ ] **Step 9: Scenario 7. Uninstall leaves nothing**
 
 ```bash
 ssh hxe2e@$VM "cd /d %USERPROFILE% & harness uninstall --yes" | tee "$EV/s7-uninstall.log"
@@ -15732,21 +16335,44 @@ that cannot be found. It also does not print `The batch file cannot be found` af
 (`bin`, `runtime`, the `cli\<version>` folders) is gone. Then uninstall fully with
 `harness uninstall --yes` and run `check-uninstall` again.
 
-- [ ] **Step 9: Uninstall on macOS (this Mac, a throwaway home) and Linux (a container)**
-
-macOS, with real launchd (only when no Harness job is loaded for this user, as it shares the label):
+A half install is repaired by running install.ps1 again, and `harness uninstall` then works (Review Focus 5; B5.9
+pins the command itself). A third round:
 
 ```bash
-launchctl print gui/$(id -u)/ai.autonomous.harness.harnessd >/dev/null 2>&1 && echo "a Harness job is loaded: skip the launchd half" 
+ssh hxe2e@$VM "powershell -NoProfile -EncodedCommand $enc" | tee "$EV/s7-half.log"
+# Half an install: its pointer gone. harness.cmd says to install again (B1.8 :broken), and exits 1.
+ssh hxe2e@$VM "del %USERPROFILE%\.harness\cli\current & harness version & echo exit=%ERRORLEVEL%" | tee -a "$EV/s7-half.log"
+ssh hxe2e@$VM "powershell -NoProfile -EncodedCommand $enc" | tee -a "$EV/s7-half.log"
+ssh hxe2e@$VM "cd /d %USERPROFILE% & harness uninstall --yes" | tee -a "$EV/s7-half.log"
+cli/scripts/windows-cli-e2e/vm.sh hxe2e cli/scripts/windows-ci/check-uninstall.ps1 | tee -a "$EV/s7-half.log"
+```
+Pass: `harness version` prints `Harness is not installed completely. Install it again: …` with `exit=1`; the second
+install succeeds over the half install (`cli\current` = N again); the uninstall prints `Harness is uninstalled.`; and
+`check-uninstall` prints `clean`.
+
+- [ ] **Step 10: Uninstall on macOS (this Mac, a throwaway home) and Linux (a container)**
+
+macOS, with real launchd only when no Harness job is loaded for this user. The job's label is shared, so with the
+person's own Harness job loaded, `harness service install` and `uninstall` here would act on it. Then the launchd half
+is skipped entirely, and the uninstall is tested with no service (`HARNESSD_PLATFORM` unset, as `env -i` leaves it);
+the doc says which ran:
+
+```bash
+if launchctl print gui/$(id -u)/ai.autonomous.harness.harnessd >/dev/null 2>&1; then
+  LAUNCHD=0; echo "a Harness job is loaded for this user: the launchd half is skipped; uninstall runs with no service" | tee "$EV/mac-launchd.log"
+else
+  LAUNCHD=1; echo "no Harness job is loaded: the launchd half runs" | tee "$EV/mac-launchd.log"
+fi
 T=$(mktemp -d /tmp/hx-uninstall.XXXX); mkdir -p "$T/home" "$T/tmux"
 run() { env -i HOME="$T/home" PATH="$T/home/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin" SHELL=/bin/zsh TMUX_TMPDIR="$T/tmux" PORT=18491 "$@"; }
 run bash -c 'curl -fsSL https://cdn.autonomous.ai/harness/cli/install.sh | bash' | tee "$EV/mac-install.log"
 (cd cli && . scripts/lib/build-label.sh && ADAPTER_VERSION="$(harness_build_label "$PWD")" BUNDLE_OUT_DIR="$T/dist" npm run --silent bundle)
 cp "$T/dist/cli.js" "$T/dist/notify.mjs" "$T/home/.harness/cli/"
-run harness service install | tee "$EV/mac-run.log"
+if [ "$LAUNCHD" = 1 ]; then run harness service install; else run harness start; fi | tee "$EV/mac-run.log"
 run harness new terminal "$T/home" --json | tee -a "$EV/mac-run.log"
 run harness uninstall --yes | tee -a "$EV/mac-run.log"
-( ls -la "$T/home" "$T/home/.local/bin"; cat "$T/home/.zshrc"; ls "$T/home/Library/LaunchAgents" 2>&1; launchctl print gui/$(id -u)/ai.autonomous.harness.harnessd 2>&1 | head -1; pgrep -fl "$T/home" || echo "no process" ) | tee -a "$EV/mac-run.log"
+( ls -la "$T/home" "$T/home/.local/bin"; cat "$T/home/.zshrc"; ls "$T/home/Library/LaunchAgents" 2>&1; pgrep -fl "$T/home" || echo "no process" ) | tee -a "$EV/mac-run.log"
+[ "$LAUNCHD" = 1 ] && launchctl print gui/$(id -u)/ai.autonomous.harness.harnessd 2>&1 | head -1 | tee -a "$EV/mac-run.log"
 rm -rf "$T"
 ```
 
@@ -15764,21 +16390,22 @@ docker rm -f hx-uninstall
 ```
 Pass on both: `Harness is uninstalled.`, exit 0. No `~/.harness`. No `harness`/`hn`/`tmux` in `~/.local/bin` (the folder
 itself stays). No `# added by harness installer` line. No Harness process. On the Mac, no plist in
-`Library/LaunchAgents` and `launchctl print` says the job is not found. Record the harness count the uninstall
-stopped and how long it took.
+`Library/LaunchAgents`, and, when the launchd half ran, `launchctl print` says the job is not found. Record the harness
+count the uninstall stopped, how long it took, and (from `mac-launchd.log`) whether the launchd half ran or was
+skipped, in the doc's "Uninstall on macOS and Linux" section.
 
-- [ ] **Step 10: Clean-up on the VM, and the account**
+- [ ] **Step 11: Clean-up on the VM, and the account**
 
 ```bash
-ssh admin@$VM "net user hxe2e /delete & net user hxe2e2 /delete & powershell -NoProfile -Command \"Get-CimInstance Win32_UserProfile | Where-Object { $_.LocalPath -like '*\hxe2e*' } | Remove-CimInstance\" & schtasks /Query /TN \Harness\ 2>&1" | tee "$EV/cleanup.log"
+ssh admin@$VM "net user hxe2e /delete & net user hxe2e2 /delete & powershell -NoProfile -Command \"Get-CimInstance Win32_UserProfile | Where-Object { $_.LocalPath -like '*\hxe2e*' } | Remove-CimInstance\" & (schtasks /Query /FO LIST | findstr /C:\"Harness harnessd (\" || echo no Harness task left)" | tee "$EV/cleanup.log"
 harness machines --json | tee -a "$EV/cleanup.log"     # find the VM's machine signed in in Step 6
 harness machines delete <that id> --yes | tee -a "$EV/cleanup.log"
 rm -f "$SCR/vm-users.txt"
 ```
 Record that `C:\work\e2e` was not touched (its daemon's pid before Step 1 and after this step), the users and profiles
-are gone, and the machine is gone from the account.
+are gone, no `Harness harnessd (<user>)` task is left (`no Harness task left`), and the machine is gone from the account.
 
-- [ ] **Step 11: Write `docs/testing/windows-cli-e2e.md`.** Use these sections, filled from the evidence, and keep
+- [ ] **Step 12: Write `docs/testing/windows-cli-e2e.md`.** Use these sections, filled from the evidence, and keep
   B3.21's "B3 lifecycle" section after "Known limits":
 
 ```markdown
@@ -15805,21 +16432,19 @@ password, token or credential is in them.
 | 4 | Canary-failing N+2 never used; N+3 failing on probation rolled back | | |
 | 5 | Claude Code, Codex, OpenCode and Kilo hooks report to the Mac desktop (remote) | | |
 | 6 | Another local user: no file readable, no trusted call accepted | | |
-| 7 | Uninstall: no task, no PATH entry, no files, no process, no hook; --keep-data keeps the data | | |
-| — | Uninstall on macOS (launchd) and Linux | | |
+| 7 | Uninstall: no task, no PATH entry, no files, no process, no hook; --keep-data keeps the data; a half install repaired, then uninstalled | | |
+| RF4 | Reinstall over a live install: one restart onto the new build, agents keep running; the same version restarts nothing | | |
+| — | Uninstall on macOS (launchd, or no service when a Harness job is loaded) and Linux | | |
 | — | Windows workflow run (`windows.yml`, install job) | <run link> | |
 
 ## Setup recipe
 ## Scenario results
-
-- [ ] **Review Focus 4 — the installer run again over a live install.** People re-run the one-line installer to
-  "fix" or update. As the owner user, with the daemon running and a PowerShell agent printing a counter, run the
-  staging `irm … | iex` again (and once more with a newer local build as the manifest). Expected: no "file in use"
-  failure; the new CLI lands in its own `cli\<ver>\` folder and reaches the core by the normal handover; the
-  agent's counter keeps going (it is never restarted); PATH has one Harness entry. Record it in
-  `docs/testing/windows-cli-e2e.md` under "Reinstall over a live install".
-
-### Scenario 1 … ### Scenario 7, ### Uninstall on macOS and Linux
+### Scenario 1 … ### Scenario 7
+### Reinstall over a live install
+<Step 8: both runs, the `Moving the running Harness …` line, the master and core pids before and after, the
+COUNTER screens, `harness-pty.exe`'s pid.>
+### Uninstall on macOS and Linux
+<whether the launchd half ran, or was skipped because a Harness job was loaded (the uninstall then ran with no service).>
 ## Fixes made during the run
 ## Findings not fixed
 ## Known limits
@@ -15831,7 +16456,7 @@ versions, durations, status codes). A failure is a failure: a fix made during th
 test that fails without it, as A's F1-F4 did. Then the scenario is run again and both runs are recorded. A finding
 not fixed is numbered (G1, G2, …) with what was seen and where in the code it comes from.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 13: Commit**
 
 ```bash
 git add docs/testing/windows-cli-e2e.md cli/scripts/windows-cli-e2e/evidence
