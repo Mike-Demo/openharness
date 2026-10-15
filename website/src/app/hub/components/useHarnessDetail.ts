@@ -16,16 +16,22 @@ export function useHarnessDetail(id: string, initial: OpenHarness | null, onSign
   // A failed read of a page already drawn: said aloud, since without it the author's Edit silently vanishes.
   const [failed, setFailed] = useState(false);
   const revision = useRef(0), writing = useRef(false), loaded = useRef(!!initial);
+  // When the publication drawn here was last edited: a refresh that reports a later edit reads it again.
+  const version = useRef(initial?.updatedAt ?? null);
 
   /**
-   * A publication never changes: once its files are here, a refresh reads only likes, follows and
-   * comments. A backend older than `/social` answers 404 there, so the full read tells that apart
-   * from an unpublished harness. The page draws only the output, so the full read asks for that file.
+   * Once its files are here, a refresh reads only likes, follows and comments, unless its author has
+   * edited it since. A backend older than `/social` answers 404 there, so the full read tells that
+   * apart from an unpublished harness. The page draws only the output, so the full read asks for that file.
    */
   const read = useCallback(async () => {
     type Page = { harness?: OpenHarness | null; social: SocialState };
     if (loaded.current) {
-      try { return await communityRequest<Page>(`harnesses/${id}/social`); } catch (e) {
+      try {
+        const page = await communityRequest<Page>(`harnesses/${id}/social`);
+        // An older backend says nothing of edits: the drawn page stands, as it did.
+        if (page.social.updatedAt === undefined || page.social.updatedAt === version.current) return page;
+      } catch (e) {
         if (!(e instanceof CommunityError && e.status === 404)) throw e;
       }
     }
@@ -37,7 +43,7 @@ export function useHarnessDetail(id: string, initial: OpenHarness | null, onSign
     try {
       const data = await read();
       if (current !== revision.current) return;
-      if (data.harness) { loaded.current = true; setHarness(data.harness); }
+      if (data.harness) { loaded.current = true; version.current = data.harness.updatedAt ?? null; setHarness(data.harness); }
       setSocial(data.social); setReady(true); setError(''); setFailed(false);
     } catch (e) {
       if (current !== revision.current) return;

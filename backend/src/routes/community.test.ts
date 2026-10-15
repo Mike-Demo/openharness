@@ -21,6 +21,7 @@ const db = vi.hoisted(() => {
       return value instanceof Date ? (row[key] as Date)?.getTime() === value.getTime() : row[key] === value
     })
   }
+  const picked = (row: Row, select?: Record<string, boolean>) => select ? Object.fromEntries(Object.keys(select).map(key => [key, row[key]])) : { ...row }
   const compare = (a: unknown, b: unknown) => a instanceof Date ? a.getTime() - (b as Date).getTime() : typeof a === 'number' ? a - (b as number) : String(a).localeCompare(String(b))
   /** `defaults` stand in for Prisma's on rows a test pushes directly; `unique` refuses a second create, as the index does. */
   function table({ defaults = {}, unique }: { defaults?: Record<string, unknown>; unique?: string[] } = {}) {
@@ -41,8 +42,8 @@ const db = vi.hoisted(() => {
     }
     return {
       rows,
-      findMany: vi.fn(async (query: Query = {}) => find(query).map(row => query.select ? Object.fromEntries(Object.keys(query.select).map(key => [key, row[key]])) : { ...row })),
-      findFirst: vi.fn(async (query: Query) => find(query)[0] || null),
+      findMany: vi.fn(async (query: Query = {}) => find(query).map(row => picked(row, query.select))),
+      findFirst: vi.fn(async (query: Query) => { const row = find(query)[0]; return row ? picked(row, query.select) : null }),
       findUnique: vi.fn(async (query: Query) => find(query)[0] || null),
       count: vi.fn(async (query: Query) => find(query).length),
       groupBy: vi.fn(async (query: Query) => {
@@ -414,6 +415,25 @@ describe('persistent social actions', () => {
     const social = (await call('GET', `harnesses/${id}/social`)).json().data.social
     expect(social).toMatchObject({ forks: 1, commentCount: 101 })
     expect(social.comments).toHaveLength(100)
+  })
+  it('names the publication a fork came from, and says when it is gone', async () => {
+    const id = await publish('alice', { ...sample, title: 'The original' })
+    const fork = await publish('bob', { ...sample, title: 'My version', forkedFrom: id } as typeof sample)
+    const ofStarter = await publish('bob', { ...sample, forkedFrom: starter } as typeof sample)
+    expect((await call('GET', `harnesses/${fork}?files=viewer`)).json().data.harness.origin).toEqual({ title: 'The original', authorName: 'Alice' })
+    expect((await call('GET', `harnesses/${ofStarter}`)).json().data.harness).not.toHaveProperty('origin')
+    expect((await call('GET', `harnesses/${id}`)).json().data.harness).not.toHaveProperty('origin')
+    await call('DELETE', `harnesses/${id}`, 'alice')
+    expect((await call('GET', `harnesses/${fork}`)).json().data.harness.origin).toBeNull()
+  })
+  it('says when its author last edited a publication, for a page drawn before then', async () => {
+    const id = await publish('alice')
+    expect((await call('GET', `harnesses/${id}/social`)).json().data.social.updatedAt).toBeNull()
+    expect((await call('PUT', `harnesses/${id}`, 'alice', { ...sample, title: 'Edited' })).statusCode).toBe(200)
+    const { updatedAt } = (await call('GET', `harnesses/${id}/social`)).json().data.social
+    expect(updatedAt).toBe((await call('GET', `harnesses/${id}`)).json().data.harness.updatedAt)
+    expect(updatedAt).toEqual(expect.any(String))
+    expect((await call('GET', `harnesses/${starter}/social`)).json().data.social.updatedAt).toBeNull()
   })
   it('sends a harness page only its output when asked', async () => {
     const payload = { ...sample, files: [...sample.files, { path: 'src/app.js', content: 'console.log(1)' }] }

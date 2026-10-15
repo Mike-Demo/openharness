@@ -120,6 +120,8 @@ async function socialState(post: Publication, autonomousEnv: string, userId: str
   ])
   return {
     likes, liked: !!liked, following: !!follow, signedIn: !!userId, mine: post.authorId === userId, commentCount, forks,
+    // When its author last edited it: a page drawn before then reads the publication again.
+    updatedAt: 'updatedAt' in post ? post.updatedAt : null,
     comments: comments.reverse().map(row => ({ id: row.id, body: row.body, authorName: row.authorName, createdAt: row.createdAt, parentId: row.parentId, parentAuthorName: row.parentAuthorName, creator: row.userId === post.authorId, mine: row.userId === userId || post.authorId === userId })),
   }
 }
@@ -127,6 +129,16 @@ async function socialState(post: Publication, autonomousEnv: string, userId: str
 async function publication(id: string, autonomousEnv: string) {
   if (communityStarters.has(id)) return { id, authorId: communityStarterAuthor, authorName: 'Harness', credits: [] }
   return prisma.communityHarness.findFirst({ where: { id, autonomousEnv, deletedAt: null } })
+}
+
+/**
+ * The publication a fork was made from, named on its page: `origin` is null once that one is no
+ * longer published. A starter's name is the website's, so a fork of one carries none.
+ */
+async function origin(forkedFrom: string | null, autonomousEnv: string) {
+  if (!forkedFrom || communityStarters.has(forkedFrom)) return {}
+  const source = await prisma.communityHarness.findFirst({ where: { id: forkedFrom, autonomousEnv, deletedAt: null }, select: { title: true, authorName: true } })
+  return { origin: source }
 }
 
 export async function communityRoutes(app: FastifyInstance): Promise<void> {
@@ -172,14 +184,16 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
     const autonomousEnv = environment(req), harnessId = req.params.id
     const post = await publication(harnessId, autonomousEnv)
     if (!post) return sendError(reply, 'This harness is unavailable.', 'NOT_FOUND', 404)
+    const stored = 'title' in post ? post : null
+    const [source, social] = await Promise.all([origin(stored?.forkedFrom ?? null, autonomousEnv), socialState(post, autonomousEnv, req.user?.sub)])
     sendSuccess(reply, {
       // A starter's files are the website's own; only a publication is stored here.
-      harness: 'title' in post ? withCoverPath(req.query.files === 'viewer' ? withViewerOnly(post) : post) : null,
-      social: await socialState(post, autonomousEnv, req.user?.sub),
+      harness: stored ? { ...withCoverPath(req.query.files === 'viewer' ? withViewerOnly(stored) : stored), ...source } : null,
+      social,
     })
   })
 
-  // What a reader's page refreshes: the publication itself changes only when its author edits it.
+  // What a reader's page refreshes: the publication itself changes only when its author edits it, which `updatedAt` says.
   app.get<{ Params: z.infer<typeof params> }>('/api/community/harnesses/:id/social', { preHandler: validateParams(params) }, async (req, reply) => {
     const autonomousEnv = environment(req)
     const post = await publication(req.params.id, autonomousEnv)

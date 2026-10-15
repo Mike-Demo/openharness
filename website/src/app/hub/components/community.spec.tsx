@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Feed from './Feed';
 import Detail from './Detail';
 import { CommunityError, emptySocial } from '@/lib/community/client';
+import { starterHarnesses } from '@/lib/community/starters';
 import type { OpenHarness } from '@/lib/community/types';
 
 const request = vi.hoisted(() => vi.fn());
@@ -267,6 +268,30 @@ describe('community navigation', () => {
     expect(screen.getByRole('button', { name: 'Like Server card' })).toHaveTextContent('4');
     await act(async () => { answer({ ...page, stats: { first: { likes: 4, comments: 1, liked: true } }, signedIn: true }); });
     expect(screen.getByRole('button', { name: 'Unlike Server card' })).toBeInTheDocument();
+  });
+  it.each([
+    [{ forkedFrom: '8f0c2a1e-5b6d-4c3a-9e7f-1a2b3c4d5e6f', origin: { title: 'The original', authorName: 'Alice' } }, 'Forked from The original by Alice', true],
+    [{ forkedFrom: 'starter-orbit' }, `Forked from ${starterHarnesses.find(item => item.id === 'starter-orbit')!.title} by Harness`, true],
+    [{ forkedFrom: '8f0c2a1e-5b6d-4c3a-9e7f-1a2b3c4d5e6f', origin: null }, 'Forked from a harness that is no longer published', false],
+  ])('names where a fork came from: %o', async (fork, words, linked) => {
+    request.mockResolvedValue({ harness: null, social: emptySocial });
+    render(<Detail id="11111111-2222-4333-8444-555555555555" initial={{ ...sample, id: '11111111-2222-4333-8444-555555555555', example: false, ...fork }} />);
+    expect(screen.getByText(words).closest('a') !== null).toBe(linked);
+  });
+  it('reads an edited publication again when a refresh says its author changed it', async () => {
+    const id = '11111111-2222-4333-8444-555555555555', drawn = { ...sample, id, example: false, updatedAt: null };
+    request.mockResolvedValueOnce({ social: { ...emptySocial, updatedAt: null } });
+    render(<Detail id={id} initial={drawn} />);
+    await act(async () => {});
+    expect(request).toHaveBeenLastCalledWith(`harnesses/${id}/social`);
+    request.mockResolvedValueOnce({ social: { ...emptySocial, updatedAt: '2026-10-15T08:00:00.000Z' } })
+      .mockResolvedValueOnce({ harness: { ...drawn, title: 'Edited', updatedAt: '2026-10-15T08:00:00.000Z' }, social: emptySocial });
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(Date.now() + 60_000);
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    vi.useRealTimers();
+    expect(await screen.findByRole('heading', { name: 'Edited' })).toBeInTheDocument();
+    expect(request).toHaveBeenLastCalledWith(`harnesses/${id}?files=viewer`);
   });
   it('opens a touch screen’s share sheet instead of copying', async () => {
     request.mockResolvedValue({ harness: null, social: emptySocial });

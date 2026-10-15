@@ -30,7 +30,11 @@ export type HarnessSummary = {
   recording?: string;
   forkedFrom?: string;
 };
-export type OpenHarness = HarnessSummary & HarnessSnapshot;
+/**
+ * `updatedAt`: when its author last edited it. `origin`: the publication it was forked from, by name,
+ * or null once that one is no longer published; left out for a fork of a starter and by an older backend.
+ */
+export type OpenHarness = HarnessSummary & HarnessSnapshot & { updatedAt?: string | null; origin?: { title: string; authorName: string } | null };
 export type HarnessComment = { id: string; body: string; authorName: string; createdAt: string; mine: boolean; creator?: boolean; parentId?: string; parentAuthorName?: string };
 export type SocialState = {
   likes: number;
@@ -43,4 +47,6 @@ export type SocialState = {
   /** Every comment, and every public fork. A backend older than these counts leaves them out. */
   commentCount?: number;
   forks?: number;
+  /** When its author last edited it (null if never); a backend older than it leaves it out. */
+  updatedAt?: string | null;
 };

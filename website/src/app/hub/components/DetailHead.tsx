@@ -4,6 +4,7 @@ import { FileCode2, GitFork, Heart, MessageCircle, Pencil } from 'lucide-react';
 import { commentTotal } from '@/lib/community/comments';
 import type { OpenHarness, SocialState } from '@/lib/community/types';
 import { ForkButton } from './ForkButton';
+import { ForkedFrom } from './ForkedFrom';
 import { ShareButton } from './ShareButton';
 import styles from '../community.module.css';
 
@@ -21,7 +22,7 @@ export function DetailHead({ harness, social, ready, busy, panel, onFollow, onLi
     <div className={styles.identity}><h1>{harness.title}</h1><div className={styles.byline}>
       <span>{harness.authorName}</span>
       {!social.mine && <button className={styles.follow} disabled={busy} aria-pressed={social.following} onClick={onFollow}>{social.following ? 'Following' : 'Follow'}</button>}
-      {harness.forkedFrom && <Link className={styles.textLink} href={`/hub/${harness.forkedFrom}`}>Forked from an open harness</Link>}
+      <ForkedFrom harness={harness} />
       {!!social.forks && <a className={styles.textLink} href="#forks">{social.forks === 1 ? '1 fork' : `${social.forks} forks`}</a>}
     </div></div>
     <div className={styles.actions}>
