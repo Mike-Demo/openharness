@@ -77,23 +77,38 @@ void main() {
     connections.dispose();
   });
 
-  test('consented funnel is once per local episode, with coarse waits and no identity', () async {
-    usage.milestone(ProductHealthMeasure.funnelFirstWork);
-    expect(totals(), isEmpty);
-    usage.account(null);
-    await usage.setSignedOutSharing(true);
-    usage.milestone(ProductHealthMeasure.funnelSetupSeen);
-    now = now.add(const Duration(minutes: 2));
-    usage.milestone(ProductHealthMeasure.funnelFirstWork);
-    usage.milestone(ProductHealthMeasure.funnelFirstWork);
-    now = now.add(const Duration(minutes: 4));
-    usage.milestone(ProductHealthMeasure.funnelFirstResponse);
-    await usage.flush();
-    expect(totals()['setup_desktop_funnel_first_work'], 1);
-    expect(totals()['setup_desktop_first_work_1m_to_5m'], 1);
-    expect(totals()['setup_desktop_first_response_over_5m'], 1);
-    expect(jsonEncode(setup), isNot(contains('PRIVATE')));
-  });
+  test(
+    'setup funnel is once per local episode, with coarse waits and no identity',
+    () async {
+      usage.milestone(ProductHealthMeasure.funnelFirstWork);
+      expect(totals(), isEmpty);
+      usage.account(null);
+      await usage.setSignedOutSharing(true);
+      usage.milestone(ProductHealthMeasure.funnelSetupSeen);
+      now = now.add(const Duration(minutes: 2));
+      usage.milestone(ProductHealthMeasure.funnelFirstWork);
+      usage.milestone(ProductHealthMeasure.funnelFirstWork);
+      now = now.add(const Duration(minutes: 4));
+      usage.milestone(ProductHealthMeasure.funnelFirstResponse);
+      await usage.flush();
+      expect(totals()['setup_desktop_funnel_first_work'], 1);
+      expect(totals()['setup_desktop_first_work_1m_to_5m'], 1);
+      expect(totals()['setup_desktop_first_response_over_5m'], 1);
+      expect(jsonEncode(setup), isNot(contains('PRIVATE')));
+    },
+  );
+
+  test(
+    'signed-in milestones remain in account-controlled health totals',
+    () async {
+      await usage.flush();
+      usage.milestone(ProductHealthMeasure.funnelWorkspaceReady);
+      usage.milestone(ProductHealthMeasure.funnelFirstWork);
+      await usage.flush();
+      expect(setup, isEmpty);
+      expect(totals()['health_desktop_funnel_first_work'], 1);
+    },
+  );
 
   test('manual connect and automatic retries remain separate; missing outcomes expire as unknown', () async {
     await usage.flush();
@@ -127,17 +142,42 @@ void main() {
     final connections = ProductConnections(usage);
     addTearDown(connections.dispose);
     connections.status('PRIVATE_MACHINE', connecting: true, connected: false);
-    connections.refused('PRIVATE_MACHINE', ProductHealthMeasure.connectErrorUnlinked);
-    connections.status('PRIVATE_MACHINE', connecting: true, connected: false, suppressStart: true);
+    connections.refused(
+      'PRIVATE_MACHINE',
+      ProductHealthMeasure.connectErrorUnlinked,
+    );
+    connections.status(
+      'PRIVATE_MACHINE',
+      connecting: true,
+      connected: false,
+      suppressStart: true,
+    );
     connections.status('PRIVATE_MACHINE', connecting: false, connected: false);
     for (var retry = 0; retry < 10; retry++) {
-      connections.status('PRIVATE_MACHINE', connecting: true, connected: false, suppressStart: true);
-      connections.refused('PRIVATE_MACHINE', ProductHealthMeasure.connectErrorUnlinked);
-      connections.status('PRIVATE_MACHINE', connecting: false, connected: false,
-          failure: ProductHealthMeasure.connectErrorUnlinked);
+      connections.status(
+        'PRIVATE_MACHINE',
+        connecting: true,
+        connected: false,
+        suppressStart: true,
+      );
+      connections.refused(
+        'PRIVATE_MACHINE',
+        ProductHealthMeasure.connectErrorUnlinked,
+      );
+      connections.status(
+        'PRIVATE_MACHINE',
+        connecting: false,
+        connected: false,
+        failure: ProductHealthMeasure.connectErrorUnlinked,
+      );
     }
     final manual = connections.manual('PRIVATE_MACHINE');
-    connections.status('PRIVATE_MACHINE', connecting: true, connected: false, suppressStart: true);
+    connections.status(
+      'PRIVATE_MACHINE',
+      connecting: true,
+      connected: false,
+      suppressStart: true,
+    );
     connections.status('PRIVATE_MACHINE', connecting: false, connected: true);
     manual(ProductOutcome.ok);
     // A later ordinary connection remains measurable.

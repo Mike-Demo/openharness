@@ -23,7 +23,9 @@ class PrivacySection extends StatelessWidget {
     builder: (context, _) => SectionScaffold(
       title: 'Privacy',
       subtitle: 'Choose what you share to help improve Harness.',
-      child: notifier.isGuest
+      child:
+          notifier.isGuest ||
+              (!kIsWeb && notifier.status != AppStatus.authenticated)
           ? notifier.productMeasurement.surface == 'web'
                 ? const Text(
                     'Product usage sharing is available after sign-in.',
@@ -36,6 +38,7 @@ class PrivacySection extends StatelessWidget {
                   enabled: enabled,
                 );
                 notifier.productMeasurement.savedChoice(value);
+                await notifier.productMeasurement.setupChoiceSaved;
                 return value;
               },
               feedback: notifier.api.productUsageFeedback,
@@ -186,15 +189,16 @@ class _ProductUsagePreferenceState extends State<ProductUsagePreference> {
           ),
         ],
         if (_enabled == true && widget.feedback != null) ...[
-          if (!kIsWeb) TextButton(
-            onPressed: () => showTaskFeedback(
-              context,
-              choice: widget.request,
-              send: widget.feedback!,
-              measurement: widget.measurement,
+          if (!kIsWeb)
+            TextButton(
+              onPressed: () => showTaskFeedback(
+                context,
+                choice: widget.request,
+                send: widget.feedback!,
+                measurement: widget.measurement,
+              ),
+              child: const Text('Rate task outcome'),
             ),
-            child: const Text('Rate task outcome'),
-          ),
           ProductFeedback(
             send: widget.feedback!,
             onShown: widget.measurement?.observer(

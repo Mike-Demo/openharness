@@ -245,14 +245,13 @@ it('setup ingestion never reads an account and expires after yesterday', async (
   expect(await ingestSetupUsage({ ...setup, day: '2026-10-12' }, now)).toMatchObject({ accepted: true })
 })
 
-it('keeps anonymous transport and consent unchanged across native apps while Desktop health evolves independently', () => {
+it('keeps anonymous transport and the phone opt-in unchanged while Desktop evolves independently', () => {
   expect(readFileSync(new URL('../../../desktop/lib/measurement/setup_transport.dart', import.meta.url), 'utf8'))
     .toBe(readFileSync(new URL('../../../mobile/lib/measurement/setup_transport.dart', import.meta.url), 'utf8'))
-  // Each app draws the signed-out choice its own way (the phone's is one line with a tooltip); what it asks must not differ.
+  // Desktop now uses its Settings-only default-on preference; the phone retains its own opt-in.
   const choice = (app: string) => readFileSync(new URL(`../../../${app}/lib/measurement/setup_usage_choice.dart`, import.meta.url), 'utf8')
   for (const words of ['Share setup and sign-in counts',
     'Optional for this app session. Help us find setup problems without sharing account details, prompts, or files.']) {
-    expect(choice('desktop')).toContain(`'${words}'`)
     expect(choice('mobile')).toContain(`'${words}'`)
   }
   const mobile = readFileSync(new URL('../../../mobile/lib/measurement/product_measurement.dart', import.meta.url), 'utf8')

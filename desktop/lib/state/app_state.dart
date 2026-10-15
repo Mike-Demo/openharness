@@ -79,6 +79,7 @@ import '../autonomous_device/autonomous_device_cli.dart';
 import '../settings/config_store.dart';
 import '../settings/experimental_features.dart';
 import '../core/local_key_value_store.dart';
+import '../measurement/setup_preference_store.dart';
 import '../devices/device_hosts.dart';
 import '../stats/harness_stats.dart';
 import '../terminal/terminal_session.dart';
@@ -3290,6 +3291,9 @@ class AppNotifier extends ChangeNotifier {
               ? 'desktop'
               : 'phone',
           automatic: !kUnderTest,
+          setupStorage: !kIsWeb && this.viewer == null && !kUnderTest
+              ? SetupPreferenceStore()
+              : null,
           context: !kIsWeb && this.viewer == null
               ? ProductUsageContext(
                   release: 'unknown',

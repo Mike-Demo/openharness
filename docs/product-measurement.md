@@ -22,12 +22,18 @@ automatically proven improvement. Changes still need review, tests and a deliber
 | Is measurement losing coverage? | Updated collector installation-days, pruned queues, full observation maps, unmatched app starts | Loss signals warrant caution. No signal does not prove complete collection. |
 | How many people use Harness, and do they come back? | People active / working / new per day and per app, and D1/D2/D3/D7 returns (backend rollup of 10-day pseudonymous marks) | Sharing accounts only, staff excluded; an app open across midnight counts on both days, so prefer working returns. Not available before `PRODUCT_USAGE_SUBJECT_KEY` is set. |
 
-Native signed-out sessions can explicitly enable **Share setup and sign-in counts**. It starts off
-on every app launch, sends no credentials/cookies, and never replays earlier actions. Setup state
-already visible when opted in can start an observation; duration then begins at that observation,
-not necessarily at installation start. An account's off choice disables it once known. Web pre-sign-in
-collection stays disabled because that transport cannot guarantee omitted cookies. These optional,
-untrusted, self-selected counts are a separate population from signed-in app/daemon reports. They
+Desktop setup and sign-in counts are enabled by default, with no onboarding checkbox. Users can
+turn them off in **Settings → Privacy → Share product usage data**, including before sign-in through
+the app menu. A single local boolean remembers the preference across launches; reporting waits for
+that preference to load and stays off if it cannot be read. The confirmed account preference takes
+over after sign-in and is remembered for the next signed-out launch. Turning sharing off discards
+queued counts and open observations. It does not retract a request already sent.
+The phone retains its separate, off-by-default **Share setup and sign-in counts** choice for each
+app session. Neither native setup transport sends credentials/cookies or replays earlier actions.
+Setup state already visible when sharing becomes enabled can start an observation; duration then
+begins at that observation, not necessarily at installation start. Web pre-sign-in collection stays
+disabled because that transport cannot guarantee omitted cookies. These untrusted setup counts are
+a separate population from signed-in app/daemon reports; older clients and opt-outs affect coverage. They
 show observed friction at each step, **not** unique signup conversion or a linked user funnel.
 Reproduce those paths with test accounts and synthetic inputs. No screen recordings,
 click trails, stable analytics identifiers, locations, content or arbitrary properties are added.
@@ -73,7 +79,7 @@ it cannot reliably detect an idle freeze. Error hooks pass only framework/async 
 Desktop RSS and gateway RSS/CPU sample once per minute; they describe those processes, not the
 whole machine or agents. Sampling adds no core timer, process enumeration, or subprocess.
 
-Desktop's only new disk state is the last consented run's version, clean-exit/update flags, choice
+Desktop keeps one setup-sharing preference boolean, plus the last sharing-enabled run's version, clean-exit/update flags, choice
 revision and a local-only account-scope hash. One serialized asynchronous write plus one latest
 pending value bounds disk work. It is cleared on sign-out/off and never enters a report. An unclean
 run can mean a force quit or power loss, and only becomes observable if the app returns. Update
@@ -133,7 +139,9 @@ At most 64 observations wait in hn's RAM (a full queue drops the rest and says s
 their own. A backend that predates `tui` refuses only those, and the daemon then drops hn's counts
 until the next UTC day or its own restart, without counting a failed delivery.
 
-The signed-out endpoint permits only setup counters and explicit consent, rejects auth/cookie
+The signed-out endpoint permits only setup counters. Older native clients send `consent: true`;
+default-on Desktop sends `sharing: "default"`, accepted only for Desktop counters and never recorded
+as an explicit opt-in. The two request forms are mutually exclusive. The endpoint rejects auth/cookie
 headers, limits bodies to 4 KiB and values to 1,000, and admits at most 120 writes/minute and four
 concurrent writes per server process. No IP-based analytics or new rate-limit identity is stored.
 Exhaustion drops measurement rather than affecting sign-in. Public counts remain susceptible to

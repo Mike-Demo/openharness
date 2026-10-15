@@ -114,7 +114,7 @@ it('rejects extra context, custom versions and device fingerprints without echoi
 
 const setup = { schemaVersion: 1, consent: true, id: good.id, day: good.day, counters: { setup_desktop_sign_in_started: 1 } }
 const sendSetup = (payload: unknown = setup, headers = {}) => app.inject({ method: 'POST', url: '/api/product-usage/setup', payload: payload as Record<string, unknown>, headers })
-it('accepts only explicitly enabled setup counts without credentials or account lookup', async () => {
+it('keeps legacy explicit setup opt-in without credentials or account lookup', async () => {
   expect((await sendSetup()).statusCode).toBe(200)
   expect(methods.ingestSetupUsage).toHaveBeenCalledWith(setup)
   expect(methods.productUsageChoice).not.toHaveBeenCalled()
@@ -128,6 +128,28 @@ it('accepts only explicitly enabled setup counts without credentials or account 
     expect(response.body).not.toContain('PRIVATE_CANARY')
   }
   for (const headers of [{ authorization: 'fixture' }, { cookie: 'PRIVATE_CANARY' }]) expect((await sendSetup(setup, headers)).statusCode).toBe(400)
+})
+it('accepts default-on sharing only for Desktop setup without asserting consent', async () => {
+  const { consent: _, ...fields } = setup
+  const report = { ...fields, sharing: 'default' }
+  expect((await sendSetup(report)).statusCode).toBe(200)
+  expect(methods.ingestSetupUsage).toHaveBeenCalledWith(report)
+  expect(methods.productUsageChoice).not.toHaveBeenCalled()
+  expect(methods.ingestProductUsage).not.toHaveBeenCalled()
+  methods.ingestSetupUsage.mockClear()
+  for (const payload of [fields, { ...report, consent: true }, { ...report, sharing: 'off' },
+    { ...report, counters: { setup_phone_sign_in_started: 1 } },
+    { ...report, counters: { ...setup.counters, setup_phone_sign_in_started: 1 } },
+    { ...report, counters: { ui_desktop_sign_in_started: 1 } },
+    { ...report, account: 'PRIVATE_CANARY' }]) {
+    const response = await sendSetup(payload)
+    expect(response.statusCode).toBe(400)
+    expect(response.body).not.toContain('PRIVATE_CANARY')
+  }
+  for (const headers of [{ authorization: 'fixture' }, { cookie: 'PRIVATE_CANARY' }]) {
+    expect((await sendSetup(report, headers)).statusCode).toBe(400)
+  }
+  expect(methods.ingestSetupUsage).not.toHaveBeenCalled()
 })
 it('bounds untrusted setup writes independently of signed-in reports', async () => {
   let finish!: (value: unknown) => void
