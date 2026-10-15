@@ -14,6 +14,7 @@ import type { NativeHookOptions } from '../../engines/kit/nativeLocations.js'
 import type { OpencodeLaunchSnapshot } from '../../engines/launchControl.js'
 import { sid } from '../../lib/log.js'
 import type { registry, RegisteredSession } from '../../lib/registry.js'
+import { validTerminalRuntime } from '../../lib/registry.js'
 import { processRows } from '../../lib/terminalAgentDiscovery.js'
 import type { ProcessRow } from '../../lib/processTable.js'
 import { sameProcessIdentity } from '../../lib/terminalRuntime.js'
@@ -27,6 +28,8 @@ export interface EngineHookDeps {
   panePending?: (agentId: string) => Promise<unknown> | undefined
   /** A tmux hint names a tmux pane; without tmux there is nothing it can point at. */
   tmuxBackend: unknown
+  /** A ptyhost hint names a pane of the Harness PTY host; without that backend there is nothing it can point at. */
+  ptyHostBackend?: unknown
   agentReconciler: Pick<TerminalAgentReconciler, 'triggerHint' | 'trigger'>
   registry: Pick<typeof registry, 'byRuntimeEngine' | 'byAgent'>
   syncSession: (row: RegisteredSession) => void
@@ -50,7 +53,7 @@ type HookQuery = Parameters<ResolveHookAgent>[0]
 const recordKey = (session: RegisteredSession | undefined): string =>
   session ? `${session.agentId}\u0000${session.processIdentity?.pid ?? ''}\u0000${session.processIdentity?.startMarker ?? ''}` : ''
 
-export function createEngineHooks({ tmuxBackend, agentReconciler, registry, panePending, syncSession }: EngineHookDeps) {
+export function createEngineHooks({ tmuxBackend, ptyHostBackend, agentReconciler, registry, panePending, syncSession }: EngineHookDeps) {
   /**
    * The agents on the hinted panes: those whose recorded process the caller descends from, the rest,
    * and of the rest those with no live process recorded at all (none yet, or one that has exited).
@@ -123,7 +126,12 @@ export function createEngineHooks({ tmuxBackend, agentReconciler, registry, pane
     const resolved: TerminalRuntimeRef[] = []
     for (const hint of runtimeHints ?? []) {
       if (hint.backend === 'tmux') { if (tmuxBackend) resolved.push({ backend: 'tmux', paneId: hint.paneId }) }
-      else resolved.push({ backend: 'ptyhost', instance: hint.instance, paneId: hint.paneId })
+      else {
+        // Held to the registry's own rule for a ptyhost runtime (`p<n>` instance, `%<n>` pane): a hint that is
+        // not one is ignored, as a hint for a backend that is not configured is.
+        const runtime = { backend: 'ptyhost' as const, instance: hint.instance, paneId: hint.paneId }
+        if (ptyHostBackend && validTerminalRuntime(runtime)) resolved.push(runtime)
+      }
     }
     // A pass that outran its deadline has not yet opened the agent a hook from a new engine belongs to.
     let overdue = false

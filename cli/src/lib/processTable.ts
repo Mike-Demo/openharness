@@ -889,3 +889,14 @@ export function resumeSessionId(engine: RegisteredSession['engine'], args: strin
  */
 export const LSTART_MARKER_RE =
   /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{1,2}:\d{2}:\d{2}\s+\d{4}$/
+
+/**
+ * A Windows start marker: `w:` and the process's creation time as a FILETIME, read by the PTY host
+ * (pty/src/ps.rs) from the kernel. It is read the same at every scan, so it compares as an `lstart` stamp does.
+ */
+export const WINDOWS_START_MARKER_RE = /^w:\d+$/
+
+/** Whether a saved marker is one a fresh read can equal: a C-locale `lstart` stamp, or a Windows one. */
+export function comparableStartMarker(marker: string): boolean {
+  return LSTART_MARKER_RE.test(marker) || WINDOWS_START_MARKER_RE.test(marker)
+}

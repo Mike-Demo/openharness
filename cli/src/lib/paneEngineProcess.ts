@@ -4,7 +4,7 @@
  */
 import type { AgentEngine } from '../engines/types.js'
 import { registry, type ProcessIdentity, type RegisteredSession } from './registry.js'
-import { enrichProcessRows, LSTART_MARKER_RE, processRows, processTreePids, selectEngineProcess } from './processTable.js'
+import { comparableStartMarker, enrichProcessRows, processRows, processTreePids, selectEngineProcess } from './processTable.js'
 import type { TerminalBackend } from './terminalBackend.js'
 import { processIdentityOf, sameProcessIdentity, terminalRuntimeLabel } from './terminalRuntime.js'
 import type { TerminalRuntimeRef } from './terminalTypes.js'
@@ -90,7 +90,8 @@ export async function checkSessionRuntime<Ref extends TerminalRuntimeRef>(
   // corrected identity instead of failing: the pane still has a matching engine process, and failing here
   // would drop a live session for good (Command Code, the only engine affected, does not re-register on
   // its Stop hook). One-time, per session.
-  if (saved && !LSTART_MARKER_RE.test(saved.startMarker)) {
+  // (A Windows marker, `w:<FILETIME>`, is read from the kernel and compares as a C-locale stamp does.)
+  if (saved && !comparableStartMarker(saved.startMarker)) {
     registry.updateProcessIdentity(session.sessionId, live)
     return { state: 'alive' }
   }

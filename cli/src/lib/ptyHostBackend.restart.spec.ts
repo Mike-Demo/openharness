@@ -168,9 +168,7 @@ const screen = async (backend: PtyHostBackend, runtime: PtyRuntimeRef): Promise<
     })
   }, CASE_TIMEOUT_MS)
 
-  // Not on Windows yet: the stopped-agent store (secureState.ts) checks Unix permission bits, which Windows reports as
-  // 0o666, so it refuses every directory there. The daemon's state on Windows is sub-project B's.
-  it.skipIf(WINDOWS)('stop closes a pty host harness\'s pane and ends its whole process tree; resume opens it again on the host', async () => {
+  it('stop closes a pty host harness\'s pane and ends its whole process tree; resume opens it again on the host', async () => {
     await withHost(async (backend) => {
       const dir = mkdtempSync(join(tmpdir(), 'pty-stop-resume-'))
       try {

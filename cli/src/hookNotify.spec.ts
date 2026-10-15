@@ -53,6 +53,8 @@ interface RunHookOpts {
   nativeProcess?: 'linux' | 'missing' | 'changed' | 'lock-replaced' | 'boot-replaced' | 'registry-replaced'
     | 'zombie' | 'registry-zombie' | 'registry-command' | 'registry-reparented' | 'short' | 'wrong-pid'
   engine?: 'claude' | 'codex' | 'cursor' | 'hermes' | 'devin' | 'commandcode' | 'grok'
+  /** Run as on Windows: the process table comes from `harness-pty ps --json` (a fake), and `ps` fails. */
+  windowsProcessTable?: boolean
   env?: Record<string, string>
   dataDir?: string
   claudeProjectsDir?: string
@@ -107,10 +109,24 @@ function runHook(opts: RunHookOpts): Promise<string> {
       const executable = opts.processExecutable ?? (opts.processEngine === 'cursor' ? 'agent' : opts.processEngine)
       const processArgs = opts.processArgs ?? executable
       const shellQuote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'"
-      writeFileSync(join(binDir, 'ps'), `#!/bin/sh\nprintf '%s\\n' '7000 1 zsh Mon Aug 10 10:00:00 2026 -zsh' ${shellQuote(`7001 7000 ${executable} Mon Aug 10 10:00:01 2026 ${processArgs}`)} '${process.pid} 7001 node Mon Aug 10 10:00:02 2026 hook-parent'\n`, { mode: 0o755 })
+      if (opts.windowsProcessTable) {
+        // The same three processes as the `ps` below, as the host lists them, with one it could not open.
+        const table = { rows: [
+          { pid: 4, parentPid: 0, executable: 'System', startMarker: '', args: 'System', nativeArgv: ['System'] },
+          { pid: 7000, parentPid: 1, executable: 'pwsh.exe', startMarker: 'w:133000000000000000', args: 'pwsh.exe', nativeArgv: ['pwsh.exe'] },
+          { pid: 7001, parentPid: 7000, executable, startMarker: 'w:133000000000000001', args: processArgs, nativeArgv: processArgs.split(' ') },
+          { pid: process.pid, parentPid: 7001, executable: 'node.exe', startMarker: 'w:133000000000000002', args: 'hook-parent', nativeArgv: ['hook-parent'] },
+        ] }
+        writeFileSync(join(binDir, 'harness-pty'), `#!/bin/sh\n[ "$1 $2" = "ps --json" ] || exit 2\nprintf '%s\\n' ${shellQuote(JSON.stringify(table))}\n`, { mode: 0o755 })
+        env.HARNESS_PTY_BIN = join(binDir, 'harness-pty')
+        writeFileSync(join(binDir, 'ps'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+      } else {
+        writeFileSync(join(binDir, 'ps'), `#!/bin/sh\nprintf '%s\\n' '7000 1 zsh Mon Aug 10 10:00:00 2026 -zsh' ${shellQuote(`7001 7000 ${executable} Mon Aug 10 10:00:01 2026 ${processArgs}`)} '${process.pid} 7001 node Mon Aug 10 10:00:02 2026 hook-parent'\n`, { mode: 0o755 })
+      }
       const nativeFixture = join(binDir, 'native-process.mjs')
       writeFileSync(nativeFixture, `import fs from 'node:fs'; import { syncBuiltinESMExports } from 'node:module';
 ${opts.nativeProcess ? "Object.defineProperty(process, 'platform', { value: 'linux' });" : ''}
+${opts.windowsProcessTable ? "Object.defineProperty(process, 'platform', { value: 'win32' });" : ''}
 const original = fs.readFileSync, open = fs.openSync, close = fs.closeSync, sync = fs.fsyncSync;
 const opened = new Map(), fault = ${JSON.stringify(opts.nativeProcess ?? '')}; let reads = 0, replaced = false;
 fs.openSync = (path, ...args) => { const fd = open(path, ...args); opened.set(fd, String(path)); return fd; };
@@ -649,6 +665,29 @@ describe('hook notify terminal scope', () => {
     expect(statSync(dataDir).mode & 0o777).toBe(0o700)
     expect(statSync(join(dataDir, 'registry.json')).mode & 0o777).toBe(0o600)
     expect(statSync(join(dataDir, 'registry-boot')).mode & 0o777).toBe(0o600)
+  })
+
+  it('reads the process table from harness-pty on Windows, and registers offline with its identity', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adapter-hook-offline-windows-'))
+    tmpDirs.push(dir)
+    const claudeProjectsDir = join(dir, 'claude-projects')
+    const dataDir = join(dir, 'data')
+    const transcriptPath = join(claudeProjectsDir, 'demo', 'session-w.jsonl')
+    mkdirSync(join(claudeProjectsDir, 'demo'), { recursive: true })
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(dataDir, 'registry.json'), '[]', { mode: 0o600 })
+    writeFileSync(transcriptPath, '{}\n')
+
+    await runHook({
+      port: 9, tmuxPane: '%7', processEngine: 'claude', windowsProcessTable: true, dataDir, claudeProjectsDir,
+      input: { hook_event_name: 'SessionStart', session_id: 'session-w', transcript_path: transcriptPath, cwd: '/tmp/demo' },
+    })
+
+    expect(JSON.parse(readFileSync(join(dataDir, 'registry.json'), 'utf-8'))).toMatchObject([{
+      sessionId: 'session-w',
+      engine: 'claude',
+      processIdentity: { pid: 7001, executable: 'claude', startMarker: 'w:133000000000000001' },
+    }])
   })
 
   it('leaves a corrupt offline registry byte-identical instead of replacing it', async () => {

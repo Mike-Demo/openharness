@@ -16,7 +16,8 @@ import type { AgentEngine } from '../engines/types.js'
 import { harnessPaneOwner } from './harnessSessionLabel.js'
 import { isHeldStartCommand } from './nativePaneHold.js'
 import { lookupPaneEngineProcess } from './paneEngineProcess.js'
-import { LSTART_MARKER_RE } from './processTable.js'
+import { comparableStartMarker, setProcessTableSource } from './processTable.js'
+import { setAgentSignaller, type AgentSignal } from './processSignals.js'
 import type { PtyHostCallResult, PtyHostClient } from './ptyHost/client.js'
 import { ensurePtyHost, type EnsurePtyHostResult } from './ptyHost/launch.js'
 import type { PtyEvent } from './ptyHost/protocol.js'
@@ -25,6 +26,8 @@ import { submitContent, submitSettleMs } from './submitTiming.js'
 import type { TerminalBackend, TerminalBackendPrepared } from './terminalBackend.js'
 import { TMUX_KEYS } from './terminalKeys.js'
 import { sameProcessIdentity, terminalRouteKey } from './terminalRuntime.js'
+import { windowsProcessRows } from './windows/processTable.js'
+import { taskkillTree, type TreeKillOutcome } from './windows/treeKill.js'
 import {
   TERMINAL_ACTION_SUCCEEDED,
   terminalActionNotStarted,
@@ -71,6 +74,10 @@ export interface PtyHostBackendOptions {
   launch?: (home: string) => Promise<EnsurePtyHostResult>
   /** The tag this daemon's panes carry, read at every create and inventory, as `TmuxBackend` reads it. */
   owner?: () => string
+  /** The platform it runs on (`process.platform`); a seam for the Windows wiring's tests. */
+  platform?: NodeJS.Platform
+  /** `taskkill` on a process tree (windows/treeKill.ts); a seam for tests. */
+  taskkill?: (pid: number, force: boolean) => Promise<TreeKillOutcome>
 }
 
 /**
@@ -113,6 +120,10 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   private readonly home: string
   private readonly launch: (home: string) => Promise<EnsurePtyHostResult>
   private readonly owner: () => string
+  private readonly platform: NodeJS.Platform
+  private readonly taskkill: (pid: number, force: boolean) => Promise<TreeKillOutcome>
+  /** Whether this backend set the process table source and the agent signaller (Windows), for `dispose`. */
+  private windowsSeams = false
   private client: PtyHostClient | null = null
   private instance: string | null = null
   private readonly panes = new Map<string, PtyPaneRecord>()
@@ -133,6 +144,8 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
     this.home = options.home
     this.launch = options.launch ?? ((home) => ensurePtyHost(home))
     this.owner = options.owner ?? (() => harnessPaneOwner(env.ADAPTER_DATA_DIR))
+    this.platform = options.platform ?? process.platform
+    this.taskkill = options.taskkill ?? ((pid, force) => taskkillTree(pid, force))
   }
 
   /** `ptyhost:<instance>`, the instance being the host's (`p<protocol>`), known once `prepare` reached it. */
@@ -144,6 +157,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
     void context
     this.disposed = false
     this.cancelReconnect()
+    if (this.platform === 'win32') this.installWindowsSeams()
     const reached = await this.launch(this.home)
     if ('incompatible' in reached) {
       console.error(`[terminal] ptyhost: unavailable (${reached.incompatible})`)
@@ -165,9 +179,57 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   dispose(): void {
     this.disposed = true
     this.cancelReconnect()
+    if (this.windowsSeams) {
+      this.windowsSeams = false
+      setProcessTableSource(null)
+      setAgentSignaller(null)
+    }
     const client = this.client
     this.detach()
     client?.close()
+  }
+
+  /**
+   * Windows has no `ps` and no signals. The process table is the host's (windows/processTable.ts): asked of
+   * whichever client is connected at each read, so a reconnect is followed, and of `harness-pty ps` while none
+   * is. An agent's process is ended through the host when it is a pane's root, else with `taskkill`.
+   */
+  private installWindowsSeams(): void {
+    this.windowsSeams = true
+    setProcessTableSource(() => windowsProcessRows(this.client))
+    setAgentSignaller((pid, signal) => this.signalProcess(pid, signal))
+  }
+
+  /**
+   * `process.kill` on Windows, for `signalAgentProcess`: fire and forget, as a signal is. Its caller has just
+   * checked [pid]'s identity (`terminateDeletedAgent`), and checks again for the outcome. A pane's root is
+   * ended by the host's `kill` of that pane, which ends its whole Job: after the usual grace for SIGTERM, at
+   * once for SIGKILL. Any other process, and every one while the host cannot be asked, by `taskkill /T`
+   * (with `/F` for SIGKILL).
+   */
+  signalProcess(pid: number, signal: AgentSignal): void {
+    void this.endProcess(pid, signal === 'SIGKILL').catch((error: unknown) => {
+      console.error(`[terminal] ptyhost: could not ${signal} pid ${pid}: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }
+
+  private async endProcess(pid: number, force: boolean): Promise<void> {
+    const pane = await this.paneRootedAt(pid)
+    // Not done, or not known to be: the tree is ended directly instead.
+    if (pane && (await this.killPane(pane, force ? 0 : KILL_GRACE_MS)).state === 'succeeded') return
+    const outcome = await this.taskkill(pid, force)
+    if (outcome === 'failed') console.error(`[terminal] ptyhost: taskkill could not end pid ${pid}`)
+  }
+
+  /** The live pane [pid] is the root of, on the connected host; null when none is, or the host cannot be asked. */
+  private async paneRootedAt(pid: number): Promise<PtyRuntimeRef | null> {
+    const client = this.client
+    if (!client) return null
+    const listed = await client.call({ op: 'inventory' })
+    if (listed.state !== 'ok') return null
+    // A held pane whose process ended still lists its last pid, which Windows may have given to another process.
+    const pane = listed.value.panes.find((entry) => entry.rootPid === pid && !entry.dead)
+    return pane ? { backend: 'ptyhost', instance: client.instance, paneId: pane.pane } : null
   }
 
   /** Make [client] this backend's connection, in place of any other. Whether it is another host than the last. */
@@ -289,10 +351,14 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   }
 
   async kill(runtime: PtyRuntimeRef, current?: () => boolean): Promise<TerminalActionResult> {
+    return this.killPane(runtime, KILL_GRACE_MS, current)
+  }
+
+  private async killPane(runtime: PtyRuntimeRef, graceMs: number, current?: () => boolean): Promise<TerminalActionResult> {
     const client = this.clientFor(runtime)
     if (!client) return terminalActionNotStarted(UNAVAILABLE)
     if (current && !current()) return terminalActionNotStarted('The harness changed before pane close')
-    const result = await client.call({ op: 'kill', pane: runtime.paneId, graceMs: KILL_GRACE_MS })
+    const result = await client.call({ op: 'kill', pane: runtime.paneId, graceMs })
     // A pane the host does not have is closed already, as tmux's kill reads an authoritative absence.
     if (result.state === 'ok' || (result.state === 'failed' && result.code === 'no_pane')) {
       this.panes.delete(runtime.paneId)
@@ -334,21 +400,38 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
     }
   }
 
-  /** `TmuxBackend.validate`, over this backend's root process. Windows job membership comes with Task 19. */
+  /** `TmuxBackend.validate`, over this backend's root process; on Windows the engine must be in the pane's Job too. */
   async validate(runtime: PtyRuntimeRef, expected: TerminalProcessExpectation): Promise<RuntimeValidation> {
+    return this.validateOn(this.platform, runtime, expected)
+  }
+
+  /**
+   * `validate` as it runs on [platform]. On Windows the engine found under the pane's root must also be in the
+   * pane's Job (`jobPids`): every process the root started is, unless it broke away, and nothing else is. A pid
+   * the table shows under the root but the Job does not hold is another process that has its number. A failed
+   * `jobPids` is `unknown`, never `gone`: no evidence either way.
+   */
+  async validateOn(platform: NodeJS.Platform, runtime: PtyRuntimeRef, expected: TerminalProcessExpectation): Promise<RuntimeValidation> {
+    let found: Awaited<ReturnType<typeof lookupPaneEngineProcess>>
     try {
-      const found = await lookupPaneEngineProcess(this, runtime, expected.engine)
-      if (!found.ok) return { state: found.unknown ? 'unknown' : 'gone', reason: found.reason }
-      // A saved marker that is not a C-locale `lstart` stamp can never equal one read today (see
-      // `TmuxBackend.validate`): the pane still runs a matching engine, take it.
-      if (expected.processIdentity && !LSTART_MARKER_RE.test(expected.processIdentity.startMarker)) return { state: 'alive' }
-      if (expected.processIdentity && !sameProcessIdentity(expected.processIdentity, found.identity)) {
-        return { state: 'gone', reason: 'process changed under ptyhost pane', replaced: true }
-      }
-      return { state: 'alive' }
+      found = await lookupPaneEngineProcess(this, runtime, expected.engine)
     } catch {
       return { state: 'unknown', reason: 'pty host runtime probe failed' }
     }
+    if (!found.ok) return { state: found.unknown ? 'unknown' : 'gone', reason: found.reason }
+    // A saved marker that can never equal one read today (see `TmuxBackend.validate`; a Windows `w:` marker
+    // can): the pane still runs a matching engine, take it.
+    const compared = expected.processIdentity && comparableStartMarker(expected.processIdentity.startMarker)
+    if (compared && !sameProcessIdentity(expected.processIdentity, found.identity)) {
+      return { state: 'gone', reason: 'process changed under ptyhost pane', replaced: true }
+    }
+    if (platform !== 'win32') return { state: 'alive' }
+    const client = this.clientFor(runtime)
+    if (!client) return { state: 'unknown', reason: UNAVAILABLE }
+    const job = await client.call({ op: 'jobPids', pane: runtime.paneId })
+    if (job.state !== 'ok') return { state: 'unknown', reason: `pty host could not list the pane job: ${job.reason}` }
+    if (!job.value.pids.includes(found.identity.pid)) return { state: 'gone', reason: 'process is not in the pane job' }
+    return { state: 'alive' }
   }
 
   /**

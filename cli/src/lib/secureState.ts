@@ -3,10 +3,15 @@ import {
   constants,
   fchmodSync,
   fstatSync,
+  fsyncSync,
   mkdirSync,
   openSync,
   readFileSync,
+  realpathSync,
+  statSync,
 } from 'node:fs'
+import { homedir } from 'node:os'
+import { win32 } from 'node:path'
 
 const PRIVATE_DIRECTORY_MODE = 0o700
 const PRIVATE_FILE_MODE = 0o600
@@ -19,7 +24,64 @@ function isMissing(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === 'ENOENT'
 }
 
+/**
+ * Windows: the folders state may live in. POSIX mode bits mean nothing on NTFS (Node reports every directory as
+ * 0o666 or 0o777, so the checks below refused them all, and the registry could not be saved). What protects a
+ * folder there is its ACL, and the user's profile (`os.homedir()`) is one only its owner, SYSTEM and the
+ * administrators can write; new folders and files in it inherit that. So state must be in the profile, or in the
+ * data folder the person configured themselves (`ADAPTER_DATA_DIR`), whose ACL is then theirs to choose. Node
+ * cannot set an ACL: state is created with the same modes as on Unix, which Windows ignores but for read-only.
+ */
+export function windowsStateRoots(environment: NodeJS.ProcessEnv = process.env, home: string = homedir()): string[] {
+  const configured = environment.ADAPTER_DATA_DIR?.trim()
+  return [home, ...(configured ? [configured] : [])].filter(Boolean)
+}
+
+/** Whether the real path [target] is one of [roots] or below one, compared as Windows does (case-insensitively). */
+export function insideWindowsRoots(target: string, roots: readonly string[]): boolean {
+  return roots.some((root) => {
+    const rel = win32.relative(root, target)
+    return rel === '' || (rel !== '..' && !rel.startsWith('..\\') && !win32.isAbsolute(rel))
+  })
+}
+
+function realRoots(): string[] {
+  return windowsStateRoots().flatMap((root) => {
+    try { return [realpathSync.native(root)] } catch { return [] }
+  })
+}
+
+/** The Windows check for a state path: resolved through junctions and links, it must be inside the roots. */
+function requireInsideWindowsRoots(path: string, kind: 'directory' | 'file'): void {
+  const real = realpathSync.native(path)
+  if (!insideWindowsRoots(real, realRoots())) {
+    throw new Error(`state ${kind} ${path} is outside your user profile (${homedir()}), so its contents cannot be`
+      + ' trusted. Keep Harness state in your profile, or set ADAPTER_DATA_DIR to the folder you want it in.')
+  }
+}
+
+/**
+ * Make a rename or create in [directory] durable: fsync the directory, opened with [flags] (`'r'` by default).
+ * Windows cannot: Node opens a directory read-only there, and flushing such a handle is EPERM, so every state
+ * save failed after its rename. NTFS journals the rename itself; the file's data was flushed before it.
+ */
+export function syncStateDirectory(directory: string, flags: number | string = 'r'): void {
+  if (process.platform === 'win32') return
+  const fd = openSync(directory, flags)
+  try { fsyncSync(fd) } finally { closeSync(fd) }
+}
+
+function secureWindowsStateDirectory(directory: string, create: boolean): void {
+  if (create) mkdirSync(directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE })
+  if (!statSync(directory).isDirectory()) throw new Error('state directory has unsafe owner or type')
+  requireInsideWindowsRoots(directory, 'directory')
+}
+
 export function secureStateDirectory(directory: string, create = true): void {
+  if (process.platform === 'win32') {
+    secureWindowsStateDirectory(directory, create)
+    return
+  }
   if (create) mkdirSync(directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE })
   const fd = openSync(
     directory,
@@ -61,6 +123,8 @@ function inspectPrivateStateFile(fd: number, maxBytes: number): void {
     throw new Error('state file has unsafe owner or type')
   }
   if (stat.size > maxBytes) throw new Error('state file exceeds its size limit')
+  // Windows: the mode is not what protects it (see windowsStateRoots); the callers checked where it is.
+  if (process.platform === 'win32') return
   const mode = stat.mode & 0o777
   // Same reasoning as secureStateDirectory: a file another account could have rewritten is not made
   // trustworthy by tightening it now. Every writer under ADAPTER_DATA_DIR already passes mode 0o600.
@@ -74,6 +138,7 @@ function inspectPrivateStateFile(fd: number, maxBytes: number): void {
 }
 
 export function readPrivateStateFile(file: string, maxBytes = Number.MAX_SAFE_INTEGER): string {
+  if (process.platform === 'win32') requireInsideWindowsRoots(file, 'file')
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   try {
     inspectPrivateStateFile(fd, maxBytes)
@@ -89,6 +154,7 @@ export function hardenPrivateStateFileIfPresent(
 ): boolean {
   let fd: number
   try {
+    if (process.platform === 'win32') requireInsideWindowsRoots(file, 'file')
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   } catch (error) {
     if (isMissing(error)) return false

@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readPrivateStateFile, secureStateDirectory } from './secureState.js'
+import { hardenPrivateStateFileIfPresent, insideWindowsRoots, readPrivateStateFile, secureStateDirectory, syncStateDirectory, windowsStateRoots } from './secureState.js'
+
+const WINDOWS = process.platform === 'win32'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -21,7 +23,8 @@ function scratch(mode: number): string {
 
 const modeOf = (dir: string) => statSync(dir).mode & 0o777
 
-describe('secureStateDirectory', () => {
+// POSIX modes: Windows reports none of them (see 'state on Windows' below).
+describe.skipIf(WINDOWS)('secureStateDirectory', () => {
   it('creates a private directory regardless of the ambient umask', () => {
     const root = mkdtempSync(join(tmpdir(), 'secure-state-'))
     dirs.push(root)
@@ -65,7 +68,7 @@ describe('secureStateDirectory', () => {
   })
 })
 
-describe('readPrivateStateFile', () => {
+describe.skipIf(WINDOWS)('readPrivateStateFile', () => {
   function file(mode: number): string {
     const root = mkdtempSync(join(tmpdir(), 'secure-state-'))
     dirs.push(root)
@@ -85,5 +88,62 @@ describe('readPrivateStateFile', () => {
 
   it('reads a private state file', () => {
     expect(readPrivateStateFile(file(0o600))).toBe('secret')
+  })
+})
+
+describe('state on Windows', () => {
+  it('lives in the user profile, or in the data folder the person configured', () => {
+    expect(windowsStateRoots({}, 'C:\\Users\\me')).toEqual(['C:\\Users\\me'])
+    expect(windowsStateRoots({ ADAPTER_DATA_DIR: ' D:\\harness ' }, 'C:\\Users\\me')).toEqual(['C:\\Users\\me', 'D:\\harness'])
+    expect(windowsStateRoots({ ADAPTER_DATA_DIR: '' }, '')).toEqual([])
+  })
+
+  it('is inside a root by path, as Windows compares paths', () => {
+    const roots = ['C:\\Users\\me', 'D:\\harness']
+    expect(insideWindowsRoots('C:\\Users\\me', roots)).toBe(true)
+    expect(insideWindowsRoots('c:\\users\\ME\\.harness\\cli\\data', roots)).toBe(true)
+    expect(insideWindowsRoots('D:\\harness\\saved', roots)).toBe(true)
+    expect(insideWindowsRoots('C:\\Users\\me2\\data', roots)).toBe(false)
+    expect(insideWindowsRoots('C:\\Users', roots)).toBe(false)
+    expect(insideWindowsRoots('C:\\ProgramData\\harness', roots)).toBe(false)
+    expect(insideWindowsRoots('E:\\Users\\me', roots)).toBe(false)
+    expect(insideWindowsRoots('C:\\Users\\me\\..data', roots)).toBe(true)
+    expect(insideWindowsRoots('C:\\Users\\me', [])).toBe(false)
+  })
+
+  it.runIf(WINDOWS)('takes a folder in the profile (the temp folder is in it) whatever its mode bits say, and its files', () => {
+    const root = mkdtempSync(join(tmpdir(), 'secure-state-'))
+    dirs.push(root)
+    const dir = join(root, 'a', 'b')
+    secureStateDirectory(dir)
+    secureStateDirectory(dir, false)
+    writeFileSync(join(dir, 'token'), 'secret', { mode: 0o600 })
+    expect(readPrivateStateFile(join(dir, 'token'))).toBe('secret')
+    expect(hardenPrivateStateFileIfPresent(join(dir, 'token'))).toBe(true)
+    expect(hardenPrivateStateFileIfPresent(join(dir, 'missing'))).toBe(false)
+    expect(() => readPrivateStateFile(join(dir, 'token'), 2)).toThrow(/size limit/)
+  })
+
+  it.runIf(WINDOWS)('refuses a folder outside the profile, and a file that is not a folder', () => {
+    const windows = process.env.SystemRoot ?? 'C:\\Windows'
+    expect(() => secureStateDirectory(windows, false)).toThrow(/outside your user profile/)
+    expect(() => readPrivateStateFile(join(windows, 'win.ini'))).toThrow(/outside your user profile/)
+    const root = mkdtempSync(join(tmpdir(), 'secure-state-'))
+    dirs.push(root)
+    writeFileSync(join(root, 'file'), '')
+    expect(() => secureStateDirectory(join(root, 'file'), false)).toThrow(/unsafe owner or type/)
+  })
+})
+
+describe('syncStateDirectory', () => {
+  // Windows cannot flush a directory handle Node opened (EPERM): every registry save failed after its rename.
+  it('makes a rename in a state directory durable, where the platform can', () => {
+    const root = mkdtempSync(join(tmpdir(), 'secure-state-'))
+    dirs.push(root)
+    expect(() => syncStateDirectory(root)).not.toThrow()
+  })
+
+  it.skipIf(WINDOWS)('fails as fsync does for a directory that is not there', () => {
+    expect(() => syncStateDirectory(join(tmpdir(), 'secure-state-missing-dir'))).toThrow(/ENOENT/)
   })
 })

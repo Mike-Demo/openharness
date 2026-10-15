@@ -1811,7 +1811,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     dataDir: env.ADAPTER_DATA_DIR,
   })
   // Which agent a hook belongs to, and what a SessionEnd means (core/engines/hooks.ts).
-  const engineHooks = createEngineHooks({ tmuxBackend, agentReconciler, registry, panePending: restorePanes.pending, syncSession })
+  const engineHooks = createEngineHooks({ tmuxBackend, ptyHostBackend, agentReconciler, registry, panePending: restorePanes.pending, syncSession })
   // What agents may do: the account's experiments, kept in this daemon's data folder for its launches
   // (lib/agentSettings.ts, core/experiments.ts). Started once bound, below.
   const agentSettings = createAgentSettingsSync({ dataDir: env.ADAPTER_DATA_DIR, backend: proxyBackend, session: readAuthSession,

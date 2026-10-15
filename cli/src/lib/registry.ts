@@ -53,7 +53,7 @@ import { agyTranscriptPath } from '../engines/agy/contract.js'
 import { copilotTranscriptPath } from '../engines/copilot/contract.js'
 import { bootChanged, currentBootId } from './bootId.js'
 import { lockOwnerAlive, lockStartMarker, processLockIdentity } from './processLiveness.js'
-import { hardenPrivateStateFileIfPresent, readPrivateStateFile, secureStateDirectory } from './secureState.js'
+import { hardenPrivateStateFileIfPresent, readPrivateStateFile, secureStateDirectory, syncStateDirectory } from './secureState.js'
 import { mergeTerminalRuntimes, primaryRuntime, processIdentityKey, sameProcessIdentity, terminalPlacementKey, terminalRouteKey } from './terminalRuntime.js'
 import type { HookTerminalHint, ProcessIdentity, TerminalRuntimeRef } from './terminalTypes.js'
 import { externalReservations, externalResumePending, externalResumeIds, parseExternalResume, type ExternalResumeIntent } from './externalResume.js'
@@ -513,8 +513,7 @@ export function atomicWriteJson(file: string, value: unknown, exclusive = false)
     } finally { closeSync(fd) }
     renameSync(temporary, file)
     renamed = true
-    const directoryFd = openSync(dirname(file), 'r')
-    try { fsyncSync(directoryFd) } finally { closeSync(directoryFd) }
+    syncStateDirectory(dirname(file))
   } catch (error) {
     if (renamed) throw new AtomicWriteUnconfirmed(error)
     throw error

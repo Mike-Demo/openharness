@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { PtyEvent, PtyOp } from './ptyHost/protocol.js'
 import type { PtyHostClient } from './ptyHost/client.js'
 import type { EnsurePtyHostResult } from './ptyHost/launch.js'
@@ -11,12 +11,31 @@ vi.mock('./paneEngineProcess.js', async (importOriginal) => ({
   lookupPaneEngineProcess,
 }))
 
+// The Windows seams, watched: the real ones still run (setProcessTableSource feeds processRows below).
+vi.mock('./processTable.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./processTable.js')>()
+  return { ...actual, setProcessTableSource: vi.fn(actual.setProcessTableSource) }
+})
+vi.mock('./processSignals.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./processSignals.js')>()
+  return { ...actual, setAgentSignaller: vi.fn(actual.setAgentSignaller) }
+})
+
 const { PtyHostBackend } = await import('./ptyHostBackend.js')
+const { processRows, setProcessTableSource } = await import('./processTable.js')
+const { setAgentSignaller, signalAgentProcess } = await import('./processSignals.js')
 
 type Reply = unknown | ((op: PtyOp) => unknown)
 
 /** A backend over a stub client: [replies] by op name, an `ok {}` for the rest. */
-function backendWith(replies: Record<string, Reply>, options: { owner?: string; stream?: () => Promise<unknown> } = {}) {
+interface BackendOptions {
+  owner?: string
+  stream?: () => Promise<unknown>
+  platform?: NodeJS.Platform
+  taskkill?: (pid: number, force: boolean) => Promise<'sent' | 'gone' | 'failed'>
+}
+
+function backendWith(replies: Record<string, Reply>, options: BackendOptions = {}) {
   const calls: PtyOp[] = []
   const listeners = new Set<(event: PtyEvent) => void>()
   const client = {
@@ -35,12 +54,15 @@ function backendWith(replies: Record<string, Reply>, options: { owner?: string; 
     home: '/tmp/h',
     launch: async () => ({ client: client as unknown as PtyHostClient }),
     owner: () => options.owner ?? 'me',
+    // The platform is the test's, not the machine's: off Windows unless it says otherwise.
+    platform: options.platform ?? 'linux',
+    ...(options.taskkill ? { taskkill: options.taskkill } : {}),
   })
   const emit = (event: PtyEvent) => { for (const listener of listeners) listener(event) }
   return { backend, calls, emit }
 }
 
-async function ready(replies: Record<string, Reply> = {}, options: { owner?: string; stream?: () => Promise<unknown> } = {}) {
+async function ready(replies: Record<string, Reply> = {}, options: BackendOptions = {}) {
   const made = backendWith(replies, options)
   expect(await made.backend.prepare({ ownedPanes: new Map() })).toEqual({ state: 'ready' })
   return made
@@ -521,6 +543,164 @@ describe('PtyHostBackend validate', () => {
     expect(await backend.validate(PANE, { engine: 'claude' })).toEqual({ state: 'unknown', reason: 'ptyhost:p1:%1 could not be resolved' })
     lookupPaneEngineProcess.mockRejectedValueOnce(new Error('boom'))
     expect(await backend.validate(PANE, { engine: 'claude' })).toEqual({ state: 'unknown', reason: 'pty host runtime probe failed' })
+  })
+})
+
+describe('PtyHostBackend validate on Windows', () => {
+  const ENGINE = { pid: 11, executable: 'claude.exe', startMarker: 'w:5' }
+  afterEach(() => setProcessTableSource(null))
+
+  it('pid outside job is gone', async () => {
+    const { backend, calls } = backendWith({ jobPids: { state: 'ok', value: { pids: [1, 2] } }, paneInfo: { state: 'ok', value: { info: { pid: 10 } } } })
+    await backend.prepare({ ownedPanes: new Map() })
+    setProcessTableSource(async () => [
+      { pid: 10, parentPid: 1, executable: 'pwsh', startMarker: 'w:1', args: 'pwsh' },
+      { pid: 11, parentPid: 10, executable: 'claude.exe', startMarker: 'w:5', args: 'claude.exe' },
+    ])
+    lookupPaneEngineProcess.mockResolvedValue({ ok: true, identity: ENGINE })
+    const v = await backend.validateOn('win32', PANE, { engine: 'claude', processIdentity: ENGINE })
+    expect(v).toEqual({ state: 'gone', reason: 'process is not in the pane job' })
+    expect(calls).toContainEqual({ op: 'jobPids', pane: '%1' })
+  })
+
+  it('alive when the engine is in the pane job, with or without a recorded identity', async () => {
+    const { backend } = await ready({ jobPids: { state: 'ok', value: { pids: [10, 11] } } }, { platform: 'win32' })
+    lookupPaneEngineProcess.mockResolvedValue({ ok: true, identity: ENGINE })
+    expect(await backend.validate(PANE, { engine: 'claude', processIdentity: ENGINE })).toEqual({ state: 'alive' })
+    expect(await backend.validate(PANE, { engine: 'claude' })).toEqual({ state: 'alive' })
+  })
+
+  it('unknown, never gone, when the job cannot be listed or the host is not reached', async () => {
+    const { backend } = await ready({ jobPids: { state: 'unknown', dispatch: 'possibly_executed', reason: 'no reply within 5000 ms' } })
+    lookupPaneEngineProcess.mockResolvedValue({ ok: true, identity: ENGINE })
+    expect(await backend.validateOn('win32', PANE, { engine: 'claude', processIdentity: ENGINE }))
+      .toEqual({ state: 'unknown', reason: 'pty host could not list the pane job: no reply within 5000 ms' })
+    expect(await backend.validateOn('win32', { ...PANE, instance: 'p2' }, { engine: 'claude', processIdentity: ENGINE }))
+      .toEqual({ state: 'unknown', reason: 'pty host is unavailable' })
+  })
+
+  it('compares a Windows start marker: another process with the pid is a replacement', async () => {
+    const { backend, calls } = await ready({ jobPids: { state: 'ok', value: { pids: [11] } } })
+    lookupPaneEngineProcess.mockResolvedValue({ ok: true, identity: { ...ENGINE, startMarker: 'w:6' } })
+    expect(await backend.validateOn('win32', PANE, { engine: 'claude', processIdentity: ENGINE }))
+      .toEqual({ state: 'gone', reason: 'process changed under ptyhost pane', replaced: true })
+    expect(calls.some((op) => op.op === 'jobPids')).toBe(false)
+  })
+
+  it('asks for no job off Windows', async () => {
+    const { backend, calls } = await ready()
+    lookupPaneEngineProcess.mockResolvedValue({ ok: true, identity: ENGINE })
+    expect(await backend.validateOn('linux', PANE, { engine: 'claude', processIdentity: ENGINE })).toEqual({ state: 'alive' })
+    expect(calls.some((op) => op.op === 'jobPids')).toBe(false)
+  })
+})
+
+describe('PtyHostBackend on Windows: the process table and the agent signaller', () => {
+  const ROW = { pid: 900, parentPid: 4, executable: 'claude.exe', startMarker: 'w:133', args: 'claude.exe', nativeArgv: ['claude.exe'] }
+  const inventory = (panes: Array<{ pane: string; rootPid: number; dead?: boolean }>) => ({
+    state: 'ok', value: { panes: panes.map((pane) => ({ cwd: '/', title: '', owner: 'me', label: null, dead: false, ...pane })) },
+  })
+  beforeEach(() => {
+    vi.mocked(setProcessTableSource).mockClear()
+    vi.mocked(setAgentSignaller).mockClear()
+  })
+  afterEach(() => {
+    setProcessTableSource(null)
+    setAgentSignaller(null)
+    vi.restoreAllMocks()
+  })
+
+  it('reads the process table from the connected host until disposed', async () => {
+    const { backend, calls } = await ready({ processes: { state: 'ok', value: { rows: [ROW] } } }, { platform: 'win32' })
+    expect(await processRows()).toEqual([ROW])
+    expect(calls).toContainEqual({ op: 'processes' })
+    backend.dispose()
+    expect(setProcessTableSource).toHaveBeenLastCalledWith(null)
+    expect(setAgentSignaller).toHaveBeenLastCalledWith(null)
+  })
+
+  it('reads it from the host it reconnected to', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    const asked: string[] = []
+    const host = (name: string) => {
+      const made = hostClient(10)
+      made.call = (async (op: PtyOp) => {
+        asked.push(`${name}:${op.op}`)
+        return op.op === 'processes' ? { state: 'ok', value: { rows: [{ ...ROW, args: name }] } } : { state: 'ok', value: {} }
+      }) as typeof made.call
+      return made
+    }
+    const first = host('first')
+    const second = host('second')
+    const launch = vi.fn(async (): Promise<EnsurePtyHostResult> => ({ client: (launch.mock.calls.length === 1 ? first : second) as unknown as PtyHostClient }))
+    const backend = new PtyHostBackend({ home: '/tmp/h', launch, owner: () => 'me', platform: 'win32' })
+    await backend.prepare({ ownedPanes: new Map() })
+    expect((await processRows())?.[0]?.args).toBe('first')
+    first.lose()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect((await processRows())?.[0]?.args).toBe('second')
+    expect(asked).toEqual(['first:processes', 'second:processes'])
+    backend.dispose()
+  })
+
+  it('installs nothing off Windows', async () => {
+    const { backend } = await ready()
+    backend.dispose()
+    expect(setProcessTableSource).not.toHaveBeenCalled()
+    expect(setAgentSignaller).not.toHaveBeenCalled()
+  })
+
+  it('ends a pane root through the host: after the grace for SIGTERM, at once for SIGKILL', async () => {
+    const taskkill = vi.fn(async () => 'sent' as const)
+    const { calls } = await ready({ inventory: inventory([{ pane: '%3', rootPid: 900 }]) }, { platform: 'win32', taskkill })
+    signalAgentProcess(900, 'SIGTERM')
+    await vi.waitFor(() => expect(calls).toContainEqual({ op: 'kill', pane: '%3', graceMs: 2000 }))
+    signalAgentProcess(900, 'SIGKILL')
+    await vi.waitFor(() => expect(calls).toContainEqual({ op: 'kill', pane: '%3', graceMs: 0 }))
+    expect(taskkill).not.toHaveBeenCalled()
+  })
+
+  it('ends any other process with taskkill: not a root, a dead pane\'s last pid, or the host not answering', async () => {
+    const taskkill = vi.fn(async () => 'sent' as const)
+    let listing: unknown = inventory([{ pane: '%3', rootPid: 900 }, { pane: '%4', rootPid: 901, dead: true }])
+    const { calls } = await ready({ inventory: () => listing }, { platform: 'win32', taskkill })
+    signalAgentProcess(905, 'SIGTERM')
+    await vi.waitFor(() => expect(taskkill).toHaveBeenLastCalledWith(905, false))
+    signalAgentProcess(901, 'SIGKILL')
+    await vi.waitFor(() => expect(taskkill).toHaveBeenLastCalledWith(901, true))
+    listing = { state: 'unknown', dispatch: 'possibly_executed', reason: 't' }
+    signalAgentProcess(900, 'SIGKILL')
+    await vi.waitFor(() => expect(taskkill).toHaveBeenLastCalledWith(900, true))
+    expect(calls.some((op) => op.op === 'kill')).toBe(false)
+  })
+
+  it('falls back to taskkill when the host does not close the pane, and says when that fails too', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const taskkill = vi.fn(async () => 'failed' as const)
+    await ready({
+      inventory: inventory([{ pane: '%3', rootPid: 900 }]),
+      kill: { state: 'unknown', dispatch: 'possibly_executed', reason: 'no reply' },
+    }, { platform: 'win32', taskkill })
+    signalAgentProcess(900, 'SIGKILL')
+    await vi.waitFor(() => expect(error).toHaveBeenCalledWith('[terminal] ptyhost: taskkill could not end pid 900'))
+    expect(taskkill).toHaveBeenCalledWith(900, true)
+  })
+
+  it('logs a signal it could not send at all', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const taskkill = vi.fn(async () => { throw new Error('spawn failed') })
+    const { backend } = await ready({}, { platform: 'win32', taskkill })
+    backend.dispose()
+    // Disconnected: no pane can be asked about, so straight to taskkill.
+    backend.signalProcess(77, 'SIGTERM')
+    await vi.waitFor(() => expect(error).toHaveBeenCalledWith('[terminal] ptyhost: could not SIGTERM pid 77: spawn failed'))
+    const odd = vi.fn(async () => { throw 'odd' })
+    const other = (await ready({}, { platform: 'win32', taskkill: odd })).backend
+    other.dispose()
+    other.signalProcess(78, 'SIGKILL')
+    await vi.waitFor(() => expect(error).toHaveBeenCalledWith('[terminal] ptyhost: could not SIGKILL pid 78: odd'))
   })
 })
 

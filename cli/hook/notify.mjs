@@ -38,6 +38,7 @@ import {
 } from 'node:fs'
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { homedir, uptime } from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 const BOOT_TOLERANCE_SEC = 120
 const HOOK_STARTED_AT = performance.now()
@@ -774,7 +775,65 @@ function processMatchScore(row, engine, ownership, allowAgentHint = false) {
   return /@anthropic-ai[\/\\]claude-code[\/\\]cli\.js$/.test(entrypoint) ? 2 : 0
 }
 
+/** Mirrors compareVersions in src/lib/ptyHost/launch.ts. */
+function comparePtyVersions(a, b) {
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return a.length - b.length
+}
+
+/**
+ * Mirrors ptyHostBinary in src/lib/ptyHost/launch.ts: `HARNESS_PTY_BIN` as it is, else the newest managed
+ * `<runtime>/pty/<version>/harness-pty.exe`, else the one beside this script (the bundle's).
+ */
+function ptyHostBinary() {
+  const override = process.env.HARNESS_PTY_BIN?.trim()
+  if (override) return override
+  const binary = 'harness-pty.exe'
+  const root = join(process.env.ADAPTER_RUNTIME_DIR || join(homedir(), '.harness', 'runtime'), 'pty')
+  let versions = []
+  try { versions = readdirSync(root).filter((name) => /^\d+(\.\d+)*$/.test(name)).sort(comparePtyVersions).reverse() } catch { /* none installed */ }
+  for (const version of versions) {
+    const file = join(root, version, binary)
+    try { accessSync(file, constants.F_OK); return file } catch { /* try the next */ }
+  }
+  const beside = join(dirname(fileURLToPath(import.meta.url)), binary)
+  try { accessSync(beside, constants.F_OK); return beside } catch { return null }
+}
+
+/**
+ * Windows has no `ps`: the PTY host lists the processes (`harness-pty ps --json`, pty/src/ps.rs), and the rows
+ * map as the daemon maps them (src/lib/windows/processTable.ts). A row without a start marker (a process the
+ * host could not open) can never be an identity and is dropped; a read that names nobody failed.
+ */
+async function windowsProcessRows() {
+  const binary = ptyHostBinary()
+  if (!binary) return null
+  const stdout = await execFileText(binary, ['ps', '--json'], 3000)
+  if (stdout === null) return null
+  let table
+  try { table = JSON.parse(stdout) } catch { return null }
+  if (!table || !Array.isArray(table.rows)) return null
+  const rows = []
+  for (const row of table.rows) {
+    if (!row || typeof row !== 'object') continue
+    const { pid, parentPid, executable, startMarker, args, nativeArgv } = row
+    if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(parentPid) || parentPid < 0) continue
+    if (typeof executable !== 'string' || typeof args !== 'string' || typeof startMarker !== 'string' || !startMarker) continue
+    rows.push({
+      pid, parentPid, executable, startMarker, args,
+      ...(Array.isArray(nativeArgv) && nativeArgv.every((item) => typeof item === 'string') ? { nativeArgv } : {}),
+    })
+  }
+  return rows.length ? rows : null
+}
+
 async function processRows() {
+  if (process.platform === 'win32') return windowsProcessRows()
   const stdout = await execFileText('ps', ['-axo', 'pid=,ppid=,comm=,lstart=,args='], 3000, psEnv())
   if (stdout === null) return null
   const rows = []
