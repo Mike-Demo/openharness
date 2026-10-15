@@ -59,8 +59,6 @@ import {
   type TmuxFeatures,
 } from './tmuxVersion.js'
 
-// Callers outside the backend (agent create) import the sentence from here.
-export { tmuxTooOldForSessionEnv }
 import { ensureTmuxOnPath, type TmuxPathOutcome } from './tmuxOnPath.js'
 import { isHarnessdVariable } from './harnessdEnv.js'
 import { isAgentSessionVariable } from './agentSessionEnv.js'

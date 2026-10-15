@@ -6,7 +6,8 @@ import type { RegisteredSession, registry } from '../../lib/registry.js'
 import type { TerminalBackend } from '../../lib/terminalBackend.js'
 
 export interface TerminalOpenerDeps {
-  tmuxBackend: (CreateAgentPaneDeps['tmuxBackend'] & Pick<TerminalBackend, 'releaseHold'>) | null
+  /** Where a new terminal's pane is made (main.ts `createBackend`); null with no backend ready. */
+  createBackend: (CreateAgentPaneDeps['tmuxBackend'] & Pick<TerminalBackend, 'releaseHold'>) | null
   registry: CreateAgentPaneDeps['registry'] & Pick<typeof registry, 'setLaunch'>
   announceSession(session: RegisteredSession): void
   blocksFolder(cwd: string): boolean
@@ -15,16 +16,16 @@ export interface TerminalOpenerDeps {
   noBackendCode?: string
 }
 
-export function createTerminalOpener({ tmuxBackend, registry, announceSession, blocksFolder, noBackendCode = 'TMUX_UNAVAILABLE' }: TerminalOpenerDeps): Pick<TerminalsPort, 'open'> {
+export function createTerminalOpener({ createBackend, registry, announceSession, blocksFolder, noBackendCode = 'TMUX_UNAVAILABLE' }: TerminalOpenerDeps): Pick<TerminalsPort, 'open'> {
   return { open: async ({ argv, cwd }) => {
-    if (!tmuxBackend) return { ok: false, error: noBackendCode }
+    if (!createBackend) return { ok: false, error: noBackendCode }
     if (blocksFolder(cwd)) return { ok: false, error: 'WORKTREE_BUSY' }
     const result = await createAndRegisterPane({
-      tmuxBackend, registry, engine: 'terminal', cwd, spawnCwd: cwd,
+      tmuxBackend: createBackend, registry, engine: 'terminal', cwd, spawnCwd: cwd,
       argv: [...argv], sessionLabel: `harness-shell-${randomUUID()}`, bypassPermission: false,
     })
     if (!result.ok) return result
-    await tmuxBackend.releaseHold(result.spawned.runtime)
+    await createBackend.releaseHold(result.spawned.runtime)
     const ready = registry.setLaunch(result.pending.agentId, { state: 'ready' })
     if (!ready) return { ok: false, error: 'TERMINAL_CLOSED' }
     announceSession(ready)
