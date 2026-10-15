@@ -10,15 +10,19 @@ import { pathToFileURL } from 'node:url'
 
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
 
-/** A manifest from disk. A missing, empty or malformed one is `{}`: the first publish to a new prefix. */
+/** A manifest from disk. A missing or empty one is `{}` (the first publish to a new prefix); malformed JSON throws, so a publish never overwrites a manifest it could not read. */
 export function readDocument(path) {
+  let raw
   try {
-    const raw = readFileSync(path, 'utf8')
-    const value = raw.trim() ? JSON.parse(raw) : {}
-    return isObject(value) ? value : {}
-  } catch {
-    return {}
+    raw = readFileSync(path, 'utf8')
+  } catch (error) {
+    if (error.code === 'ENOENT') return {}
+    throw error
   }
+  if (!raw.trim()) return {}
+  const value = JSON.parse(raw)
+  if (!isObject(value)) throw new Error(`${path} does not hold a JSON object`)
+  return value
 }
 
 /** One platform's entry, checked against what its readers trust: https only, a hex sha256, a real size. */

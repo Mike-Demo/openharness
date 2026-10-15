@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 // @ts-expect-error — plain ESM with no declaration file
-const { mergeKey, mergePlatforms, runtimeEntry } = await import('../../scripts/lib/runtimeManifest.mjs') as {
+const { readDocument, mergeKey, mergePlatforms, runtimeEntry } = await import('../../scripts/lib/runtimeManifest.mjs') as {
+  readDocument: (path: string) => Record<string, any>
   mergeKey: (doc: object, key: string, value: object) => Record<string, any>
   mergePlatforms: (doc: object, name: string, entries: object) => Record<string, any>
   runtimeEntry: (entry: Record<string, unknown>) => Record<string, unknown>
@@ -55,5 +56,19 @@ describe('the runtime manifests the publish scripts write', () => {
     const bad = run('entry', entries, 'win32-x64', '1.2.3', 'http://plain', sha, '10')
     expect(bad.status).toBe(1)
     expect(bad.stderr).toContain('https')
+  })
+
+  it('reads a missing or empty manifest as empty, and refuses a malformed one', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'harness-runtime-manifest-'))
+    dirs.push(dir)
+    expect(readDocument(join(dir, 'missing.json'))).toEqual({})
+    writeFileSync(join(dir, 'empty.json'), '  \n')
+    expect(readDocument(join(dir, 'empty.json'))).toEqual({})
+    writeFileSync(join(dir, 'bad.json'), '{"node": ')
+    expect(() => readDocument(join(dir, 'bad.json'))).toThrow()
+    writeFileSync(join(dir, 'array.json'), '[]')
+    expect(() => readDocument(join(dir, 'array.json'))).toThrow('object')
+    const cli = spawnSync(process.execPath, [script, 'platforms', join(dir, 'bad.json'), join(dir, 'out.json'), 'pty', join(dir, 'empty.json')], { encoding: 'utf8' })
+    expect(cli.status).toBe(1)
   })
 })

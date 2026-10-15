@@ -24,6 +24,10 @@ GCS_BUCKET="${GCS_BUCKET:-s3-autonomous-upgrade-3}"
 CDN_ASSET_BASE_URL="${CDN_ASSET_BASE_URL:-https://cdn.autonomous.ai}"
 METADATA_PATH="${METADATA_PATH:-harness/staging/pty/metadata.json}"
 DRY_RUN="${DRY_RUN:-0}"
+if [ "$DRY_RUN" != 0 ] && [ "$DRY_RUN" != 1 ]; then
+  echo "error: DRY_RUN must be 0 or 1, not '$DRY_RUN'; nothing was published." >&2
+  exit 2
+fi
 [[ "$METADATA_PATH" =~ ^harness/[a-z0-9/_.-]+\.json$ ]] || { echo "error: METADATA_PATH '$METADATA_PATH' is not a manifest under harness/" >&2; exit 2; }
 # The payload, as install.ps1 ($HarnessPtyFiles) checks it.
 FILES=(harness-pty.exe harness-launch.exe harness.exe conpty.dll OpenConsole.exe)
@@ -45,7 +49,19 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 printf '{}' > "$WORK/entries.json"
 
-for pair in "win32-x64=$X64_DIR" "win32-arm64=$ARM64_DIR"; do
+# exists <gs url>: 0 if the object exists, 1 if it is confirmed absent, exit 1 on any other failure (auth, network,
+# permission), so a failed lookup is never mistaken for "not there".
+exists() {
+  local err
+  if err="$(gcloud storage ls "$1" 2>&1 >/dev/null)"; then return 0; fi
+  if [[ "$err" =~ (matched\ no\ objects|404|[Nn]ot\ [Ff]ound|[Nn]o\ URLs\ matched) ]]; then return 1; fi
+  echo "error: could not check $1: $err" >&2
+  exit 1
+}
+
+PAIRS=("win32-x64=$X64_DIR" "win32-arm64=$ARM64_DIR")
+UPLOADS=()
+for pair in "${PAIRS[@]}"; do
   key="${pair%%=*}"
   dir="${pair#*=}"
   for file in "${FILES[@]}"; do
@@ -58,21 +74,32 @@ for pair in "win32-x64=$X64_DIR" "win32-arm64=$ARM64_DIR"; do
   url="${CDN_ASSET_BASE_URL%/}/${object}"
   sha="$(sha256_of "$WORK/$zip")"
   size="$(wc -c < "$WORK/$zip" | tr -d ' ')"
-  if [ "$DRY_RUN" != 1 ]; then
-    if gcloud storage ls "gs://${GCS_BUCKET}/${object}" >/dev/null 2>&1; then
-      echo "error: gs://${GCS_BUCKET}/${object} already exists. Versioned artifacts are immutable (the CDN keeps the first bytes); release a new version." >&2
-      exit 1
-    fi
-    echo ">> uploading $zip ($size bytes)"
-    gcloud storage cp --cache-control='public, max-age=31536000, immutable' "$WORK/$zip" "gs://${GCS_BUCKET}/${object}"
-  fi
+  UPLOADS+=("$zip|$object|$size")
   node "$ROOT/scripts/lib/runtimeManifest.mjs" entry "$WORK/entries.json" "$key" "$VERSION" "$url" "$sha" "$size"
 done
 
-if [ "$DRY_RUN" = 1 ]; then
-  printf '{}' > "$WORK/metadata.json"
-elif ! gcloud storage cp "gs://${GCS_BUCKET}/${METADATA_PATH}" "$WORK/metadata.json" 2>/dev/null; then
-  echo "   (no existing ${METADATA_PATH}: creating it)"
+if [ "$DRY_RUN" != 1 ]; then
+  # Every check before any upload: a failure must not leave one immutable object published without the other.
+  for item in "${UPLOADS[@]}"; do
+    IFS='|' read -r zip object size <<< "$item"
+    if exists "gs://${GCS_BUCKET}/${object}"; then
+      echo "error: gs://${GCS_BUCKET}/${object} already exists. Versioned artifacts are immutable (the CDN keeps the first bytes); release a new version." >&2
+      exit 1
+    fi
+  done
+  # The existing manifest: start from {} only when it is confirmed absent; any other failure aborts.
+  if exists "gs://${GCS_BUCKET}/${METADATA_PATH}"; then
+    gcloud storage cp "gs://${GCS_BUCKET}/${METADATA_PATH}" "$WORK/metadata.json" >/dev/null
+  else
+    echo "   (no existing ${METADATA_PATH}: creating it)"
+    printf '{}' > "$WORK/metadata.json"
+  fi
+  for item in "${UPLOADS[@]}"; do
+    IFS='|' read -r zip object size <<< "$item"
+    echo ">> uploading $zip ($size bytes)"
+    gcloud storage cp --cache-control='public, max-age=31536000, immutable' "$WORK/$zip" "gs://${GCS_BUCKET}/${object}"
+  done
+else
   printf '{}' > "$WORK/metadata.json"
 fi
 node "$ROOT/scripts/lib/runtimeManifest.mjs" platforms "$WORK/metadata.json" "$WORK/metadata.next.json" pty "$WORK/entries.json"

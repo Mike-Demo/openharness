@@ -24,8 +24,8 @@ function payloads(missing?: string) {
   return root
 }
 
-const run = (root: string, args: string[]) => spawnSync('bash', [script, ...args], {
-  encoding: 'utf8', env: { ...process.env, DRY_RUN: '1', DRY_RUN_OUT: join(root, 'out'), METADATA_PATH: 'harness/staging/pty/metadata.json', GCS_BUCKET: 's3-autonomous-upgrade-3', CDN_ASSET_BASE_URL: 'https://cdn.autonomous.ai' },
+const run = (root: string, args: string[], extra: Record<string, string> = {}) => spawnSync('bash', [script, ...args], {
+  encoding: 'utf8', env: { ...process.env, DRY_RUN: '1', DRY_RUN_OUT: join(root, 'out'), METADATA_PATH: 'harness/staging/pty/metadata.json', GCS_BUCKET: 's3-autonomous-upgrade-3', CDN_ASSET_BASE_URL: 'https://cdn.autonomous.ai', ...extra },
 })
 
 describe.skipIf(process.platform === 'win32' || !hasPython)('publish-pty-payload.sh, as a dry run', () => {
@@ -58,5 +58,37 @@ describe.skipIf(process.platform === 'win32' || !hasPython)('publish-pty-payload
     expect(sh).toEqual(FILES)
     expect(ps1).toEqual(FILES)
     expect(manifestFiles).toEqual(FILES)
+  })
+
+  it('rejects a DRY_RUN value that is neither 0 nor 1', () => {
+    const root = payloads()
+    const result = run(root, ['1.2.3', join(root, 'x64'), join(root, 'arm64')], { DRY_RUN: 'true' })
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('DRY_RUN must be 0 or 1')
+  })
+
+  it('aborts, uploading nothing, when gcloud fails for a reason other than not found', () => {
+    const root = payloads()
+    const shim = join(root, 'shim')
+    mkdirSync(shim)
+    const log = join(root, 'gcloud.log')
+    writeFileSync(join(shim, 'gcloud'), `#!/bin/sh\necho "$@" >> '${log}'\nif [ "$2" = ls ]; then echo "ERROR: Reauthentication failed" >&2; exit 1; fi\nexit 0\n`, { mode: 0o755 })
+    const result = run(root, ['1.2.3', join(root, 'x64'), join(root, 'arm64')], { DRY_RUN: '0', PATH: `${shim}:${process.env.PATH}` })
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('Reauthentication failed')
+    expect(readFileSync(log, 'utf8')).not.toMatch(/ cp /)
+  })
+
+  it('checks both zips before uploading either, and starts from {} only when the manifest is confirmed absent', () => {
+    const root = payloads()
+    const shim = join(root, 'shim')
+    mkdirSync(shim)
+    const log = join(root, 'gcloud.log')
+    // arm64 zip exists; everything else is not found.
+    writeFileSync(join(shim, 'gcloud'), `#!/bin/sh\necho "$@" >> '${log}'\nif [ "$2" = ls ]; then case "$3" in *arm64.zip) exit 0;; *) echo "One or more URLs matched no objects" >&2; exit 1;; esac; fi\nexit 0\n`, { mode: 0o755 })
+    const result = run(root, ['1.2.3', join(root, 'x64'), join(root, 'arm64')], { DRY_RUN: '0', PATH: `${shim}:${process.env.PATH}` })
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('already exists')
+    expect(readFileSync(log, 'utf8')).not.toMatch(/ cp /)
   })
 })
