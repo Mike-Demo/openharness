@@ -260,13 +260,6 @@ harness new codex --machine mini ~/code/app --name train -- "Run the training sc
     or in Claude Code <code>claude mcp add harness -- harness mcp</code>. An app opened from the Finder may not have
     <code>~/.local/bin</code> on its PATH; if it cannot find <code>harness</code>, give it the full path that
     <code>command -v harness</code> prints.</p>
-  <p>Through npm, for clients that start servers with <code>npx</code>: <code>@autonomous-ai/harness-mcp</code> runs
-    <code>harness mcp</code> from the installed CLI, and where Harness is not installed it offers one tool,
-    <code>harness_setup</code>, that says how to install it.
-    <a href="goose://extension?cmd=npx&amp;arg=-y&amp;arg=%40autonomous-ai%2Fharness-mcp&amp;timeout=660&amp;id=harness&amp;name=Harness&amp;description=Start%20Claude%20Code%20and%20Codex%20agents%20the%20person%20can%20watch%2C%20wait%20for%20them%20and%20read%20their%20answers.">Add to goose</a>
-    uses this form.</p>
-  <pre><code>{"mcpServers": {"harness": {"command": "npx", "args": ["-y", "@autonomous-ai/harness-mcp"]}}}
-claude mcp add harness -- npx -y @autonomous-ai/harness-mcp</code></pre>
 
   <h2 id="rules">Rules</h2>
   <ul>

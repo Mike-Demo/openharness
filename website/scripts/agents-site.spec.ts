@@ -184,8 +184,7 @@ describe("the pages and skill agents read", () => {
     // The formats, as each editor documents them on 2026-10-11: Cursor (cursor.com/docs/mcp/install-links) and
     // LM Studio (lmstudio.ai/docs/app/mcp/deeplink) take a name and the base64 of the server's config; VS Code
     // (code.visualstudio.com/docs/copilot/guides/mcp-developer-guide) the URL-encoded config with its name in it,
-    // and its mcp.json reference marks `type` required; goose (its docs, getting-started/using-extensions) only
-    // commands such as npx, an `arg` per argument.
+    // and its mcp.json reference marks `type` required.
     const server = (JSON.parse(readFileSync(join(repo, "plugins", "harness", ".mcp.json"), "utf8")) as { mcpServers: Record<string, unknown> }).mcpServers.harness;
     const links = [...page.matchAll(/href="((?:cursor|vscode|vscode-insiders|lmstudio|goose):[^"]+)"/g)].map((m) => decode(m[1]));
     const base64 = (value: string | null) => JSON.parse(Buffer.from(value ?? "", "base64").toString("utf8"));
@@ -194,9 +193,8 @@ describe("the pages and skill agents read", () => {
     const cursor = links.filter((link) => link.startsWith("cursor://anysphere.cursor-deeplink/mcp/install?"));
     const vscode = links.filter((link) => /^vscode(-insiders)?:mcp\/install\?/.test(link));
     const lmstudio = links.filter((link) => link.startsWith("lmstudio://add_mcp?"));
-    const goose = links.filter((link) => link.startsWith("goose://extension?"));
-    expect([cursor.length, vscode.length, lmstudio.length, goose.length]).toEqual([1, 2, 1, 1]);
-    expect(links).toHaveLength(5);
+    expect([cursor.length, vscode.length, lmstudio.length]).toEqual([1, 2, 1]);
+    expect(links).toHaveLength(4);
 
     expect(query(cursor[0]).get("name")).toBe("harness");
     expect(base64(query(cursor[0]).get("config"))).toEqual(server);
@@ -204,18 +202,18 @@ describe("the pages and skill agents read", () => {
     expect(query(lmstudio[0]).get("name")).toBe("harness");
     expect(base64(query(lmstudio[0]).get("config"))).toEqual(server);
 
-    // goose runs the npm package, as the npx form beside it does, which server.json lists for the MCP Registry.
+  });
+
+  it("does not send agents to the npm package until it is published", () => {
+    // npm answered 404 for @autonomous-ai/harness-mcp on 2026-10-15, and an agent that runs `npx` on it gets only an
+    // error. Phase 10 of docs/design/2026-10-15-agent-experience.md publishes it and brings these back, with goose's
+    // link (goose runs only commands such as npx).
     const npm = (JSON.parse(readFileSync(join(repo, "server.json"), "utf8")) as { packages: { registryType: string; identifier: string }[] })
       .packages.find((pkg) => pkg.registryType === "npm")!.identifier;
-    const g = query(goose[0]);
-    expect([g.get("cmd"), ...g.getAll("arg")]).toEqual(["npx", "-y", npm]);
-    expect(g.get("id")).toBe("harness");
-    expect(page).toContain(`{"command": "npx", "args": ["-y", "${npm}"]}`);
-    expect(page).toContain(`claude mcp add harness -- npx -y ${npm}`);
-    expect(llms).toContain(`npx -y ${npm}`);
-    // goose ends a call after `timeout` seconds; harness_wait may wait up to its maximum.
-    const waitMax = Number(readFileSync(join(repo, "cli", "src", "agentClient", "mcp.ts"), "utf8").match(/const WAIT_MAX_S = (\d+)/)![1]);
-    expect(Number(g.get("timeout"))).toBeGreaterThan(waitMax);
+    for (const text of [page, llms, skill]) {
+      expect(text).not.toContain(npm);
+      expect(text).not.toContain("goose://");
+    }
   });
 
   it("links the skill where it is in this repository", () => {
