@@ -15,7 +15,7 @@ import type { HarnessSummary } from '@/lib/community/types';
  * `initial` is that page as the server read it for a visitor: drawn at once, then read again here
  * with the reader's sign-in, which is only in this browser.
  */
-export function useFeed({ following, mine, forkedFrom, query, category, sort }: FeedQuery, initial?: FeedPage | null) {
+export function useFeed({ following, mine, forkedFrom, author, query, category, sort }: FeedQuery, initial?: FeedPage | null) {
   const [posts, setPosts] = useState<HarnessSummary[]>(initial?.harnesses ?? []), [follows, setFollows] = useState<string[]>(initial?.following ?? []);
   const [stats, setStats] = useState<Record<string, Stats>>(initial?.stats ?? {}), [signedIn, setSignedIn] = useState(false);
   const [cursor, setCursor] = useState<string | null>(initial?.nextCursor ?? null), [settled, setSettled] = useState(!!initial);
@@ -28,7 +28,7 @@ export function useFeed({ following, mine, forkedFrom, query, category, sort }: 
     const requestId = ++generation.current;
     loading.current = true; setBusy(true); setError(''); setSignedOut(false);
     try {
-      const result = await communityRequest<FeedPage>(feedPath({ following, mine, forkedFrom, query, category, sort }, after));
+      const result = await communityRequest<FeedPage>(feedPath({ following, mine, forkedFrom, author, query, category, sort }, after));
       if (requestId !== generation.current) return;
       setPosts(previous => after ? [...previous, ...result.harnesses.filter(item => !previous.some(p => p.id === item.id))] : result.harnesses);
       setStats(previous => after ? { ...previous, ...result.stats } : result.stats || {});
@@ -39,7 +39,7 @@ export function useFeed({ following, mine, forkedFrom, query, category, sort }: 
       if (e instanceof CommunityError && e.status === 401) setSignedOut(true);
       else setError('Community posts are temporarily unavailable. You can still explore and fork the starter projects.');
     } finally { if (requestId === generation.current) { loading.current = false; setBusy(false); setSettled(true); } }
-  }, [following, mine, forkedFrom, query, category, sort]);
+  }, [following, mine, forkedFrom, author, query, category, sort]);
   useEffect(() => {
     void load();
     const stop = onSessionChange(() => { void load(); });

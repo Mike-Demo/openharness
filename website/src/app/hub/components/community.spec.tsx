@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Feed from './Feed';
 import Detail from './Detail';
+import CreatorPage from './CreatorPage';
 import { CommunityError, emptySocial } from '@/lib/community/client';
 import { starterHarnesses } from '@/lib/community/starters';
 import type { OpenHarness } from '@/lib/community/types';
@@ -307,6 +308,28 @@ describe('community navigation', () => {
     vi.useRealTimers();
     expect(await screen.findByRole('heading', { name: 'Edited' })).toBeInTheDocument();
     expect(request).toHaveBeenLastCalledWith(`harnesses/${id}?files=viewer`);
+  });
+  it('shows a creator’s page: who they are, their harnesses, and following them', async () => {
+    const creator = { id: 'alice', name: 'Alice', followers: 1, following: false, mine: false, signedIn: true };
+    request.mockImplementation(async (path: string, options?: { method?: string }) => {
+      if (options?.method === 'PUT') return { following: true };
+      if (path.startsWith('creators/')) return { creator };
+      return { harnesses: [{ ...sample, id: 'mine-1', title: 'Her harness', authorId: 'alice', authorName: 'Alice', example: false }], nextCursor: null, following: [], stats: {}, signedIn: true };
+    });
+    render(<CreatorPage id="alice" initial={creator} initialView={{ query: '', category: '', sort: 'newest' }} />);
+    expect(screen.getByRole('heading', { name: 'Alice' })).toBeInTheDocument();
+    await screen.findByRole('link', { name: 'Open Her harness' });
+    expect(request).toHaveBeenCalledWith('harnesses?author=alice');
+    expect(screen.getAllByRole('link', { name: 'Alice' })[0]).toHaveAttribute('href', '/hub/creators/alice');
+    fireEvent.click(screen.getByRole('button', { name: 'Follow' }));
+    await screen.findByRole('button', { name: 'Following' });
+    expect(screen.getByText('2 followers')).toBeInTheDocument();
+    expect(request).toHaveBeenCalledWith('creators/alice/follow', { method: 'PUT', body: { following: true } });
+  });
+  it('says a creator is unavailable when the Hub has no such creator', async () => {
+    request.mockRejectedValue(new CommunityError('This creator is unavailable.', 404));
+    render(<CreatorPage id="nobody" initial={null} initialView={{ query: '', category: '', sort: 'newest' }} />);
+    expect(await screen.findByRole('heading', { name: 'This creator is unavailable.' })).toBeInTheDocument();
   });
   it('opens a touch screen’s share sheet instead of copying', async () => {
     request.mockResolvedValue({ harness: null, social: emptySocial });

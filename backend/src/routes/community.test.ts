@@ -77,6 +77,7 @@ const db = vi.hoisted(() => {
 vi.mock('../lib/prisma.js', () => ({ prisma: db }))
 import { communityRoutes, publicationSchema } from './community.js'
 import { communityCommentRoutes } from './communityComments.js'
+import { communityCreatorRoutes } from './communityCreators.js'
 import { communityEditRoutes, resetEditRateLimits } from './communityEdit.js'
 import { registerAuthMiddleware } from '../middlewares/authMiddleware.js'
 import { errorHandler } from '../middlewares/errorHandler.js'
@@ -101,7 +102,7 @@ beforeEach(async () => {
     if (!['alice', 'bob'].includes(token)) throw new Error('Invalid token')
     return { sub: token, email: `${token}@example.com`, role: 'user', autonomousEnv }
   })
-  await app.register(communityRoutes); await app.register(communityEditRoutes); await app.register(communityCommentRoutes); await app.ready()
+  await app.register(communityRoutes); await app.register(communityEditRoutes); await app.register(communityCommentRoutes); await app.register(communityCreatorRoutes); await app.ready()
 })
 afterEach(async () => app.close())
 
@@ -453,6 +454,27 @@ describe('persistent social actions', () => {
     expect(first.headers['cache-control']).toBe('no-store')
     expect((await call('GET', `harnesses/${id}/comments?before=${crypto.randomUUID()}`)).json().data).toEqual({ comments: [], more: false })
     expect((await call('GET', `harnesses/${id}/comments`)).statusCode).toBe(400)
+  })
+  it('gives a creator a page: their name, followers and harnesses, and the reader’s follow', async () => {
+    const first = await publish('alice', { ...sample, title: 'First' })
+    await publish('alice', { ...sample, title: 'Second' })
+    await publish('bob', { ...sample, title: 'Not hers' })
+    db.communityHarness.rows.forEach((row, index) => { row.createdAt = new Date(Date.now() + index * 1000) })
+    await call('PUT', 'creators/alice/follow', 'bob', { following: true })
+    expect((await call('GET', 'creators/alice')).json().data.creator).toEqual({ id: 'alice', name: 'Alice', followers: 1, following: false, mine: false, signedIn: false })
+    expect((await call('GET', 'creators/alice', 'bob')).json().data.creator).toMatchObject({ following: true, signedIn: true })
+    expect((await call('GET', 'creators/alice', 'alice')).json().data.creator).toMatchObject({ mine: true })
+    const feed = (await call('GET', 'harnesses?author=alice')).json().data
+    expect(feed.harnesses.map((row: Row) => row.title)).toEqual(['Second', 'First'])
+    expect((await call('GET', 'harnesses?author=alice&sort=popular')).json().data.order).toHaveLength(2)
+    expect((await call('GET', 'harnesses?author=harness&sort=popular')).json().data.order).toEqual([...communityStarters])
+    expect((await call('GET', 'harnesses?author=alice&mine=true', 'alice')).statusCode).toBe(400)
+    expect((await call('GET', 'creators/harness')).json().data.creator).toMatchObject({ name: 'Harness' })
+    // Nothing published, no page: an account's id names no one who has not chosen to publish.
+    expect((await call('GET', 'creators/carol')).statusCode).toBe(404)
+    await call('DELETE', `harnesses/${first}`, 'alice')
+    expect(isPublicCommunityRead('GET', '/api/community/creators/alice')).toBe(true)
+    expect(isPublicCommunityRead('GET', '/api/community/creators/alice/follow')).toBe(false)
   })
   it('sends a harness page only its output when asked', async () => {
     const payload = { ...sample, files: [...sample.files, { path: 'src/app.js', content: 'console.log(1)' }] }

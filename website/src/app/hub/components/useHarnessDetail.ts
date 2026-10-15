@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { communityRequest, emptySocial, CommunityError } from '@/lib/community/client';
 import { commentTotal, keepEarlier } from '@/lib/community/comments';
-import { putLike } from '@/lib/community/social';
+import { putFollow, putLike } from '@/lib/community/social';
 import type { HarnessComment, OpenHarness, SocialState } from '@/lib/community/types';
 import { useRefreshOnReturn } from './useRefreshOnReturn';
 
@@ -77,7 +77,7 @@ export function useHarnessDetail(id: string, initial: OpenHarness | null, onSign
   const follow = () => mutate(async () => {
     if (!harness) return;
     const next = !social.following;
-    await communityRequest(`creators/${harness.authorId}/follow`, { method: 'PUT', body: { following: next } });
+    await putFollow(harness.authorId, next);
     setSocial(value => ({ ...value, following: next }));
   });
   const like = () => mutate(async () => {

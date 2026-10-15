@@ -17,15 +17,16 @@ export type Stats = { likes: number; comments: number; liked: boolean; forks?: n
 /** One page of a feed. `order` comes with a popular feed from a backend that ranks the starters too; an older one leaves it out. */
 export type FeedPage = { harnesses: HarnessSummary[]; order?: string[]; nextCursor: string | null; following: string[]; stats?: Record<string, Stats>; signedIn?: boolean };
 
-/** Which publications one feed lists: a tab's, or one harness's forks, narrowed by a view. */
-export type FeedQuery = Partial<FeedView> & { following?: boolean; mine?: boolean; forkedFrom?: string };
+/** Which publications one feed lists: a tab's, one harness's forks or one creator's, narrowed by a view. */
+export type FeedQuery = Partial<FeedView> & { following?: boolean; mine?: boolean; forkedFrom?: string; author?: string };
 
 /** One page's request. Defaults are left out, so a backend without a filter reads the request as before. */
-export function feedPath({ following, mine, forkedFrom, query, category, sort }: FeedQuery, after?: string): string {
+export function feedPath({ following, mine, forkedFrom, author, query, category, sort }: FeedQuery, after?: string): string {
   const params = new URLSearchParams();
   if (following) params.set('following', 'true');
   if (mine) params.set('mine', 'true');
   if (forkedFrom) params.set('forkedFrom', forkedFrom);
+  if (author) params.set('author', author);
   if (query) params.set('q', query);
   if (category) params.set('category', category);
   if (sort && sort !== 'newest') params.set('sort', sort);

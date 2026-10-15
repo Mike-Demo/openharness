@@ -50,3 +50,5 @@ export type SocialState = {
   /** When its author last edited it (null if never); a backend older than it leaves it out. */
   updatedAt?: string | null;
 };
+/** A creator's page: the name their publications carry, who follows them, and the reader's follow. */
+export type Creator = { id: string; name: string; followers: number; following: boolean; mine: boolean; signedIn: boolean };

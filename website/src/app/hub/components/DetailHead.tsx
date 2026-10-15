@@ -20,7 +20,7 @@ type Props = {
 export function DetailHead({ harness, social, ready, busy, panel, onFollow, onLike, onPanel }: Props) {
   return <header className={styles.detailHead}>
     <div className={styles.identity}><h1>{harness.title}</h1><div className={styles.byline}>
-      <span>{harness.authorName}</span>
+      <Link className={styles.authorLink} href={`/hub/creators/${harness.authorId}`}>{harness.authorName}</Link>
       {!social.mine && <button className={styles.follow} disabled={busy} aria-pressed={social.following} onClick={onFollow}>{social.following ? 'Following' : 'Follow'}</button>}
       <ForkedFrom harness={harness} />
       {!!social.forks && <a className={styles.textLink} href="#forks">{social.forks === 1 ? '1 fork' : `${social.forks} forks`}</a>}

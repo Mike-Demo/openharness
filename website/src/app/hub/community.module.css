@@ -197,3 +197,4 @@
 @media(max-width:480px){.actions{gap:18px}.actionLabel{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}}
 .byline a,.byline button{display:inline-flex;align-items:center}
 @media(max-width:760px){.chat{scroll-margin-top:104px}}
+.authorLink:hover{text-decoration:underline}

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { starterHarnesses, starterConversation, starterSlug } from './starters';
 import { feedPath, type FeedPage, type FeedView } from './feed';
-import type { OpenHarness } from './types';
+import type { Creator, OpenHarness } from './types';
 
 export function communityApiOrigin(): string {
   const url = new URL(process.env.COMMUNITY_API_URL || 'https://harness-api.autonomous.ai');
@@ -49,16 +49,18 @@ export async function getPublicHarness(id: string, read: HarnessRead = {}): Prom
   return harness && read.viewerOnly ? onlyViewer(harness) : harness;
 }
 
-/**
- * A feed's first page as a visitor reads it, for the page the server draws: the reader's sign-in is
- * only in their browser, which reads the page again with it. Null past `timeoutMs` or on any failure,
- * and the browser loads the feed itself.
- */
-export async function getFeedPage(view: FeedView, timeoutMs: number): Promise<FeedPage | null> {
+/** A public Hub read for a page the server draws, as a visitor. Null past `timeoutMs` or on any failure: the browser reads it itself. */
+async function readHub<T>(path: string, timeoutMs: number): Promise<T | null> {
   try {
-    const response = await fetch(`${communityApiOrigin()}/api/community/${feedPath(view)}`, { cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetch(`${communityApiOrigin()}/api/community/${path}`, { cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) return null;
     const body = await response.json();
-    return body.success ? body.data as FeedPage : null;
+    return body.success ? body.data as T : null;
   } catch { return null; }
 }
+
+/** A feed's first page as a visitor reads it: the reader's sign-in is only in their browser, which reads the page again with it. */
+export const getFeedPage = (view: FeedView, timeoutMs: number) => readHub<FeedPage>(feedPath(view), timeoutMs);
+
+/** A creator's page head as a visitor reads it. */
+export const getCreator = async (id: string, timeoutMs: number) => (await readHub<{ creator: Creator }>(`creators/${id}`, timeoutMs))?.creator ?? null;

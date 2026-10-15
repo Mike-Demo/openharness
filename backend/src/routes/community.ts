@@ -160,23 +160,24 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
     cursor: z.string().uuid().or(z.enum([...communityStarters] as [string, ...string[]])).optional(),
     following: z.enum(['true', 'false']).optional(), mine: z.enum(['true', 'false']).optional(),
     q: z.string().trim().min(1).max(searchMaxChars).optional(), category: z.enum(communityCategories).optional(),
-    sort: z.enum(feedSorts).optional(), forkedFrom: identifier.optional(),
+    sort: z.enum(feedSorts).optional(), forkedFrom: identifier.optional(), author: identifier.optional(),
   }).strict().refine(query => query.sort === 'popular' || !communityStarters.has(query.cursor ?? ''), 'Only a popular feed pages past a starter.')
+    .refine(query => !query.author || (query.mine !== 'true' && query.following !== 'true'), 'A creator’s feed is neither yours nor Following.')
   app.get<{ Querystring: z.infer<typeof feedQuery> }>('/api/community/harnesses', { preHandler: validateQuery(feedQuery) }, async (req, reply) => {
     const autonomousEnv = environment(req)
     if ((req.query.following === 'true' || req.query.mine === 'true') && !req.user) return sendError(reply, 'Sign in to see your harnesses and creators you follow.', 'UNAUTHORIZED', 401)
     const follows = req.user ? await prisma.communityFollow.findMany({ where: { autonomousEnv, userId: req.user.sub }, select: { authorId: true } }) : []
-    const { following, mine, q, category, forkedFrom, sort = 'newest', cursor } = req.query
+    const { following, mine, q, category, forkedFrom, author, sort = 'newest', cursor } = req.query
     const where = {
       autonomousEnv, deletedAt: null, ...searchWhere(q),
       ...(following === 'true' ? { authorId: { in: follows.map(row => row.authorId) } } : {}), ...(mine === 'true' ? { authorId: req.user!.sub } : {}),
-      ...(category ? { category } : {}), ...(forkedFrom ? { forkedFrom } : {}),
+      ...(category ? { category } : {}), ...(forkedFrom ? { forkedFrom } : {}), ...(author ? { authorId: author } : {}),
     }
     // Starters are the website's: it matches their search and category, so a popular page ranks all of
-    // them there is a place for — none among your own or a harness's forks, and in Following only
-    // when the reader follows Harness.
+    // them there is a place for — none among your own or a harness's forks, in Following only when
+    // the reader follows Harness, and on a creator's page only on Harness's.
     const followed = new Set(follows.map(row => row.authorId))
-    const starters = mine === 'true' || forkedFrom || (following === 'true' && !followed.has(communityStarterAuthor)) ? [] : [...communityStarters]
+    const starters = mine === 'true' || forkedFrom || (following === 'true' && !followed.has(communityStarterAuthor)) || (author && author !== communityStarterAuthor) ? [] : [...communityStarters]
     const { page, order, nextCursor } = await feedPage(where, autonomousEnv, sort, starters, cursor)
     const ids = [...page.map(row => row.id), ...communityStarters]
     const [stats, covered] = await Promise.all([
