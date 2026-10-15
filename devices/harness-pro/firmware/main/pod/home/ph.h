@@ -11,7 +11,6 @@ enum { PH_GROUND = 0x221F1D, PH_RAISED = 0x2C2826, PH_BORDER = 0x47413C, PH_EDGE
        PH_RUN = 0x3EE05B, PH_FOCUS = 0x3EE05B };
 // The room's dark tokens (Pets design, "Look (dark)"): the scene ground, ink, muted ink, and the working green.
 enum { PH_ROOM_BG = 0x221F1D, PH_ROOM_INK = 0xEFE7DE, PH_ROOM_MUTED = 0x8F8790, PH_ROOM_GREEN = 0x3EE05B };
-enum { PH_BAR_H = 72 };
 // Home's cover cards (gradient top, bottom per main engine), the name and numeral ink on them, and the status tints.
 enum { PH_HOME_BG = 0x151413,
        PH_TINT_CODEX1 = 0x4F6CF2, PH_TINT_CODEX2 = 0x1C2A78, PH_TINT_CLAUDE1 = 0xE0805A, PH_TINT_CLAUDE2 = 0x7A3420,
@@ -23,9 +22,6 @@ enum { PH_HOME_BG = 0x151413,
        PH_TOAST_FILL = 0x1B2A3D, PH_TOAST_EDGE = 0x2A3D55, PH_TOAST_NAME = 0xFFB36B, PH_TOAST_INK = 0xF2F7FC, PH_TOAST_BAR = 0xFF8A3D,   // the notice toast
        PH_CARD_INK = 0xFFFFFF, PH_PILL_WORK = 0x9DFFC0, PH_PILL_ASK = 0xFFC796 };
 
-// The 72 px bar at the top of the Update screen: the logo mark and the breadcrumbs (every crumb but the last is a POD_A_BACK hit
-// whose arg is the number of levels up). No chips, no voice input: the rooms have no bar.
-void ph_bar(pod_out_frame_t *, const char *const crumbs[], int n);
 // Home's equaliser: four 8 px bars 5 px apart (47 wide) in a 36 px box at (x, y), PH_ROOM_GREEN, a triangle wave between 40 % and 100 %, 900 ms.
 void ph_working_mark_big(ht_scene_t *, int x, int y, uint32_t now_ms);
 // A title centred on x 360 at y 46 (ph_sb_26, PH_ROOM_INK), control characters as spaces, cut with an ellipsis at 640 px: the room's name, "Notices".
