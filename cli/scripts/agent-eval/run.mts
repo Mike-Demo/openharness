@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { createInterface } from 'node:readline/promises'
-import { callsFromClaude, callsFromCodex, score, type Case, type Score } from './score.mts'
+import { callsFromClaude, callsFromCodex, evalEnv, score, type Case, type Score } from './score.mts'
 
 const arg = (name: string): string | undefined => { const i = process.argv.indexOf(`--${name}`); return i === -1 ? undefined : process.argv[i + 1] }
 const agent = arg('agent'), machine = arg('machine'), offline = arg('offline'), out = arg('out')
@@ -32,7 +32,7 @@ function runAgent(c: Case): Promise<string[]> {
     ? ['claude', ['-p', prompt(c), '--output-format', 'stream-json', '--verbose', '--allowedTools', 'Bash(harness:*)', 'Read', '--disallowedTools', 'Edit', 'Write']]
     : ['codex', ['exec', '--json', '-C', repo, prompt(c)]]
   return new Promise((done) => {
-    const child = spawn(cmd, args as string[], { cwd: repo, stdio: ['ignore', 'pipe', 'inherit'] })
+    const child = spawn(cmd, args as string[], { cwd: repo, env: evalEnv(process.env), stdio: ['ignore', 'pipe', 'inherit'] })
     let text = ''
     child.stdout.on('data', (chunk) => { text += chunk })
     child.on('close', () => done(text.split('\n').filter(Boolean)))

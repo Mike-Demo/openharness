@@ -1,7 +1,7 @@
 [
   { "id": "second-opinion", "setup": "agents-start-agents on (harness settings agents-start-agents on).",
     "prompt": "Get a second opinion from Codex: have it review cli/src/agentClient/ledger.ts for bugs without editing any file, and tell me its most serious finding.",
-    "expect": { "run": ["new", "show"], "answer": "\\w{20,}" } },
+    "expect": { "run": ["new", "show"], "answer": "[\\s\\S]{20,}" } },
   { "id": "other-machine", "setup": "agents-start-agents on; {machine} is running and signed in to the same account.",
     "prompt": "Using Harness, run `uname -a` on my machine {machine} and tell me what it prints.",
     "expect": { "run": ["new", "show"], "answer": "Linux|Darwin" } },

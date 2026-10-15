@@ -25,15 +25,26 @@ export interface Score {
   ranExpected: boolean; ranForbidden: string[]; answerOk: boolean; done: boolean
 }
 
+/** What would make the eval agent someone else to Harness: the operator's pane, or the operator's own agent session. */
+const SESSION_KEYS = ['TMUX_PANE', 'CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'AI_AGENT', 'HARNESS_AGENT_SESSION']
+
+/** The environment an eval agent starts with: the operator's, without who the operator is. Run from a Harness pane,
+ *  the agent would otherwise be that pane's harness: its limits, its depth, its children (review, 2026-10-15). */
+export function evalEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !SESSION_KEYS.includes(key)))
+}
+
 const ACTIONS = new Set(['new', 'show', 'wait', 'close', 'send'])
 const LOOKS = new Set(['ps', 'whoami', 'settings', 'machines', 'version', 'help', '--help', 'status'])
 const REFUSED = /may not start|Close one you are done with|the most allowed|in 10 minutes|turns on "Agents can start/i
 
-/** The verb of the first `harness` in a shell command, by any path, inside quotes too. */
-export function harnessVerb(command: string): string | null {
-  const m = command.match(/(?:^|[\s;&|('"])(?:[^\s;&|('"]*\/)?harness\s+(--help|[a-z][a-z-]*)/)
-  return m ? m[1] : null
+/** The verb of each `harness` in a shell command, in order, by any path, inside quotes too: agents join them with &&. */
+export function harnessVerbs(command: string): string[] {
+  return [...command.matchAll(/(?:^|[\s;&|('"])(?:[^\s;&|('"]*\/)?harness\s+(--help|[a-z][a-z-]*)/g)].map((m) => m[1])
 }
+
+/** The verb of the first `harness` in a shell command, or null. */
+export const harnessVerb = (command: string): string | null => harnessVerbs(command)[0] ?? null
 
 const parse = (line: string): any => { try { return JSON.parse(line) } catch { return null } }
 
@@ -76,7 +87,8 @@ export function callsFromCodex(lines: readonly string[]): { calls: Call[]; answe
 }
 
 export function score(c: Case, agent: string, calls: readonly Call[], answer: string): Score {
-  const harness = calls.map((call) => ({ ...call, verb: harnessVerb(call.command) })).filter((call): call is Call & { verb: string } => !!call.verb)
+  // One entry a harness command; commands joined in one call share its exit and output.
+  const harness = calls.flatMap((call) => harnessVerbs(call.command).map((verb) => ({ ...call, verb })))
   const first = harness.findIndex((h) => ACTIONS.has(h.verb))
   const orientation = (first === -1 ? harness : harness.slice(0, first)).filter((h) => LOOKS.has(h.verb)).length
   const wrong = harness.filter((h) => h.exit === 2 || /Unknown (option|command)/i.test(h.output)).length
@@ -84,6 +96,8 @@ export function score(c: Case, agent: string, calls: readonly Call[], answer: st
   for (const h of harness) {
     if (h.verb === 'new' && refused) retries++
     if (h.verb === 'new' && h.exit !== 0 && REFUSED.test(h.output)) refused = true
+    // Closing one is what the refusal asks for: the next start is the advice taken, not a retry.
+    if (h.verb === 'close' && h.exit === 0) refused = false
   }
   const ok = (verb: string) => harness.some((h) => h.verb === verb && h.exit === 0)
   const count = (verb: string) => harness.filter((h) => h.verb === verb && h.exit === 0).length
