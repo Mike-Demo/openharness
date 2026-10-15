@@ -86,6 +86,16 @@ pub fn wait_discovery(home: &std::path::Path) -> serde_json::Value {
     }
 }
 
+/// Whether the host under test runs the bundled ConPTY (`conpty.dll` beside it, where
+/// `scripts/fetch-conpty.ps1`'s payload goes in a release and in CI) rather than the inbox one. They
+/// frame the same output a little differently; the stream tests say where.
+pub fn bundled_conpty() -> bool {
+    cfg!(windows)
+        && std::path::Path::new(env!("CARGO_BIN_EXE_harness-pty"))
+            .with_file_name("conpty.dll")
+            .exists()
+}
+
 pub fn host_command(home: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_harness-pty"));
     command.args(["serve", "--home"]).arg(home);

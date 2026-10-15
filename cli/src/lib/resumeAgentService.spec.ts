@@ -12,13 +12,15 @@ import { StoppedAgentStore } from './stoppedAgents.js'
 import { AgentRestartCoordinator } from './restartAgent.js'
 import { checkPidRuntime } from './deleteAgentFallback.js'
 import { checkSessionRuntime, resolvePaneEngineProcess } from './paneEngineProcess.js'
-import { buildEngineLaunchArgv, dropPermissionFlagIfUnsupported, refusePermissionFlagIfUnsupported } from './engineLaunch.js'
+import { buildEngineLaunchArgv, dropPermissionFlagIfUnsupported, engineLaunchEnv, refusePermissionFlagIfUnsupported } from './engineLaunch.js'
 import { enginePathOverride } from './engineBin.js'
 import { installedDsh } from '../dsh/installed.js'
 import { createLaunchHelpers } from '../core/agents/launch.js'
 import { createLaunchAuthority } from '../core/agents/launchAuthority.js'
 import type { NativeLaunch } from '../engines/nativeLaunch.js'
 import type { TerminalInventoryResult } from './terminalTypes.js'
+import { WindowsBatchLaunchRefused } from './windows/launch.js'
+import { NATIVE_LAUNCH_MARKER } from './nativePaneHold.js'
 
 vi.mock('./deleteAgentFallback.js', () => ({ checkPidRuntime: vi.fn() }))
 vi.mock('./paneEngineProcess.js', () => ({ checkSessionRuntime: vi.fn(), resolvePaneEngineProcess: vi.fn() }))
@@ -29,6 +31,7 @@ vi.mock('./paneEngineProcess.js', () => ({ checkSessionRuntime: vi.fn(), resolve
 vi.mock('./engineLaunch.js', async importOriginal => ({
   ...(await importOriginal<typeof import('./engineLaunch.js')>()),
   buildEngineLaunchArgv: vi.fn(() => ['fixture-engine']),
+  engineLaunchEnv: vi.fn(() => undefined),
   dropPermissionFlagIfUnsupported: vi.fn(async (_engine: unknown, choice: unknown) => ({ choice, droppedFlag: null })),
   refusePermissionFlagIfUnsupported: vi.fn(async () => null),
 }))
@@ -381,6 +384,22 @@ describe('production resume handler', () => {
   ] as const)('refuses %s without allocating or losing history', async (_label, setup, error) => {
     setup(); expect(await start()).toMatchObject({ ok: false, error }); expect(create).not.toHaveBeenCalled()
     expect(deps.stoppedAgents.get(saved.agentId)?.agentId).toBe(saved.agentId)
+  })
+  it('answers a launch Windows refuses by its reason, opening nothing and keeping the stopped harness', async () => {
+    vi.mocked(buildEngineLaunchArgv).mockImplementationOnce(() => { throw new WindowsBatchLaunchRefused('codex', 'C:\\tools\\codex.cmd') })
+    expect(await start()).toEqual({ ok: false, error: 'ENGINE_LAUNCH_REFUSED', detail: expect.stringContaining('codex.cmd is a batch file') })
+    expect(create).not.toHaveBeenCalled()
+    expect(deps.stoppedAgents.get(saved.agentId)?.agentId).toBe(saved.agentId)
+    expect(deps.stoppedAgents.resumeReservedAt(saved.agentId)).toBeNull()
+  })
+  it('sends a native launch\'s marker in the pane env on Windows, where the argv has no /usr/bin/env', async () => {
+    const native = { token: 'resume-native', current: () => true } as NativeLaunch
+    vi.mocked(deps.relaunchOverrides).mockResolvedValue({ ok: true, overrides: { env: { GRID: '1' }, extraArgs: [], clearEnv: [], native } })
+    // What engineLaunchEnv answers on Windows (engineLaunch.spec.ts pins it there).
+    vi.mocked(engineLaunchEnv).mockReturnValueOnce({ [NATIVE_LAUNCH_MARKER]: 'resume-native' })
+    await start()
+    expect(engineLaunchEnv).toHaveBeenCalledWith(saved.engine, native)
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ env: { GRID: '1', [NATIVE_LAUNCH_MARKER]: 'resume-native' } }))
   })
   it('names the configured backend when none can open the resumed pane', async () => {
     deps.createBackend = null

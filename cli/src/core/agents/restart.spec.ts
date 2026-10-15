@@ -123,6 +123,11 @@ describe('restarting an agent', () => {
     expect(run.deps.downgradedPermission).toHaveBeenCalledWith(expect.any(Object), true, 'restart', launch)
   })
 
+  it('answers a relaunch refused on Windows by its own code, having stopped nothing', async () => {
+    vi.mocked(restartAgent).mockResolvedValueOnce({ ok: false, error: 'ENGINE_LAUNCH_REFUSED', detail: 'Harness cannot start claude on Windows. Nothing was stopped.' })
+    expect(await setup(agent()).restart('a1')).toEqual({ ok: false, error: 'ENGINE_LAUNCH_REFUSED', detail: 'Harness cannot start claude on Windows. Nothing was stopped.' })
+  })
+
   it('never starts a fresh conversation when an admitted external resume fails', async () => {
     const actual = await vi.importActual<typeof import('../../lib/restartAgent.js')>('../../lib/restartAgent.js')
     vi.mocked(restartAgent).mockImplementationOnce(actual.restartAgent)

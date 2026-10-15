@@ -41,7 +41,10 @@ import {
   unreadableCwdGuard,
   ZSH_GUARD_ZSHENV,
   zshNewUserGuard,
+  engineLaunchEnv,
 } from './engineLaunch.js'
+import { NATIVE_LAUNCH_MARKER } from './nativePaneHold.js'
+import type { NativeLaunch } from '../engines/nativeLaunch.js'
 import { ENGINES, type AgentEngine } from '../engines/types.js'
 import { engineBin } from './engineBin.js'
 import { engineInstallRecipe, type EngineInstallRecipe } from './engineInstall.js'
@@ -691,6 +694,25 @@ printf '%s %s' "$harness_status" "$resumed"`], { encoding: 'utf8', stdio: ['igno
       vi.unstubAllEnvs()
       rmSync(npm, { recursive: true, force: true })
     }
+  })
+
+  // Windows has no /usr/bin/env: the variables it carried ride in the pane's env (engineLaunchEnv).
+  it('never puts /usr/bin/env in front of a Windows launch, and gives its variables as env instead', () => {
+    const native = { token: 'native-token' } as NativeLaunch
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    let windows: string[][]
+    try {
+      Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+      windows = [buildEngineLaunchArgv('claude', {}, ''), buildEngineLaunchArgv('claude', { native }, '')]
+    } finally { Object.defineProperty(process, 'platform', platform) }
+    // The engine itself first: its name here, its resolved exe on a real Windows (windows/launch.ts).
+    expect(windows[0][0]).toMatch(/(?:^|[\\/])claude(?:\.exe)?$/)
+    for (const argv of windows) expect(argv).not.toContain('/usr/bin/env')
+    expect(engineLaunchEnv('claude', native, 'win32')).toEqual({ [NATIVE_LAUNCH_MARKER]: 'native-token' })
+    expect(engineLaunchEnv('codex', undefined, 'win32')).toBeUndefined()
+    // Elsewhere the prefix stays in the argv, as before, and there is no env to add.
+    if (process.platform !== 'win32') expect(buildEngineLaunchArgv('claude', { native }, '').slice(0, 2)).toEqual(['/usr/bin/env', `${NATIVE_LAUNCH_MARKER}=native-token`])
+    expect(engineLaunchEnv('claude', native, 'darwin')).toBeUndefined()
   })
 
   it('appends the confirmed flag for engines with a known bypass flag', () => {

@@ -8,7 +8,7 @@ import { dshPinnedPermissionMode } from '../../dsh/manifest.js'
 import { incompatibleHarnessEngine } from '../../dsh/compatibility.js'
 import { createAndRegisterPane } from '../../lib/createAgentPane.js'
 import { enginePathOverride } from '../../lib/engineBin.js'
-import { buildEngineLaunchArgv, namedAgentArgs, permissionModeFlags, refusePermissionFlagIfUnsupported, supportsFirstPrompt } from '../../lib/engineLaunch.js'
+import { buildEngineLaunchArgv, engineLaunchEnv, namedAgentArgs, permissionModeFlags, refusePermissionFlagIfUnsupported, supportsFirstPrompt } from '../../lib/engineLaunch.js'
 import { setUpWithin } from '../../lib/setUpWithin.js'
 import { writeGridConfigDir } from '../../lib/gridConfigDir.js'
 import type { GridLaunchAnswer, GridLaunchRequest } from '../../lib/gridLaunchWire.js'
@@ -83,6 +83,7 @@ vi.mock('../../lib/engineLaunch.js', async (real) => ({
   ...await real<object>(),
   buildEngineCommandArgv: vi.fn(() => ['claude']),
   buildEngineLaunchArgv: vi.fn(() => ['zsh', '-lc', 'claude']),
+  engineLaunchEnv: vi.fn(() => undefined),
   namedAgentArgs: vi.fn((_engine: string, agent: string) => ['--agent', agent]),
   permissionModeApproves: vi.fn(() => true),
   permissionModeFlags: vi.fn(() => ['--permission-mode']),
@@ -471,6 +472,13 @@ describe('creating an agent', () => {
       expect(deps.watchNewPane).toHaveBeenCalledWith('claude', pending, { runtime: { paneId: '%1' } }, ['claude'], { install: 'recipe' }, undefined)
       const pane = vi.mocked(createAndRegisterPane).mock.calls[0][0]
       expect(pane).toMatchObject({ engine: 'claude', sessionLabel: expect.any(String), grid: null, gridLaunchRecord: null, dsh: null, dshRuntime: null, defaultName: null })
+    })
+
+    it('sends the launch\'s Windows variables (no /usr/bin/env there) with the pane env, after its own', async () => {
+      vi.mocked(engineLaunchEnv).mockReturnValueOnce({ HARNESS_NATIVE_FIXTURE: 'token' })
+      expect(await setup().create(request())).toMatchObject({ ok: true })
+      expect(vi.mocked(createAndRegisterPane).mock.calls[0][0].env).toMatchObject({ HARNESS_NATIVE_FIXTURE: 'token' })
+      expect(engineLaunchEnv).toHaveBeenCalledWith('claude', undefined)
     })
 
     it('starts an approving session in the default harness permission when no mode was named', async () => {

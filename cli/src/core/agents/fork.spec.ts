@@ -6,7 +6,7 @@ import { installedDsh } from '../../dsh/installed.js'
 import { createAndRegisterPane } from '../../lib/createAgentPane.js'
 import { WindowsBatchLaunchRefused } from '../../lib/windows/launch.js'
 import { enginePathOverride } from '../../lib/engineBin.js'
-import { buildEngineLaunchArgv, refusePermissionFlagIfUnsupported, supportsNamedAgent } from '../../lib/engineLaunch.js'
+import { buildEngineLaunchArgv, engineLaunchEnv, refusePermissionFlagIfUnsupported, supportsNamedAgent } from '../../lib/engineLaunch.js'
 import { planFork } from '../../lib/forkAgent.js'
 import { prepareInstructionWrites } from '../../scm/scmProjects.js'
 import type { RegisteredSession } from '../../lib/registry.js'
@@ -29,6 +29,7 @@ vi.mock('../../lib/engineLaunch.js', async (real) => ({
   ...await real<object>(),
   buildEngineCommandArgv: vi.fn(() => ['claude']),
   buildEngineLaunchArgv: vi.fn(() => ['zsh', '-lc', 'claude']),
+  engineLaunchEnv: vi.fn(() => undefined),
   namedAgentArgs: vi.fn((_engine: string, agent: string) => ['--agent', agent]),
   refusePermissionFlagIfUnsupported: vi.fn(async () => null),
   supportsNamedAgent: vi.fn(() => true),
@@ -189,6 +190,12 @@ describe('forking an agent', () => {
     expect(prepareInstructionWrites).not.toHaveBeenCalled()
     expect(deps.prepareApiTools).not.toHaveBeenCalled()
     expect(createAndRegisterPane).not.toHaveBeenCalled()
+  })
+
+  it('sends the launch\'s Windows variables (no /usr/bin/env there) with the pane env', async () => {
+    vi.mocked(engineLaunchEnv).mockReturnValueOnce({ HARNESS_NATIVE_FIXTURE: 'token' })
+    expect(await setup(source()).fork({ agentId: 'a1', name: null, prompt: null })).toMatchObject({ ok: true })
+    expect(vi.mocked(createAndRegisterPane).mock.calls[0]![0].env).toMatchObject({ HARNESS_NATIVE_FIXTURE: 'token' })
   })
 
   it('refuses a batch-file engine on Windows whose first message cmd.exe would read, by name', async () => {

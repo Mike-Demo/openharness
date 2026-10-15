@@ -18,7 +18,7 @@ import type { TurnRecaps } from '../turns/recaps.js'
 import { createAndRegisterPane } from '../../lib/createAgentPane.js'
 import { enginePathOverride } from '../../lib/engineBin.js'
 import { engineInstallRecipe } from '../../lib/engineInstall.js'
-import { buildEngineCommandArgv, buildEngineLaunchArgv, namedAgentArgs, refusePermissionFlagIfUnsupported, supportsNamedAgent } from '../../lib/engineLaunch.js'
+import { buildEngineCommandArgv, buildEngineLaunchArgv, engineLaunchEnv, namedAgentArgs, refusePermissionFlagIfUnsupported, supportsNamedAgent } from '../../lib/engineLaunch.js'
 import { forkName, planFork } from '../../lib/forkAgent.js'
 import { buildHarnessSessionLabel } from '../../lib/harnessSessionLabel.js'
 import { projectDisplayName, type registry, type RegisteredSession } from '../../lib/registry.js'
@@ -182,8 +182,9 @@ export function createAgentForker({
       sessionLabel: label,
       argv,
       // The SCM's environment last, after the harness context's, as at create and relaunch.
-      env: mergedLaunchEnv(mergedLaunchEnv(Object.keys(built.overrides.env).length ? built.overrides.env : undefined, dshEnv),
-        mergedLaunchEnv(scmLaunchEnv(source.scmLaunch), built.overrides.native?.environment)),
+      // Windows: the variables the argv's `/usr/bin/env` prefix carries elsewhere, last (engineLaunchEnv).
+      env: mergedLaunchEnv(mergedLaunchEnv(mergedLaunchEnv(Object.keys(built.overrides.env).length ? built.overrides.env : undefined, dshEnv),
+        mergedLaunchEnv(scmLaunchEnv(source.scmLaunch), built.overrides.native?.environment)), engineLaunchEnv(engine, built.overrides.native)),
       grid: null,
       gridLaunchRecord: null,
       // Same folder as the source, so the same workspace binding.

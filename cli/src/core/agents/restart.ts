@@ -190,7 +190,8 @@ export function createAgentRestarter({
       )
 
       if (!current()) return changed
-      if (!outcome.ok) return { ok: false, error: 'RESTART_FAILED', detail: outcome.detail }
+      // A refused relaunch (Windows: a batch-file engine cmd.exe would misread) stopped nothing: its own code.
+      if (!outcome.ok) return { ok: false, error: outcome.error ?? 'RESTART_FAILED', detail: outcome.detail }
       refreshGridWebSearch(session.agentId, built.overrides)
 
       // Address the CANONICAL agentId from the resolved session, not the raw RPC input — `resolve()`

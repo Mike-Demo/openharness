@@ -61,7 +61,7 @@ import { AUTH_DIR, AuthSessionManager, clearAuthSession, ensureSignInEpoch, read
 import { ENGINES, enginePathOverride } from '../lib/engineBin.js'
 import { isTerminalEngine, type AgentEngine } from '../engines/types.js'
 import { engineInstallRecipe } from '../lib/engineInstall.js'
-import { buildEngineLaunchArgv, supportsFirstPrompt } from '../lib/engineLaunch.js'
+import { buildEngineLaunchArgv, engineLaunchEnv, supportsFirstPrompt } from '../lib/engineLaunch.js'
 import { workspaceMissing } from '../lib/workspaceCheck.js'
 import { HERMES_SYSTEM_MANAGED_DIR, type GridLaunchMachine } from '../lib/gridLaunchWire.js'
 import { writeGridConfigDir } from '../lib/gridConfigDir.js'
@@ -2221,7 +2221,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
             ...(clearEnv.length ? { clearEnv } : {}),
             ...(launchEnv.HARNESS_DSH ? { harnessNode: true } : {}),
           })
-          return { argv, ...(overrides.native ? { nativeToken: overrides.native.token, current: overrides.native.current } : {}), ...(Object.keys(launchEnv).length ? { env: launchEnv } : {}) }
+          // Windows: the variables the argv's `/usr/bin/env` prefix carries elsewhere, last (engineLaunchEnv).
+          const paneEnv = { ...launchEnv, ...engineLaunchEnv(entry.engine, overrides.native) }
+          return { argv, ...(overrides.native ? { nativeToken: overrides.native.token, current: overrides.native.current } : {}), ...(Object.keys(paneEnv).length ? { env: paneEnv } : {}) }
         },
       }),
       createPane: restoreOn.createPane,

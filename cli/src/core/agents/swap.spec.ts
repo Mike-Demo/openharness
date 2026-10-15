@@ -1,4 +1,6 @@
-import { homedir } from 'node:os'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { checkPidRuntime, terminateDeletedAgent } from '../../lib/deleteAgentFallback.js'
 import { buildEngineLaunchArgv } from '../../lib/engineLaunch.js'
@@ -10,6 +12,7 @@ import { AgentRestartCoordinator } from '../../lib/restartAgent.js'
 import { setAgentSignaller } from '../../lib/processSignals.js'
 import { createPaneSwap, SWAP_SETTLE_MS, type PaneSwapDeps } from './swap.js'
 import type { NativeLaunch } from '../../engines/nativeLaunch.js'
+import { NATIVE_LAUNCH_MARKER } from '../../lib/nativePaneHold.js'
 
 vi.mock('../../lib/deleteAgentFallback.js', async (real) => ({ ...await real<object>(), terminateDeletedAgent: vi.fn(async () => ({ ok: true })) }))
 vi.mock('../../lib/engineLaunch.js', async (real) => ({ ...await real<object>(), buildEngineLaunchArgv: vi.fn(() => ['zsh', '-lc', 'claude']) }))
@@ -53,6 +56,42 @@ describe('the pane-process swap', () => {
     prepared.buildArgv({ resumeSessionId: 's1', bypassPermission: false })
     expect(buildEngineLaunchArgv).toHaveBeenCalledWith('claude', expect.objectContaining({ native, resumeSessionId: 's1' }))
   })
+  it('refuses, before anything is stopped, a relaunch Windows would run through cmd.exe; builds no launch script for it', () => {
+    vi.mocked(buildEngineLaunchArgv).mockClear()
+    const tools = mkdtempSync(join(tmpdir(), 'swap-windows-'))
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    try {
+      writeFileSync(join(tools, 'claude.cmd'), '@echo off\r\nclaude-real %*\r\n')
+      vi.stubEnv('PATH', tools)
+      Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+      const prepared = setup().swap.paneSwapDeps(session(), place(), { extraArgs: ['--append-system-prompt', 'a & b'] })
+      expect(prepared.launchRefusal?.({ bypassPermission: false, resumeSessionId: 's1' })).toMatch(/^Harness cannot start claude on Windows .*claude\.cmd is a batch file/)
+      const clean = setup().swap.paneSwapDeps(session(), place(), { extraArgs: ['--model', 'opus'] })
+      expect(clean.launchRefusal?.({ bypassPermission: false, resumeSessionId: 's1' })).toBeNull()
+      expect(buildEngineLaunchArgv).not.toHaveBeenCalled()
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+      vi.unstubAllEnvs()
+      rmSync(tools, { recursive: true, force: true })
+    }
+  })
+
+  it('sends the launch\'s Windows variables (a native launch\'s marker) in the respawn env, after its own', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    try {
+      Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+      const { swap, tmuxBackend } = setup()
+      const native = { token: 'prepared-native' } as NativeLaunch
+      await swap.paneSwapDeps(session(), place(), { native, env: { GRID: '1' } }).respawn(['claude'])
+      expect(tmuxBackend.respawn).toHaveBeenLastCalledWith(runtime, expect.objectContaining({
+        command: ['claude'], env: { GRID: '1', [NATIVE_LAUNCH_MARKER]: 'prepared-native' },
+      }))
+      Object.defineProperty(process, 'platform', { ...platform, value: 'linux' })
+      await swap.paneSwapDeps(session(), place(), { native }).respawn(['claude'])
+      expect((tmuxBackend.respawn.mock.lastCall as unknown[] | undefined)?.[1]).not.toHaveProperty('env')
+    } finally { Object.defineProperty(process, 'platform', platform) }
+  })
+
   beforeEach(() => {
     vi.mocked(terminateDeletedAgent).mockClear()
     vi.mocked(resolvePaneEngineProcess).mockReset().mockResolvedValue(null)

@@ -7,7 +7,9 @@
  */
 import { homedir } from 'node:os'
 import { checkPidRuntime, terminateDeletedAgent } from '../../lib/deleteAgentFallback.js'
-import { buildEngineLaunchArgv } from '../../lib/engineLaunch.js'
+import { buildEngineCommandArgv, buildEngineLaunchArgv, engineLaunchEnv } from '../../lib/engineLaunch.js'
+import { windowsLaunchRefusal } from '../../lib/windows/launch.js'
+import { mergedLaunchEnv } from './launchEnv.js'
 import type { RegisteredSession } from '../../lib/registry.js'
 import { AgentRestartCoordinator, type RestartAgentDeps } from '../../lib/restartAgent.js'
 import { processRows } from '../../lib/terminalAgentDiscovery.js'
@@ -56,62 +58,8 @@ export function createPaneSwap({ byAgent, prepareSessionResume, keepAbandonedCon
      *  stopped taking its flag and the caller dropped it (`dropPermissionFlagIfUnsupported`). */
     permissionMode: string | null = session.permissionMode ?? null,
     current?: () => boolean,
-  ): RestartAgentDeps => ({
-    ...(current ? { isCurrent: current } : {}),
-    prepareResume: () => prepareSessionResume(session),
-    // The row as the swap found it: the conversation a fallback to a fresh start leaves behind.
-    keepAbandoned: () => keepAbandonedConversation(session),
-    // Only a backend that can refuse is asked (tmux, too old for `-e`); the pty host takes any environment.
-    ...(backend.respawnRefusal ? { respawnRefusal: () => backend.respawnRefusal!(launch.env ? { env: launch.env } : {}) } : {}),
-    holdOpen: async () => {
-      const result = await backend.holdOpen(runtime, current)
-      return result.state === 'succeeded'
-        ? { ok: true }
-        : { ok: false, reason: 'reason' in result ? result.reason : 'could not re-arm remain-on-exit' }
-    },
-    terminate: (checkAfterMs) => terminateDeletedAgent(session, {
-      checkRuntime: checkPidRuntime,
-      kill: signalAgentProcess,
-      sleep: (ms) => new Promise((resolve) => { const t = setTimeout(resolve, ms); t.unref?.() }),
-      log: (message) => console.log(message),
-      ...(current ? { current } : {}),
-    }, checkAfterMs),
-    respawn: async (argv) => {
-      const result = await backend.respawn(runtime, {
-        command: argv,
-        ...(current ? { current } : {}),
-        cwd: homedir(),
-        ...(launch.env ? { env: launch.env } : {}),
-        ...(launch.clearPaneEnv?.length ? { clearEnv: launch.clearPaneEnv } : {}),
-      })
-      return result.state === 'succeeded'
-        ? { ok: true }
-        : { ok: false, reason: 'reason' in result ? result.reason : 'tmux respawn-pane did not complete' }
-    },
-    waitForProcess: async () => {
-      // Mirrors onCreateAgent's own discovery budget/backoff shape for the same reason: the engine's
-      // interactive-login-shell startup, not the tmux call, is the slow half.
-      const SWAP_DISCOVERY_BUDGET_MS = 8_000
-      let delayMs = 150
-      let waited = 0
-      while (waited < SWAP_DISCOVERY_BUDGET_MS) {
-        await new Promise((resolve) => setTimeout(resolve, delayMs))
-        waited += delayMs
-        const found = await resolvePaneEngineProcess(backend, runtime, session.engine)
-        if (found) {
-          // Up means still up a moment later: a launch the engine refuses (`codex resume` after an update
-          // dropped it) runs for an instant, and seen then, the restart said "resumed" and never fell back
-          // to a fresh start (e2e/updates.e2e.ts on Linux, whose faster start put it in the first look).
-          await new Promise((resolve) => setTimeout(resolve, SWAP_SETTLE_MS))
-          waited += SWAP_SETTLE_MS
-          const still = await resolvePaneEngineProcess(backend, runtime, session.engine)
-          if (sameProcessIdentity(still, found)) return found
-        }
-        delayMs = Math.min(delayMs * 2, 750)
-      }
-      return null
-    },
-    buildArgv: (opts) => buildEngineLaunchArgv(session.engine, {
+  ): RestartAgentDeps => {
+    const relaunchOptions = (opts: { bypassPermission: boolean; resumeSessionId?: string }) => ({
       ...opts,
       ...(launch.native ? { native: launch.native } : {}),
       // The mode picked at create outranks what the live argv said: `bypassPermission` is a yes/no, and
@@ -130,9 +78,72 @@ export function createPaneSwap({ byAgent, prepareSessionResume, keepAbandonedCon
       // clears nothing. There the user's own variables are the point.
       ...(launch.clearEnv?.length ? { clearEnv: launch.clearEnv } : {}),
       ...(launch.env?.HARNESS_DSH ? { harnessNode: true } : {}),
-    }),
-    log: (message) => console.log(message),
-  })
+    })
+    return {
+      ...(current ? { isCurrent: current } : {}),
+      prepareResume: () => prepareSessionResume(session),
+      // The row as the swap found it: the conversation a fallback to a fresh start leaves behind.
+      keepAbandoned: () => keepAbandonedConversation(session),
+      // Only a backend that can refuse is asked (tmux, too old for `-e`); the pty host takes any environment.
+      ...(backend.respawnRefusal ? { respawnRefusal: () => backend.respawnRefusal!(launch.env ? { env: launch.env } : {}) } : {}),
+      holdOpen: async () => {
+        const result = await backend.holdOpen(runtime, current)
+        return result.state === 'succeeded'
+          ? { ok: true }
+          : { ok: false, reason: 'reason' in result ? result.reason : 'could not re-arm remain-on-exit' }
+      },
+      terminate: (checkAfterMs) => terminateDeletedAgent(session, {
+        checkRuntime: checkPidRuntime,
+        kill: signalAgentProcess,
+        sleep: (ms) => new Promise((resolve) => { const t = setTimeout(resolve, ms); t.unref?.() }),
+        log: (message) => console.log(message),
+        ...(current ? { current } : {}),
+      }, checkAfterMs),
+      respawn: async (argv) => {
+        // Windows: the variables the argv's `/usr/bin/env` prefix carries elsewhere, last (engineLaunchEnv).
+        const env = mergedLaunchEnv(launch.env, engineLaunchEnv(session.engine, launch.native))
+        const result = await backend.respawn(runtime, {
+          command: argv,
+          ...(current ? { current } : {}),
+          cwd: homedir(),
+          ...(env ? { env } : {}),
+          ...(launch.clearPaneEnv?.length ? { clearEnv: launch.clearPaneEnv } : {}),
+        })
+        return result.state === 'succeeded'
+          ? { ok: true }
+          : { ok: false, reason: 'reason' in result ? result.reason : 'tmux respawn-pane did not complete' }
+      },
+      waitForProcess: async () => {
+        // Mirrors onCreateAgent's own discovery budget/backoff shape for the same reason: the engine's
+        // interactive-login-shell startup, not the tmux call, is the slow half.
+        const SWAP_DISCOVERY_BUDGET_MS = 8_000
+        let delayMs = 150
+        let waited = 0
+        while (waited < SWAP_DISCOVERY_BUDGET_MS) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs))
+          waited += delayMs
+          const found = await resolvePaneEngineProcess(backend, runtime, session.engine)
+          if (found) {
+            // Up means still up a moment later: a launch the engine refuses (`codex resume` after an update
+            // dropped it) runs for an instant, and seen then, the restart said "resumed" and never fell back
+            // to a fresh start (e2e/updates.e2e.ts on Linux, whose faster start put it in the first look).
+            await new Promise((resolve) => setTimeout(resolve, SWAP_SETTLE_MS))
+            waited += SWAP_SETTLE_MS
+            const still = await resolvePaneEngineProcess(backend, runtime, session.engine)
+            if (sameProcessIdentity(still, found)) return found
+          }
+          delayMs = Math.min(delayMs * 2, 750)
+        }
+        return null
+      },
+      buildArgv: (opts) => buildEngineLaunchArgv(session.engine, relaunchOptions(opts)),
+      // The same command, built without its launch script (no file is written), before anything is stopped.
+      launchRefusal: (opts) => {
+        try { buildEngineCommandArgv(session.engine, relaunchOptions(opts)); return null } catch (error) { return windowsLaunchRefusal(error).detail }
+      },
+      log: (message) => console.log(message),
+    }
+  }
 
   /** The bypass-permission flag the LIVE process was launched with. The fallback behind
    *  `bypassPermissionFor` for a row that recorded neither a mode nor the flag (written before either

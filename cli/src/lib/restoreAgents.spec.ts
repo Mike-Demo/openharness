@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { createRestoreLaunch } from '../core/agents/restoreLaunch.js'
+import { WindowsBatchLaunchRefused } from './windows/launch.js'
 import { registry as realRegistry, type AgentLaunch, type ProcessIdentity, type RegisteredSession } from './registry.js'
 import type { TerminalRuntimeRef, TmuxRuntimeRef } from './terminalTypes.js'
 import { GRID_CREDENTIAL_REQUIRED, heldLaunch, restoreAgents, terminalSurvey, type RestoreAgentsDeps, type RestoreLaunch, type RestoreLaunchResult } from './restoreAgents.js'
@@ -743,6 +745,29 @@ describe('restoreAgents — which agents get a pane back', () => {
     expect(h.respawns).toBe(0)
     expect(h.launched[0].launch.argv).toEqual([])
     expect(h.calls.at(-1)).toBe('setLaunch:gridded:failed:GRID_ENGINE_UNSUPPORTED')
+  })
+
+  it('a launch Windows refuses fails that row alone: the rest of the pass is restored', async () => {
+    const h = harness([row(), row({ agentId: 'agent-b', sessionId: 'session-b', tmuxPane: '%1' })])
+    h.probes.set('%0', [identity(500)])
+    h.probes.set('%1', [identity(501)])
+    // The core's restore launch (core/agents/restoreLaunch.ts) over a launch that throws for agent-a, as
+    // buildEngineLaunchArgv does for a batch-file engine cmd.exe would misread. Thrown, it skipped the whole pass.
+    h.deps.buildLaunch = createRestoreLaunch({
+      workspaceMissing: () => null,
+      relaunchOverrides: async () => ({ ok: true, overrides: { env: {}, extraArgs: [], clearEnv: [] } }),
+      downgradedPermission: async () => ({ bypassPermission: false }),
+      prepareSessionResume: () => {}, refreshGridWebSearch: () => {},
+      launch: (entry) => {
+        if (entry.agentId === 'agent-a') throw new WindowsBatchLaunchRefused('claude', 'C:\\tools\\claude.cmd')
+        return { argv: [entry.engine, '--resume', entry.sessionId] }
+      },
+    })
+    const summary = await restoreAgents(h.deps)
+    expect(summary.restored).toEqual(['agent-b'])
+    expect(summary.failed).toEqual([{ agentId: 'agent-a', reason: expect.stringContaining('claude.cmd is a batch file') }])
+    expect(h.calls).toContain('setLaunch:agent-a:failed:ENGINE_LAUNCH_REFUSED')
+    await settled(h, 1, 1)
   })
 
   it('a Codex profile agent comes back under its own CODEX_HOME', async () => {

@@ -281,6 +281,11 @@ impl Attachment {
     }
 }
 
+/// What a fresh Windows console's first frame does to the screen it is given (`Pane::respawn`):
+/// attributes reset, the screen cleared into history, the cursor home.
+#[cfg(any(windows, test))]
+const FRESH_CONSOLE: &[u8] = b"\x1b[m\x1b[2J\x1b[H";
+
 pub struct Pane {
     id: String,
     screen: Arc<Mutex<Screen>>,
@@ -356,6 +361,14 @@ impl Pane {
         // close no longer reaches) goes with it; the new child gets a job of its own.
         #[cfg(windows)]
         attachment.job.end_now();
+        // Windows: a new pseudoconsole is a blank screen of its own with its cursor at the top left,
+        // and draws as if the terminal were too. The inbox conhost said so with its first frame (a
+        // clear); OpenConsole, the bundled ConPTY, sends none, so the respawned child's output went on
+        // from wherever the last child left the cursor, after its prompt (CI run 38696314864, both
+        // architectures). Clear and home the grid as that first frame did, through the output path, so
+        // every stream sees it too. Under the inbox conhost its own clear then finds nothing to move.
+        #[cfg(windows)]
+        self.draw_from_host(FRESH_CONSOLE);
         let generation = attachment.generation + 1;
         attachment.generation = generation;
         *attachment = attach(
@@ -370,6 +383,26 @@ impl Pane {
         )?;
         *lock(&self.spawn_cwd) = spec.cwd.map(|p| p.to_string_lossy().into_owned());
         Ok(generation)
+    }
+
+    /// Draw [bytes] into the grid as if the child had written them: parsed, given the next sequence
+    /// number and sent to the streams as output.
+    #[cfg(any(windows, test))]
+    fn draw_from_host(&self, bytes: &[u8]) {
+        let seq = {
+            let mut screen = lock(&self.screen);
+            let Screen { term, seq } = &mut *screen;
+            Processor::<NoSync>::new().advance(term, bytes);
+            *seq += 1;
+            *seq
+        };
+        let _ = self.sink.send((
+            self.id.clone(),
+            PaneEvent::Output {
+                seq,
+                bytes: Arc::from(bytes),
+            },
+        ));
     }
 
     /// Which of the pane's children runs now (or ran last).
@@ -1668,6 +1701,27 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_console_frame_from_the_host_clears_into_history_homes_and_reaches_the_streams() {
+        let (tx, rx) = channel();
+        let pane = Pane::spawn("%15".into(), sh("printf 'one\\ntwo> '"), 1000, tx).unwrap();
+        assert!(wait_for(&rx, |e| matches!(e, PaneEvent::Exited { .. })));
+        let (_, seq) = pane.capture(None, false);
+        pane.draw_from_host(FRESH_CONSOLE);
+        let (visible, after) = pane.capture(None, false);
+        assert_eq!(after, seq + 1);
+        assert!(visible.trim().is_empty(), "{visible:?}");
+        let (all, _) = pane.capture(Some(100), false);
+        assert!(all.contains("one\ntwo>"), "{all:?}");
+        assert!(wait_for(
+            &rx,
+            |e| matches!(e, PaneEvent::Output { seq: s, bytes } if *s == seq + 1 && &bytes[..] == FRESH_CONSOLE)
+        ));
+        // What is drawn next starts at the top left, as a new console's first line does.
+        pane.draw_from_host(b"second");
+        assert!(pane.capture(None, false).0.starts_with("second"));
+    }
+
+    #[test]
     fn respawn_draws_into_the_same_grid_and_continues_the_sequence() {
         let (tx, rx) = channel();
         let mut spec = sh("echo first");
@@ -1979,6 +2033,30 @@ mod windows_tests {
             SHUTDOWN_GRACE + Duration::from_secs(5),
             || pids.iter().all(|&p| !alive(p)),
         );
+    }
+
+    /// A respawned child's first line starts at the top left of a cleared screen, whatever ConPTY draws
+    /// it: the inbox conhost clears on its own, OpenConsole (beside the test exe, as `fetch-conpty.ps1`
+    /// and CI put it) does not (CI run 38696314864).
+    #[test]
+    fn a_respawned_child_starts_on_a_cleared_screen_at_the_top_left() {
+        let (tx, rx) = channel();
+        let pane = Pane::spawn(
+            "%42".into(),
+            powershell("Write-Host -NoNewline 'first-run PS> '"),
+            1000,
+            tx,
+        )
+        .unwrap();
+        wait_text(&pane, &rx, "first-run");
+        exit_of(&rx);
+        pane.respawn(powershell("'second-run'; Start-Sleep 30"))
+            .unwrap();
+        let text = wait_text(&pane, &rx, "second-run");
+        assert!(text.lines().any(|line| line == "second-run"), "{text:?}");
+        assert!(!text.contains("first-run"), "{text:?}");
+        assert!(pane.capture(Some(100), false).0.contains("first-run PS>"));
+        pane.kill(Duration::from_secs(5));
     }
 
     #[test]

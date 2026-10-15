@@ -11,13 +11,14 @@ import { checkPidRuntime } from './deleteAgentFallback.js'
 import { checkSessionRuntime, resolvePaneEngineProcess } from './paneEngineProcess.js'
 import { enginePathOverride } from './engineBin.js'
 import { engineInstallRecipe } from './engineInstall.js'
-import { buildEngineLaunchArgv, dropPermissionFlagIfUnsupported, permissionModeApproves, permissionModeFlags, refusePermissionFlagIfUnsupported } from './engineLaunch.js'
+import { buildEngineLaunchArgv, dropPermissionFlagIfUnsupported, engineLaunchEnv, permissionModeApproves, permissionModeFlags, refusePermissionFlagIfUnsupported } from './engineLaunch.js'
 import { workspaceMissing } from './workspaceCheck.js'
 import { buildHarnessSessionLabel } from './harnessSessionLabel.js'
 import { createAndRegisterPane, type CreateAgentPaneDeps } from './createAgentPane.js'
 import type { LaunchOverrides, LaunchOverridesResult } from './launchOverrides.js'
 import type { AgentRestartCoordinator } from './restartAgent.js'
 import { missingBackendCode, terminalTargetOf, type TerminalBackend } from './terminalBackend.js'
+import { windowsLaunchRefusal } from './windows/launch.js'
 import { sameTerminalPlacement } from './terminalRuntime.js'
 import type { TerminalRuntimeRef } from './terminalTypes.js'
 import { harnessPermissionEnvironment } from './harnessDefaults.js'
@@ -304,7 +305,11 @@ export function createResumeAgentService(deps: ResumeAgentServiceDeps) {
           ...(launchEnv.HARNESS_DSH ? { harnessNode: true } : {}),
           installIfMissing: enginePathOverride(saved.engine) ? undefined : engineInstallRecipe(saved.engine),
         }
-        const argv = buildEngineLaunchArgv(saved.engine, options)
+        // Windows refuses a batch-file engine whose arguments cmd.exe would read (windows/launch.ts): this row alone.
+        let argv: string[]
+        try { argv = buildEngineLaunchArgv(saved.engine, options) } catch (error) { return windowsLaunchRefusal(error) }
+        // Windows: the variables the argv's `/usr/bin/env` prefix carries elsewhere, last (engineLaunchEnv).
+        const paneEnv = { ...launchEnv, ...engineLaunchEnv(saved.engine, built.overrides.native) }
         transcript?.verify()
         if (!current()) return resumeChanged
         clearDeleted(agentId)
@@ -325,7 +330,7 @@ export function createResumeAgentService(deps: ResumeAgentServiceDeps) {
           engine: saved.engine,
           sessionLabel: buildHarnessSessionLabel(saved.engine),
           argv,
-          ...(Object.keys(launchEnv).length ? { env: launchEnv } : {}),
+          ...(Object.keys(paneEnv).length ? { env: paneEnv } : {}),
         })
         if (sourceError) throw sourceError
         if (!result.ok) {

@@ -11,7 +11,7 @@ import { baseNode } from '../harnessd/baseNode.js'
 import { env } from '../config/env.js'
 import { launchContract, launchField } from '../engines/launches.js'
 import { startupFunctions, startupNeedsScript, startupRuns } from '../engines/kit/launchStartup.js'
-import { screenArgs, screenEnvPrefix, screenPrelude } from '../engines/kit/launchScreen.js'
+import { screenArgs, screenEnvPrefix, screenPrelude, screenVariables } from '../engines/kit/launchScreen.js'
 import { isTerminalEngine, type AgentEngine } from '../engines/types.js'
 import { isOpencodeV2 } from '../engines/opencode/contract.js'
 import { binaryOnPath, resolveBinaryOnPath } from './binaryOnPath.js'
@@ -560,8 +560,10 @@ export function buildEngineLaunchArgv(
   const interactive = interactiveEngineShell(shell)
     ?? (opts.native || startupNeedsScript(launchContract(engine)) ? { path: posixRunner(), args: ['-c'], label: 'shell' } : null)
   // No shell to run a script in (no SHELL, and the account's own shell is not an absolute path): the screen's
-  // variables still reach the engine, through env.
-  if (!interactive) return [...screenEnvPrefix(launchContract(engine)), ...command]
+  // variables still reach the engine, through env. Windows has no `/usr/bin/env`: there they ride in the pane's
+  // env instead (`engineLaunchEnv`), and the argv starts with the engine.
+  const windows = process.platform === 'win32'
+  if (!interactive) return [...(windows ? [] : screenEnvPrefix(launchContract(engine))), ...command]
   const enginePrelude = engineFallbackPrelude(engine, interactive.path, tmuxBinary)
   // The clear comes FIRST, before the install as well as before the engine. An installer is a child
   // of this shell and inherits what it inherits: `npm` is not going to spend someone's Anthropic key,
@@ -605,7 +607,21 @@ export function buildEngineLaunchArgv(
   const argv = engineShellArgv(interactive, [isPosixShell(interactive.path) ? sourcedOnce(script) : script, 'harness-engine', ...(opts.cwd ? [opts.cwd] : []), ...command])
   // Keep the nonce outside the one-time file, including non-POSIX and inline
   // launches. It is tmux's original launch identity, never a post-rc environment fact.
-  return opts.native ? ['/usr/bin/env', `${NATIVE_LAUNCH_MARKER}=${opts.native.token}`, ...argv] : argv
+  return opts.native && !windows ? ['/usr/bin/env', `${NATIVE_LAUNCH_MARKER}=${opts.native.token}`, ...argv] : argv
+}
+
+/**
+ * The variables a launch sets around its engine on Windows, which has no `/usr/bin/env` to put in front of the argv
+ * (`buildEngineLaunchArgv` leaves it out there): the screen's (engines/kit/launchScreen.ts) and a native launch's
+ * marker. The caller sends them with the pane's env (the pty host's create and respawn env), which the engine
+ * inherits, after the launch's own so they win as the prefix did. None elsewhere, where they are in the argv. A screen's
+ * cleared variables cannot ride an env; no engine declares any (facets/launch.ts `clearEnvironment`).
+ */
+export function engineLaunchEnv(engine: AgentEngine, native?: Pick<NativeLaunch, 'token'>, platform: NodeJS.Platform = process.platform): Record<string, string> | undefined {
+  if (platform !== 'win32') return undefined
+  // As the prefix wrote it: `${token}`, which a native launch always has (nativeLaunch.ts).
+  const variables = { ...screenVariables(launchContract(engine)), ...(native ? { [NATIVE_LAUNCH_MARKER]: `${native.token}` } : {}) }
+  return Object.keys(variables).length ? variables : undefined
 }
 
 /**

@@ -541,9 +541,16 @@ fn pause_holds_output_until_resume() {
         .map(|(_, p)| seq_of(p))
         .collect();
     assert!(seqs.windows(2).all(|p| p[1] == p[0] + 1), "{seqs:?}");
+    // Every line is there, in order. The bundled ConPTY (OpenConsole) holds the last line's line end
+    // back until it next draws (here, never: the script sleeps), so `out-50` may come without it.
     let positions: Vec<usize> = (1..=50)
         .map(|i| {
-            text.find(&format!("out-{i}\r"))
+            let line = if i == 50 && common::bundled_conpty() {
+                format!("out-{i}")
+            } else {
+                format!("out-{i}\r")
+            };
+            text.find(&line)
                 .unwrap_or_else(|| panic!("out-{i}: {text}"))
         })
         .collect();
@@ -642,9 +649,14 @@ fn conversation_snapshots_carry_the_joined_history() {
         }
     };
     let v = ask(&mut s, 1, "conversation");
-    // ConPTY starts with `ESC[2J` on the empty screen, and the grid's clear scrolls the cursor's
-    // (blank) row into the history: on Windows the history starts with it.
-    let lead = if cfg!(windows) { "\n" } else { "" };
+    // The inbox ConPTY starts with `ESC[2J` on the empty screen, and the grid's clear scrolls the
+    // cursor's (blank) row into the history: there the history starts with it. The bundled one
+    // (OpenConsole) sends no such clear, and its history starts as on Unix.
+    let lead = if cfg!(windows) && !common::bundled_conpty() {
+        "\n"
+    } else {
+        ""
+    };
     // Rows: the wrapped line's first row is the history's last line, its second the screen's first.
     assert_eq!(v["history"], format!("{lead}h1\nCCCCCCCCCCCCCCCCCCCC\n"));
     assert_eq!(v["capture"], "CCCCCCCCCC\ns2\ns3\ns4\ns5\ns6\n");
