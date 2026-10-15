@@ -59,6 +59,8 @@ pub struct PaneSpec {
     pub env: HashMap<String, String>,
     pub cols: u16,
     pub rows: u16,
+    /// Names the child does not get from the host's own environment (`clearEnv`).
+    pub clear_env: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -717,12 +719,19 @@ fn attach(
     // alacritty's Unix `tty::new` puts its window variables in the child's environment; panes
     // should look like tmux panes, so `env -u` takes them out (as hn's local panes do). `env`
     // execs the command: the pid stays the child's.
+    // The pane's cleared names go the same way (`PaneSpec::clear_env`).
     #[cfg(unix)]
     let (program, args) = (
         &"/usr/bin/env".to_owned(),
-        ["-u", "ALACRITTY_WINDOW_ID", "-u", "WINDOWID", "--", program]
+        ["-u", "ALACRITTY_WINDOW_ID", "-u", "WINDOWID"]
             .into_iter()
             .map(str::to_owned)
+            .chain(
+                spec.clear_env
+                    .iter()
+                    .flat_map(|name| ["-u".to_owned(), name.clone()]),
+            )
+            .chain(["--".to_owned(), program.clone()])
             .chain(args.iter().cloned())
             .collect::<Vec<_>>(),
     );
@@ -739,6 +748,8 @@ fn attach(
         escape_args: true,
         #[cfg(windows)]
         job: Some(job.handle()),
+        #[cfg(windows)]
+        env_remove: spec.clear_env.clone(),
     };
 
     let mut pty = tty::new(&options, window_size(cols, rows), 0)?;
@@ -1393,6 +1404,7 @@ mod tests {
             env: HashMap::new(),
             cols: 40,
             rows: 10,
+            clear_env: Vec::new(),
         }
     }
 
@@ -1424,6 +1436,7 @@ mod tests {
                 env: HashMap::new(),
                 cols: 40,
                 rows: 10,
+                clear_env: Vec::new(),
             },
             1000,
             tx,
@@ -1446,6 +1459,7 @@ mod tests {
                 env: HashMap::new(),
                 cols: 40,
                 rows: 10,
+                clear_env: Vec::new(),
             },
             1000,
             tx,
@@ -1853,6 +1867,7 @@ mod windows_tests {
             env: HashMap::new(),
             cols: 80,
             rows: 24,
+            clear_env: Vec::new(),
         }
     }
 

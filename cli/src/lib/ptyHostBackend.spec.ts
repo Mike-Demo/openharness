@@ -112,10 +112,12 @@ describe('PtyHostBackend create', () => {
   it('gives the host what the pane runs after its command, without its env when it has none', async () => {
     const { backend, calls } = await ready({ create: { state: 'ok', value: { pane: '%4' } } })
     await backend.create({ command: ['codex.exe'], afterExit: { command: ['pwsh.exe'], env: { HARNESS_ENGINE_COMMAND: 'codex' } } })
-    await backend.create({ command: ['codex.exe'], afterExit: { command: ['cmd.exe'] } })
+    await backend.create({ command: ['codex.exe'], afterExit: { command: ['cmd.exe'] }, clearEnv: ['ANTHROPIC_API_KEY'] })
     expect(calls.map((call) => (call as { afterExit?: unknown }).afterExit)).toEqual([
       { command: ['pwsh.exe'], env: { HARNESS_ENGINE_COMMAND: 'codex' } }, { command: ['cmd.exe'] },
     ])
+    // What the pane must not inherit from the host's environment; none sent when there is none.
+    expect(calls.map((call) => (call as { clearEnv?: unknown }).clearEnv)).toEqual([undefined, ['ANTHROPIC_API_KEY']])
     await backend.respawn(PANE, { command: ['codex.exe'], afterExit: { command: ['pwsh.exe'], env: { A: 'b' } } })
     await backend.respawn(PANE, { command: ['codex.exe'], afterExit: { command: ['cmd.exe'] } })
     expect(calls.slice(2)).toEqual([

@@ -489,7 +489,10 @@ describe('creating an agent', () => {
         Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
         expect(await setup().create(input)).toMatchObject({ ok: true })
       } finally { Object.defineProperty(process, 'platform', platform) }
-      expect(vi.mocked(createAndRegisterPane).mock.calls[0][0].paneLaunch).toEqual({ cwd: input.cwd, afterExit: windowsAfterExit('claude') })
+      // The launch's cleared names too, which the host must keep from its own environment (a grid launch's keys).
+      const cleared = (vi.mocked(buildEngineLaunchArgv).mock.calls.at(-1)![1] as { clearEnv?: string[] }).clearEnv ?? []
+      expect(vi.mocked(createAndRegisterPane).mock.calls[0][0].paneLaunch).toEqual({ cwd: input.cwd, afterExit: windowsAfterExit('claude'),
+        ...(cleared.length ? { clearEnv: cleared } : {}) })
       expect(await setup().create(request())).toMatchObject({ ok: true })
       expect(vi.mocked(createAndRegisterPane).mock.calls[1][0].paneLaunch).toEqual({})
     })
@@ -603,6 +606,18 @@ describe('creating an agent', () => {
       expect(vi.mocked(createAndRegisterPane).mock.calls[1][0]).toMatchObject({ grid: { model: null }, env: { OPENCODE_CONFIG: '/config/harness-claude/opencode.json' } })
       expect(vi.mocked(createAndRegisterPane).mock.calls[2][0]).toMatchObject({ env: { OPENCODE_CONFIG: '/config/harness-claude' } })
       expect(vi.mocked(buildEngineLaunchArgv).mock.calls[0][1]).toMatchObject({ clearEnv: ['ANTHROPIC_API_KEY', 'HARNESS_OLD'], extraArgs: ['--grid'] })
+    })
+
+    // Windows has no launch script to unset them: the pty host keeps them from what its panes inherit (security: a
+    // grid launch saw the person's ANTHROPIC_API_KEY and sent it to the grid's base URL).
+    it('on a grid on Windows, names the vendor keys to the pane so the host keeps them from its own environment', async () => {
+      const grid = { networkId: 'g1', networkName: 'Home', baseUrl: 'http://g', model: 'm1' }
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+      try {
+        Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+        await setup().create(request({ grid }))
+      } finally { Object.defineProperty(process, 'platform', platform) }
+      expect(vi.mocked(createAndRegisterPane).mock.calls[0][0].paneLaunch).toMatchObject({ clearEnv: ['ANTHROPIC_API_KEY', 'HARNESS_OLD'] })
     })
 
     it('installs the hooks a Codex profile and a new OpenCode need, unless hooks are off', async () => {

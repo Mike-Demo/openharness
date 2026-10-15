@@ -162,6 +162,11 @@ pub enum Op {
         hold: bool,
         #[serde(rename = "afterExit", default)]
         after_exit: Option<AfterExit>,
+        /// Names the pane's children do not get from the host's own environment (case-insensitive on
+        /// Windows): a grid launch's provider keys, which tmux's script unsets, and the host would
+        /// otherwise hand down. What `env` sets is still set.
+        #[serde(rename = "clearEnv", default)]
+        clear_env: Vec<String>,
     },
     Kill {
         pane: String,
@@ -194,7 +199,8 @@ pub enum Op {
         #[serde(rename = "expectedHeldToken")]
         expected_held_token: Option<String>,
         /// Names taken out of the pane's create-time environment before this child, and for every
-        /// later one: tmux's `set-environment -u` on the pane's session ahead of `respawn-pane`.
+        /// later one: tmux's `set-environment -u` on the pane's session ahead of `respawn-pane`. Nor
+        /// do those children get them from the host's own environment.
         #[serde(rename = "clearEnv", default)]
         clear_env: Vec<String>,
         /// The new child's hand-off, in place of any the pane had (none when absent).

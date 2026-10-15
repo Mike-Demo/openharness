@@ -185,6 +185,7 @@ mod tests {
             drain_on_exit: true,
             escape_args: false,
             job: Some(0), // not a job
+            env_remove: Vec::new(),
         };
         let size = alacritty_terminal::event::WindowSize {
             num_lines: 24,
@@ -227,6 +228,7 @@ mod tests {
                 env: Default::default(),
                 cols: 80,
                 rows: 24,
+                clear_env: Vec::new(),
             },
             1000,
             tx,

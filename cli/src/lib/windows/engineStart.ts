@@ -71,7 +71,17 @@ export function nativeLaunchConfirmed(native: Pick<NativeLaunch, 'executable' | 
 export function windowsHeldPaneArgv(detail: string, token?: string, node: string = baseNode(process.execPath)): string[] {
   const script = 'for(const s of ["SIGINT","SIGBREAK","SIGHUP"])process.on(s,()=>{});'
     + 'process.stdout.write(process.argv[2]+"\\r\\n");setInterval(()=>{},3600000)'
-  return [node, '-e', script, 'harness-held', detail, ...(token ? [token] : [])]
+  const argv = [node, '-e', script, 'harness-held', detail, ...(token ? [token] : [])]
+  HELD_PANES.add(argv)
+  return argv
+}
+
+/** The argv `windowsHeldPaneArgv` made, by identity: never what an argv says, which a person's prompt can say too. */
+const HELD_PANES = new WeakSet<readonly string[]>()
+
+/** Whether [argv] is a held pane's, as `windowsHeldPaneArgv` made it (`buildEngineLaunchArgv` returns it as it is). */
+export function isWindowsHeldPane(argv: readonly string[]): boolean {
+  return HELD_PANES.has(argv)
 }
 
 /**
@@ -83,11 +93,14 @@ export const ENGINE_EXIT_NOTICE_PS = "Write-Host ''; Write-Host ('harness: ' + $
   + " + $env:HARNESS_ENGINE_EXIT + '). This pane is a shell now - run ' + $env:HARNESS_ENGINE_COMMAND + ' again, or stop"
   + " the pane.'); Remove-Item Env:HARNESS_ENGINE_COMMAND, Env:HARNESS_ENGINE_EXIT -ErrorAction SilentlyContinue"
 
+/** What cmd.exe, the shell where there is no PowerShell, runs first: both variables taken out again, fixed text. */
+export const ENGINE_EXIT_CLEAR_CMD = 'set HARNESS_ENGINE_COMMAND=& set HARNESS_ENGINE_EXIT='
+
 /** The shell a Windows engine's pane becomes when the engine exits (`afterExit`), named by [command] in its notice. */
 export function windowsAfterExit(command: string, shell: string[] = defaultWindowsShell()): TerminalAfterExit {
   const powershell = /^(?:pwsh|powershell)(?:\.exe)?$/i.test(shell[0]!.split(/[\\/]/).pop()!)
   return {
-    command: powershell ? [...shell, '-NoExit', '-Command', ENGINE_EXIT_NOTICE_PS] : shell,
+    command: powershell ? [...shell, '-NoExit', '-Command', ENGINE_EXIT_NOTICE_PS] : [...shell, '/k', ENGINE_EXIT_CLEAR_CMD],
     env: { HARNESS_ENGINE_COMMAND: command },
   }
 }
@@ -97,20 +110,36 @@ export interface WindowsPaneLaunch {
   /** The folder the engine starts in: the workspace, which a Unix launch enters after the rc files. */
   cwd?: string
   afterExit?: TerminalAfterExit
+  /**
+   * Names the pane's processes must not get from the host's own environment: the launch's `clearEnv` (a grid launch's
+   * provider keys, lib/gridLaunch.ts) and the native launch's `clearEnvironment`, which the script unsets elsewhere.
+   * The host inherited the daemon's environment, so without this a grid launch saw the person's ANTHROPIC_API_KEY.
+   */
+  clearEnv?: string[]
+}
+
+/** The launch facts `windowsPaneLaunch` reads: its options (lib/engineLaunch.ts `LaunchCommandOptions`). */
+export interface WindowsPaneLaunchOptions {
+  cwd?: string | null
+  clearEnv?: readonly string[]
+  native?: Pick<NativeLaunch, 'clearEnvironment'>
+  /** The argv is a held pane's (`isWindowsHeldPane`), which hands off to nothing. */
+  held?: boolean
 }
 
 /**
- * The cwd and hand-off of a Windows pane running [argv] for [engine], to spread into its create or respawn request;
- * nothing elsewhere, where the launch script enters the workspace and hands the pane on itself. A terminal or a held
- * pane hands off to nothing: its process ending is the pane's end. The notice names the engine by the command a person
- * would type (`cursor-agent`, `cmd`), as `harness_after`'s does.
+ * The cwd, cleared names and hand-off of a Windows pane for [engine], to spread into its create or respawn request;
+ * nothing elsewhere, where the launch script enters the workspace, unsets the names and hands the pane on itself. A
+ * terminal or a held pane hands off to nothing: its process ending is the pane's end. The notice names the engine by
+ * the command a person would type (`cursor-agent`, `cmd`), as `harness_after`'s does.
  */
-export function windowsPaneLaunch(engine: AgentEngine, argv: readonly string[], cwd: string | null | undefined,
+export function windowsPaneLaunch(engine: AgentEngine, launch: WindowsPaneLaunchOptions,
   platform: NodeJS.Platform = process.platform): WindowsPaneLaunch {
   if (platform !== 'win32') return {}
-  const held = argv.includes('harness-held')
+  const clearEnv = [...new Set([...(launch.clearEnv ?? []), ...(launch.native?.clearEnvironment ?? [])])]
   return {
-    ...(cwd ? { cwd } : {}),
-    ...(isTerminalEngine(engine) || held ? {} : { afterExit: windowsAfterExit(engineBin(engine).split(/[\\/]/).pop() || engine) }),
+    ...(launch.cwd ? { cwd: launch.cwd } : {}),
+    ...(clearEnv.length ? { clearEnv } : {}),
+    ...(isTerminalEngine(engine) || launch.held ? {} : { afterExit: windowsAfterExit(engineBin(engine).split(/[\\/]/).pop() || engine) }),
   }
 }

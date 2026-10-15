@@ -30,6 +30,10 @@ Local changes are marked `hn` in the relevant source:
     quoted when it has a space or tab (`push_program`), as the C runtime reads
     argv[0]; upstream pushed it bare, so `C:\Users\John Doe\…\claude.exe` ran
     `C:\Users\John.exe`;
+  - `alacritty_terminal/src/tty/mod.rs` and `tty/windows/conpty.rs`: `Options::env_remove`,
+    names left out of the environment the child inherits (compared without case, as Windows
+    does), so a pane's cleared variables (a grid launch's provider keys) are not handed down from
+    the host's own environment; upstream could only add variables;
   - `alacritty_terminal/Cargo.toml`: the `Win32_System_JobObjects` feature.
 
 Keeping these attributes in the native grid makes erase, scrolling, cursor save,

@@ -9,7 +9,7 @@ import { homedir } from 'node:os'
 import { checkPidRuntime, terminateDeletedAgent } from '../../lib/deleteAgentFallback.js'
 import { buildEngineCommandArgv, buildEngineLaunchArgv, engineLaunchEnv } from '../../lib/engineLaunch.js'
 import { windowsLaunchRefusal } from '../../lib/windows/launch.js'
-import { windowsPaneLaunch } from '../../lib/windows/engineStart.js'
+import { isWindowsHeldPane, windowsPaneLaunch } from '../../lib/windows/engineStart.js'
 import { mergedLaunchEnv } from './launchEnv.js'
 import type { RegisteredSession } from '../../lib/registry.js'
 import { AgentRestartCoordinator, type RestartAgentDeps } from '../../lib/restartAgent.js'
@@ -103,14 +103,17 @@ export function createPaneSwap({ byAgent, prepareSessionResume, keepAbandonedCon
       respawn: async (argv) => {
         // Windows: the variables the argv's `/usr/bin/env` prefix carries elsewhere, last (engineLaunchEnv).
         const env = mergedLaunchEnv(launch.env, engineLaunchEnv(session.engine, launch.native))
+        // Windows: the workspace to start in, the names its processes must not inherit from the host, and the shell the
+        // pane becomes after the engine (lib/windows/engineStart.ts).
+        const pane = windowsPaneLaunch(session.engine, { ...relaunchOptions({ bypassPermission: false }), held: isWindowsHeldPane(argv) })
+        const clearEnv = [...new Set([...launch.clearPaneEnv ?? [], ...pane.clearEnv ?? []])]
         const result = await backend.respawn(runtime, {
           command: argv,
           ...(current ? { current } : {}),
           cwd: homedir(),
-          // Windows: the workspace to start in and the shell the pane becomes after the engine (lib/windows/engineStart.ts).
-          ...windowsPaneLaunch(session.engine, argv, session.cwd),
+          ...pane,
           ...(env ? { env } : {}),
-          ...(launch.clearPaneEnv?.length ? { clearEnv: launch.clearPaneEnv } : {}),
+          ...(clearEnv.length ? { clearEnv } : {}),
         })
         return result.state === 'succeeded'
           ? { ok: true }

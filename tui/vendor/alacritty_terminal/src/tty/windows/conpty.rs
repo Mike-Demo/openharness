@@ -210,7 +210,7 @@ pub fn new(config: &Options, window_size: WindowSize) -> Result<Pty> {
     let cmdline = win32_string(&cmdline(config));
     let cwd = config.working_directory.as_ref().map(win32_string);
     let mut creation_flags = EXTENDED_STARTUPINFO_PRESENT;
-    let custom_env_block = convert_custom_env(&config.env);
+    let custom_env_block = convert_custom_env(&config.env, &config.env_remove);
     let custom_env_block_pointer = match &custom_env_block {
         Some(custom_env_block) => {
             creation_flags |= CREATE_UNICODE_ENVIRONMENT;
@@ -279,9 +279,15 @@ pub fn new(config: &Options, window_size: WindowSize) -> Result<Pty> {
 // deduplicating environment variables, so do that here while converting.
 //
 // https://learn.microsoft.com/en-us/previous-versions/troubleshoot/windows/win32/createprocess-cannot-eliminate-duplicate-variables#environment-variables
-fn convert_custom_env(custom_env: &HashMap<String, String>) -> Option<Vec<u16>> {
+//
+// hn: `remove` names inherited variables the child must not get (`Options::env_remove`): they are
+// taken as already present, so the inherited pass below skips them, whatever their case.
+fn convert_custom_env(
+    custom_env: &HashMap<String, String>,
+    remove: &[String],
+) -> Option<Vec<u16>> {
     // Windows inherits parent's env when no `lpEnvironment` parameter is specified.
-    if custom_env.is_empty() {
+    if custom_env.is_empty() && remove.is_empty() {
         return None;
     }
 
@@ -301,6 +307,10 @@ fn convert_custom_env(custom_env: &HashMap<String, String>) -> Option<Vec<u16>> 
                  '{custom_key}={custom_value}'"
             );
         }
+    }
+
+    for name in remove {
+        all_env_keys.insert(OsStr::new(name).to_ascii_uppercase());
     }
 
     // Pull the current process environment after, to avoid overwriting the user provided one.
@@ -344,5 +354,38 @@ impl From<WindowSize> for COORD {
         let lines = window_size.num_lines;
         let columns = window_size.num_cols;
         COORD { X: columns as i16, Y: lines as i16 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn variables(block: &[u16]) -> Vec<String> {
+        String::from_utf16(block)
+            .unwrap()
+            .split('\0')
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    // hn: `Options::env_remove` takes names out of what is inherited, whatever their case; what the
+    // caller sets is still set.
+    #[test]
+    fn env_remove_leaves_out_inherited_names_in_any_case() {
+        // SAFETY: a name of this test's own, set before any thread it starts reads the environment.
+        unsafe { std::env::set_var("HN_REMOVED_SECRET", "secret") };
+        assert!(convert_custom_env(&HashMap::new(), &[]).is_none());
+        let custom = HashMap::from([("HN_SET".to_owned(), "set".to_owned())]);
+        let block = convert_custom_env(&custom, &["hn_removed_secret".to_owned(), "HN_SET".to_owned()]).unwrap();
+        let vars = variables(&block);
+        assert!(vars.iter().all(|v| !v.to_ascii_uppercase().starts_with("HN_REMOVED_SECRET=")), "{vars:?}");
+        assert!(vars.contains(&"HN_SET=set".to_owned()));
+        assert!(vars.iter().any(|v| v.to_ascii_uppercase().starts_with("PATH=")));
+        // Removal alone still builds a block, without the name.
+        let block = convert_custom_env(&HashMap::new(), &["HN_REMOVED_SECRET".to_owned()]).unwrap();
+        assert!(variables(&block).iter().all(|v| !v.starts_with("HN_REMOVED_SECRET=")));
+        unsafe { std::env::remove_var("HN_REMOVED_SECRET") };
     }
 }

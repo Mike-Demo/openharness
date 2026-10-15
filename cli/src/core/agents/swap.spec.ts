@@ -89,6 +89,11 @@ describe('the pane-process swap', () => {
       }))
       // In the agent's folder, which no launch script enters there, and the pane a shell after the engine.
       expect(tmuxBackend.respawn).toHaveBeenLastCalledWith(runtime, expect.objectContaining({ cwd: '/work', afterExit: windowsAfterExit('claude') }))
+      // A grid swap's vendor keys, beside the retarget's pane names: the host keeps both from what the engine inherits.
+      await swap.paneSwapDeps(session(), place(), { clearEnv: ['ANTHROPIC_API_KEY'], clearPaneEnv: ['OLD', 'ANTHROPIC_API_KEY'] }).respawn(['claude'])
+      expect(tmuxBackend.respawn).toHaveBeenLastCalledWith(runtime, expect.objectContaining({ clearEnv: ['OLD', 'ANTHROPIC_API_KEY'] }))
+      await swap.paneSwapDeps(session(), place(), { clearEnv: ['ANTHROPIC_API_KEY'] }).respawn(['claude'])
+      expect(tmuxBackend.respawn).toHaveBeenLastCalledWith(runtime, expect.objectContaining({ clearEnv: ['ANTHROPIC_API_KEY'] }))
       Object.defineProperty(process, 'platform', { ...platform, value: 'linux' })
       await swap.paneSwapDeps(session(), place(), { native }).respawn(['claude'])
       expect((tmuxBackend.respawn.mock.lastCall as unknown[] | undefined)?.[1]).not.toHaveProperty('env')

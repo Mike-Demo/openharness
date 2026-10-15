@@ -136,7 +136,7 @@ export function createAgentRestarter({
           terminalHint: { machineName: terminalHintMachineName() },
         })
         // Windows: the shell starts in the folder itself, which the launch enters elsewhere (lib/windows/engineStart.ts).
-        const respawned = await backend.respawn(runtime, { command, cwd: homedir(), ...windowsPaneLaunch(engine, command, session.cwd) })
+        const respawned = await backend.respawn(runtime, { command, cwd: homedir(), ...windowsPaneLaunch(engine, { cwd: session.cwd }) })
         if (!current()) return changed
         if (respawned.state !== 'succeeded') return { ok: false, error: 'RESTART_FAILED', detail: respawned.reason }
         await backend.releaseHold(runtime)

@@ -410,7 +410,7 @@ describe('production resume handler', () => {
     // What windowsPaneLaunch answers on Windows (windows/engineStart.spec.ts pins it there).
     vi.mocked(windowsPaneLaunch).mockReturnValueOnce({ cwd: dir, afterExit: windowsAfterExit(saved.engine) })
     await start()
-    expect(windowsPaneLaunch).toHaveBeenCalledWith(saved.engine, expect.any(Array), dir)
+    expect(windowsPaneLaunch).toHaveBeenCalledWith(saved.engine, expect.objectContaining({ cwd: dir, held: false }))
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ cwd: dir, afterExit: windowsAfterExit(saved.engine) }))
   })
   it('names the configured backend when none can open the resumed pane', async () => {

@@ -77,8 +77,8 @@ describe('createAndRegisterPane', () => {
     const tmuxBackend = fakeTmux([succeeded('%1'), succeeded('%2'), succeeded('%3')])
     const afterExit = { command: ['pwsh.exe', '-NoLogo'], env: { HARNESS_ENGINE_COMMAND: 'claude' } }
     await createAndRegisterPane({ tmuxBackend, registry, engine: 'claude', cwd: 'C:\\work', sessionLabel: 'harness-claude-1', argv: ['claude.exe'],
-      paneLaunch: { cwd: 'C:\\work', afterExit } })
-    expect(tmuxBackend.create).toHaveBeenLastCalledWith({ label: 'harness-claude-1', cwd: 'C:\\work', command: ['claude.exe'], afterExit })
+      paneLaunch: { cwd: 'C:\\work', afterExit, clearEnv: ['ANTHROPIC_API_KEY'] } })
+    expect(tmuxBackend.create).toHaveBeenLastCalledWith({ label: 'harness-claude-1', cwd: 'C:\\work', command: ['claude.exe'], afterExit, clearEnv: ['ANTHROPIC_API_KEY'] })
     await createAndRegisterPane({ tmuxBackend, registry, engine: 'claude', cwd: '/w', spawnCwd: '/elsewhere', sessionLabel: 'harness-claude-2', argv: ['claude'],
       paneLaunch: { cwd: '/w' } })
     expect(tmuxBackend.create).toHaveBeenLastCalledWith({ label: 'harness-claude-2', cwd: '/elsewhere', command: ['claude'] })

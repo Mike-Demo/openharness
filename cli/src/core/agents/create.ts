@@ -45,7 +45,7 @@ import { NativeFiles } from '../../engines/kit/nativeFiles.js'
 import type { registry, RegisteredSession } from '../../lib/registry.js'
 import type { TerminalBackend } from '../../lib/terminalBackend.js'
 import { windowsLaunchRefusal } from '../../lib/windows/launch.js'
-import { windowsPaneLaunch } from '../../lib/windows/engineStart.js'
+import { isWindowsHeldPane, windowsPaneLaunch } from '../../lib/windows/engineStart.js'
 import { tmuxTooOldForSessionEnv } from '../../lib/tmuxBackend.js'
 import { prepareInstructionWrites, scmLaunchEnv } from '../../scm/scmProjects.js'
 import { mergedLaunchEnv } from './launchEnv.js'
@@ -367,7 +367,7 @@ export function createAgentCreator({
       sessionLabel: label,
       argv,
       // Windows: the workspace to start in and the shell the pane becomes after the engine (lib/windows/engineStart.ts).
-      paneLaunch: windowsPaneLaunch(engine, argv, cwd),
+      paneLaunch: windowsPaneLaunch(engine, { ...launchOptions, held: isWindowsHeldPane(argv) }),
       // Windows: the variables the argv's `/usr/bin/env` prefix carries elsewhere, last (engineLaunchEnv).
       env: mergedLaunchEnv(freshHarnessEnvironment(engine, mergedLaunchEnv(mergedLaunchEnv(gridLaunch?.env ?? (codexHome ? profileEnvironment(engine, codexHome) : undefined), dshEnv),
         mergedLaunchEnv(scmLaunchEnv(scmLaunchRecord), native?.environment)), !!grid,

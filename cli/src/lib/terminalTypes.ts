@@ -118,6 +118,9 @@ export interface TerminalCreateRequest extends TerminalDispatchControl {
   env?: Record<string, string>
   /** What the pane runs when `command` exits by itself (`TerminalAfterExit`); the pty host's alone. */
   afterExit?: TerminalAfterExit
+  /** Names the pane's processes do not get from the backend's own environment (a grid launch's provider keys, on
+   *  Windows: lib/windows/engineStart.ts); the pty host's alone, whose panes inherit the host's environment. */
+  clearEnv?: readonly string[]
 }
 
 /**

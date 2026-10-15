@@ -205,7 +205,9 @@ describe('forking an agent', () => {
       Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
       expect(await setup(source()).fork({ agentId: 'a1', name: null, prompt: null })).toMatchObject({ ok: true })
     } finally { Object.defineProperty(process, 'platform', platform) }
-    expect(vi.mocked(createAndRegisterPane).mock.calls[0]![0].paneLaunch).toEqual({ cwd: work, afterExit: windowsAfterExit('claude') })
+    const cleared = (vi.mocked(buildEngineLaunchArgv).mock.calls.at(-1)![1] as { clearEnv?: string[] }).clearEnv ?? []
+    expect(vi.mocked(createAndRegisterPane).mock.calls[0]![0].paneLaunch).toEqual({ cwd: work, afterExit: windowsAfterExit('claude'),
+      ...(cleared.length ? { clearEnv: cleared } : {}) })
   })
 
   it('refuses a batch-file engine on Windows whose first message cmd.exe would read, by name', async () => {

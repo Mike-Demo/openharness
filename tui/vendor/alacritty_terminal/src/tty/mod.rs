@@ -46,6 +46,11 @@ pub struct Options {
     /// instruction, so everything it starts belongs to the job too. The caller owns the handle.
     #[cfg(windows)]
     pub job: Option<isize>,
+
+    /// hn: names left out of what the child inherits from this process's environment, compared
+    /// without case as Windows compares them. `env` is still set as given.
+    #[cfg(windows)]
+    pub env_remove: Vec<String>,
 }
 
 /// Shell options.

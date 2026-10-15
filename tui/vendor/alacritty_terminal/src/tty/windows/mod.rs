@@ -251,6 +251,7 @@ mod test {
             env: Default::default(),
             escape_args: false,
             job: None,
+            env_remove: Vec::new(),
         };
         assert_eq!(cmdline(&options), "echo hello world");
 
