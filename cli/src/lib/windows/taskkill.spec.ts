@@ -20,8 +20,11 @@ describe('taskkillTree', () => {
     expect(run).not.toHaveBeenCalled()
   })
 
-  it('spells the arguments as taskkill takes them', () => {
+  it('spells the arguments as taskkill takes them, bounded and with no window', async () => {
     expect(taskkillArgs(42, false)).toEqual(['/PID', '42', '/T'])
     expect(taskkillArgs(42, true)).toEqual(['/PID', '42', '/T', '/F'])
+    const run = exiting(0)
+    expect(await taskkillTree(42, true, run)).toBe('sent')
+    expect(run).toHaveBeenCalledWith('taskkill', ['/PID', '42', '/T', '/F'], { timeout: TASKKILL_TIMEOUT_MS, windowsHide: true }, expect.any(Function))
   })
 })
