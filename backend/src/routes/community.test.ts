@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import Fastify, { type FastifyInstance, type InjectOptions } from 'fastify'
 
 type Row = Record<string, unknown> & { id: string; createdAt: Date }
-type Query = { where?: Record<string, unknown>; select?: Record<string, boolean>; take?: number; skip?: number; cursor?: { id: string }; orderBy?: Record<string, 'asc' | 'desc'>[]; by?: string[] }
+type Query = { where?: Record<string, unknown>; select?: Record<string, boolean>; take?: number; skip?: number; cursor?: { id: string }; orderBy?: Record<string, 'asc' | 'desc'>[] | { _max: Record<string, 'asc' | 'desc'> }; by?: string[]; _max?: Record<string, boolean> }
 const db = vi.hoisted(() => {
   function matches(row: Row, where: Record<string, unknown> = {}): boolean {
     return Object.entries(where).every(([key, value]) => {
@@ -13,6 +13,7 @@ const db = vi.hoisted(() => {
         const filter = value as Record<string, unknown>
         if ('contains' in filter) return typeof row[key] === 'string' && (row[key] as string).toLowerCase().includes((filter.contains as string).toLowerCase())
         if ('in' in filter) return (filter.in as unknown[]).includes(row[key])
+        if ('notIn' in filter) return !(filter.notIn as unknown[]).includes(row[key])
         if ('gt' in filter) return (row[key] as Date) > (filter.gt as Date)
         if ('lt' in filter) return (row[key] as number | Date) < (filter.lt as number | Date)
         if ('isSet' in filter || 'not' in filter) return (!filter.isSet || row[key] !== undefined) && (!('not' in filter) || row[key] !== filter.not)
@@ -28,7 +29,7 @@ const db = vi.hoisted(() => {
     const rows: Row[] = []
     const find = (query: Query = {}) => {
       for (const row of rows) for (const [key, value] of Object.entries(defaults)) row[key] ??= value
-      const order = query.orderBy ?? [{ createdAt: 'desc' }, { id: 'desc' }]
+      const order = Array.isArray(query.orderBy) ? query.orderBy : [{ createdAt: 'desc' as const }, { id: 'desc' as const }]
       let result = rows.filter(row => matches(row, query.where)).slice().sort((a, b) => {
         for (const [key, direction] of order.flatMap(Object.entries)) {
           const difference = compare(a[key], b[key])
@@ -47,10 +48,15 @@ const db = vi.hoisted(() => {
       findUnique: vi.fn(async (query: Query) => find(query)[0] || null),
       count: vi.fn(async (query: Query) => find(query).length),
       groupBy: vi.fn(async (query: Query) => {
-        const counts = new Map<string, number>()
-        const key = query.by?.[0] ?? 'harnessId'
-        for (const row of find(query)) counts.set(row[key] as string, (counts.get(row[key] as string) || 0) + 1)
-        return [...counts].map(([value, count]) => ({ [key]: value, _count: { _all: count } }))
+        const keys = query.by ?? ['harnessId'], groups = new Map<string, { row: Row; count: number; latest: Date }>()
+        for (const row of find({ where: query.where })) {
+          const id = keys.map(key => row[key]).join('|'), group = groups.get(id)
+          if (group) { group.count++; if (row.createdAt > group.latest) group.latest = row.createdAt } else groups.set(id, { row, count: 1, latest: row.createdAt })
+        }
+        let result = [...groups.values()]
+        if (query.orderBy && !Array.isArray(query.orderBy)) result = result.sort((a, b) => b.latest.getTime() - a.latest.getTime())
+        if (query.take) result = result.slice(0, query.take)
+        return result.map(({ row, count, latest }) => ({ ...Object.fromEntries(keys.map(key => [key, row[key]])), _count: { _all: count }, ...(query._max ? { _max: { createdAt: latest } } : {}) }))
       }),
       create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
         if (unique && rows.some(row => unique.every(key => row[key] === data[key]))) throw Object.assign(new Error('Unique constraint failed'), { code: 'P2002' })
@@ -72,12 +78,14 @@ const db = vi.hoisted(() => {
       }),
     }
   }
-  return { communityHarness: table({ defaults: { likeCount: 0 } }), communityLike: table({ unique: ['autonomousEnv', 'harnessId', 'userId'] }), communityComment: table(), communityFollow: table(), user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({ name: where.id === 'alice' ? 'Alice' : 'Bob' })) } }
+  return { communityHarness: table({ defaults: { likeCount: 0 } }), communityLike: table({ unique: ['autonomousEnv', 'harnessId', 'userId'] }), communityComment: table(), communityFollow: table(),
+    communityReport: table({ unique: ['autonomousEnv', 'targetType', 'targetId', 'userId'] }), communityHidden: table({ defaults: { restoredAt: null } }), user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({ name: where.id === 'alice' ? 'Alice' : 'Bob' })) } }
 })
 vi.mock('../lib/prisma.js', () => ({ prisma: db }))
 import { communityRoutes, publicationSchema } from './community.js'
 import { communityCommentRoutes } from './communityComments.js'
 import { communityCreatorRoutes } from './communityCreators.js'
+import { communityReportRoutes, resetReportRateLimits } from './communityReports.js'
 import { communityEditRoutes, resetEditRateLimits } from './communityEdit.js'
 import { registerAuthMiddleware } from '../middlewares/authMiddleware.js'
 import { errorHandler } from '../middlewares/errorHandler.js'
@@ -95,14 +103,14 @@ async function publish(token = 'alice', payload = sample, env = 'prod') {
   return response.json().data.id as string
 }
 beforeEach(async () => {
-  for (const model of [db.communityHarness, db.communityLike, db.communityComment, db.communityFollow]) model.rows.splice(0)
-  vi.clearAllMocks(); resetEditRateLimits()
+  for (const model of [db.communityHarness, db.communityLike, db.communityComment, db.communityFollow, db.communityReport, db.communityHidden]) model.rows.splice(0)
+  vi.clearAllMocks(); resetEditRateLimits(); resetReportRateLimits()
   app = Fastify(); app.setErrorHandler(errorHandler)
   registerAuthMiddleware(app, async (token, autonomousEnv = 'prod') => {
-    if (!['alice', 'bob'].includes(token)) throw new Error('Invalid token')
-    return { sub: token, email: `${token}@example.com`, role: 'user', autonomousEnv }
+    if (!['alice', 'bob', 'carol', 'dave', 'admin'].includes(token)) throw new Error('Invalid token')
+    return { sub: token, email: `${token}@example.com`, role: token === 'admin' ? 'admin' : 'user', autonomousEnv }
   })
-  await app.register(communityRoutes); await app.register(communityEditRoutes); await app.register(communityCommentRoutes); await app.register(communityCreatorRoutes); await app.ready()
+  await app.register(communityRoutes); await app.register(communityEditRoutes); await app.register(communityCommentRoutes); await app.register(communityCreatorRoutes); await app.register(communityReportRoutes); await app.ready()
 })
 afterEach(async () => app.close())
 
@@ -475,6 +483,54 @@ describe('persistent social actions', () => {
     await call('DELETE', `harnesses/${first}`, 'alice')
     expect(isPublicCommunityRead('GET', '/api/community/creators/alice')).toBe(true)
     expect(isPublicCommunityRead('GET', '/api/community/creators/alice/follow')).toBe(false)
+  })
+  it('hides a reported harness from its reporter at once, and from everyone after three readers', async () => {
+    const id = await publish('alice', { ...sample, title: 'Reported' })
+    const report = (token: string, targetId = id, targetType = 'harness') => call('POST', 'reports', token, { targetType, targetId, reason: 'spam' })
+    const titles = async (token?: string) => (await call('GET', 'harnesses', token)).json().data.harnesses.map((row: Row) => row.title)
+    expect((await report('alice')).statusCode).toBe(400)
+    expect((await call('POST', 'reports', undefined, { targetType: 'harness', targetId: id, reason: 'spam' })).statusCode).toBe(401)
+    expect((await report('bob')).json().data).toEqual({ reported: true })
+    expect(await titles('bob')).toEqual([])
+    expect((await call('GET', `harnesses/${id}`, 'bob')).statusCode).toBe(404)
+    expect(await titles()).toEqual(['Reported'])
+    await report('bob'); await report('carol')
+    expect(await titles()).toEqual(['Reported'])
+    await report('dave')
+    expect(await titles()).toEqual([])
+    expect((await call('GET', `harnesses/${id}`)).statusCode).toBe(404)
+    expect((await call('PUT', `harnesses/${id}/like`, 'admin', { liked: true })).statusCode).toBe(404)
+    // Its author still has it, among their own.
+    expect((await call('GET', `harnesses/${id}`, 'alice')).statusCode).toBe(200)
+    expect((await call('GET', 'harnesses?mine=true', 'alice')).json().data.harnesses).toHaveLength(1)
+    expect((await report('bob', 'starter-orbit')).statusCode).toBe(404)
+  })
+  it('lets a reviewer see reports and restore or remove what they hid', async () => {
+    const id = await publish('alice', { ...sample, title: 'Reported' })
+    const comment = (await call('POST', `harnesses/${id}/comments`, 'bob', { body: 'Buy now', clientId: crypto.randomUUID() })).json().data.comment
+    for (const token of ['carol', 'dave', 'admin']) {
+      await call('POST', 'reports', token, { targetType: 'harness', targetId: id, reason: 'spam' })
+      await call('POST', 'reports', token, { targetType: 'comment', targetId: comment.id, reason: 'harassment' })
+    }
+    expect((await call('GET', `harnesses/${id}/social`, 'alice')).json().data.social.comments).toEqual([])
+    expect((await call('GET', 'reports', 'bob')).statusCode).toBe(403)
+    const queue = (await call('GET', 'reports', 'admin')).json().data.reports
+    expect(queue).toEqual(expect.arrayContaining([
+      expect.objectContaining({ targetType: 'harness', targetId: id, reports: 3, reasons: { spam: 3 }, state: 'hidden', text: 'Reported', authorName: 'Alice' }),
+      expect.objectContaining({ targetType: 'comment', targetId: comment.id, reports: 3, state: 'hidden', text: 'Buy now' }),
+    ]))
+    const review = (targetType: string, targetId: string, decision: string, token = 'admin') => call('POST', 'reports/review', token, { targetType, targetId, decision })
+    expect((await review('harness', id, 'restore', 'bob')).statusCode).toBe(403)
+    await review('harness', id, 'restore')
+    expect((await call('GET', 'harnesses')).json().data.harnesses).toHaveLength(1)
+    // One more report after a review does not hide it again: three new ones would.
+    await call('POST', 'reports', 'bob', { targetType: 'harness', targetId: id, reason: 'other' })
+    expect((await call('GET', 'harnesses')).json().data.harnesses).toHaveLength(1)
+    await review('comment', comment.id, 'remove')
+    expect(db.communityComment.rows).toHaveLength(0)
+    await review('harness', id, 'remove')
+    expect((await call('GET', `harnesses/${id}`, 'alice')).statusCode).toBe(404)
+    expect((await call('GET', 'reports', 'admin')).json().data.reports.find((row: { targetId: string }) => row.targetId === id).state).toBe('removed')
   })
   it('sends a harness page only its output when asked', async () => {
     const payload = { ...sample, files: [...sample.files, { path: 'src/app.js', content: 'console.log(1)' }] }

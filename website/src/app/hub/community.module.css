@@ -198,3 +198,5 @@
 .byline a,.byline button{display:inline-flex;align-items:center}
 @media(max-width:760px){.chat{scroll-margin-top:104px}}
 .authorLink:hover{text-decoration:underline}
+.reportForm{display:flex;flex-direction:column;gap:2px;margin:0 0 30px;padding:18px 20px;background:#f7f7f5;font-size:13px}.reportForm .check{margin:6px 0}.reportForm small{color:#777;margin:8px 0 4px}.reportForm .submitRow{margin:8px 0 0}
+.review{border-bottom:1px solid #efefed;padding:16px 0;font-size:13px;display:flex;flex-direction:column;gap:6px}.review p{color:#777}.review .submitRow{margin:4px 0 0}

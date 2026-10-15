@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Feed from './Feed';
 import Detail from './Detail';
 import CreatorPage from './CreatorPage';
+import ReportsPage from '../reports/page';
 import { CommunityError, emptySocial } from '@/lib/community/client';
 import { starterHarnesses } from '@/lib/community/starters';
 import type { OpenHarness } from '@/lib/community/types';
@@ -330,6 +331,53 @@ describe('community navigation', () => {
     request.mockRejectedValue(new CommunityError('This creator is unavailable.', 404));
     render(<CreatorPage id="nobody" initial={null} initialView={{ query: '', category: '', sort: 'newest' }} />);
     expect(await screen.findByRole('heading', { name: 'This creator is unavailable.' })).toBeInTheDocument();
+  });
+  it('reports a harness with one reason, and leaves the reporter a page that says so', async () => {
+    const id = '11111111-2222-4333-8444-555555555555';
+    request.mockResolvedValueOnce({ social: { ...emptySocial, signedIn: true } });
+    render(<Detail id={id} initial={{ ...sample, id, example: false }} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole('button', { name: 'Report harness' }));
+    const report = screen.getByRole('button', { name: 'Report' });
+    expect(report).toBeDisabled();
+    fireEvent.click(screen.getByLabelText('Spam'));
+    request.mockResolvedValueOnce({ reported: true });
+    fireEvent.click(report);
+    expect(await screen.findByRole('heading', { name: 'Thanks for reporting.' })).toBeInTheDocument();
+    expect(request).toHaveBeenLastCalledWith('reports', { method: 'POST', body: { targetType: 'harness', targetId: id, reason: 'spam' } });
+  });
+  it('offers no report on a starter or your own harness', async () => {
+    request.mockResolvedValue({ harness: null, social: { ...emptySocial, signedIn: true } });
+    render(<Detail id={sample.id} initial={sample} />);
+    await act(async () => {});
+    expect(screen.queryByRole('button', { name: 'Report harness' })).not.toBeInTheDocument();
+  });
+  it('takes a reported comment off the reporter’s page at once', async () => {
+    const comment = { id: 'c1', body: 'Buy now', authorName: 'Spammer', mine: false, createdAt: '2026-10-06' };
+    request.mockResolvedValueOnce({ harness: null, social: { ...emptySocial, signedIn: true, comments: [comment], commentCount: 1 } });
+    render(<Detail id={sample.id} initial={sample} initialComments />);
+    await screen.findByText('Buy now');
+    fireEvent.click(screen.getByRole('button', { name: 'Report comment by Spammer' }));
+    fireEvent.click(screen.getByLabelText('Harassment or hate'));
+    request.mockResolvedValueOnce({ reported: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Report' }));
+    await waitFor(() => expect(screen.queryByText('Buy now')).not.toBeInTheDocument());
+    expect(request).toHaveBeenLastCalledWith('reports', { method: 'POST', body: { targetType: 'comment', targetId: 'c1', reason: 'harassment' } });
+  });
+  it('shows reviewers what was reported, and nobody else', async () => {
+    request.mockRejectedValueOnce(new CommunityError('Admin only', 403));
+    const { unmount } = render(<ReportsPage />);
+    expect(await screen.findByText('Only the Hub’s reviewers can see reports.')).toBeInTheDocument();
+    unmount();
+    const item = { targetType: 'harness', targetId: 'h1', harnessId: 'h1', reports: 3, lastReportedAt: '2026-10-15', reasons: { spam: 2, other: 1 }, state: 'hidden', text: 'Spam page', authorName: 'Mallory' };
+    request.mockResolvedValueOnce({ reports: [item] });
+    render(<ReportsPage />);
+    expect(await screen.findByText('Spam page — Mallory')).toBeInTheDocument();
+    expect(screen.getByText('Spam 2 · Something else 1')).toBeInTheDocument();
+    request.mockResolvedValueOnce({ reviewed: true }).mockResolvedValueOnce({ reports: [{ ...item, state: 'restored' }] });
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+    expect(await screen.findByText(/Restored/)).toBeInTheDocument();
+    expect(request).toHaveBeenCalledWith('reports/review', { method: 'POST', body: { targetType: 'harness', targetId: 'h1', decision: 'restore' } });
   });
   it('opens a touch screen’s share sheet instead of copying', async () => {
     request.mockResolvedValue({ harness: null, social: emptySocial });

@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { FileCode2, GitFork, Heart, MessageCircle, Pencil } from 'lucide-react';
+import { FileCode2, Flag, GitFork, Heart, MessageCircle, Pencil } from 'lucide-react';
 import { commentTotal } from '@/lib/community/comments';
 import type { OpenHarness, SocialState } from '@/lib/community/types';
 import { ForkButton } from './ForkButton';
@@ -13,11 +13,11 @@ export type Panel = 'log' | 'comments' | 'files';
 
 type Props = {
   harness: OpenHarness; social: SocialState; ready: boolean; busy: boolean; panel: Panel;
-  onFollow: () => void; onLike: () => void; onPanel: (panel: Panel) => void;
+  onFollow: () => void; onLike: () => void; onPanel: (panel: Panel) => void; onReport: () => void;
 };
 
 /** The harness's title and creator, and what a reader can do with it; its author can also edit (and unpublish) it there. */
-export function DetailHead({ harness, social, ready, busy, panel, onFollow, onLike, onPanel }: Props) {
+export function DetailHead({ harness, social, ready, busy, panel, onFollow, onLike, onPanel, onReport }: Props) {
   return <header className={styles.detailHead}>
     <div className={styles.identity}><h1>{harness.title}</h1><div className={styles.byline}>
       <Link className={styles.authorLink} href={`/hub/creators/${harness.authorId}`}>{harness.authorName}</Link>
@@ -31,6 +31,8 @@ export function DetailHead({ harness, social, ready, busy, panel, onFollow, onLi
       <button aria-label="Source files" aria-pressed={panel === 'files'} onClick={() => onPanel('files')}><FileCode2 /><span className={styles.actionLabel}>Files</span></button>
       <ShareButton id={harness.id} title={harness.title} />
       {social.mine && <Link href={`/hub/publish?edit=${harness.id}`}><Pencil /><span>Edit</span></Link>}
+      {/* Not your own, and not a starter: those are the Hub's. */}
+      {!social.mine && !harness.example && <button aria-label="Report harness" onClick={onReport}><Flag /><span className={styles.actionLabel}>Report</span></button>}
       <ForkButton id={harness.id}><GitFork /> Fork</ForkButton>
     </div>
   </header>;

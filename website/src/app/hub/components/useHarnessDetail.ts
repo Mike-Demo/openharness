@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { communityRequest, emptySocial, CommunityError } from '@/lib/community/client';
 import { commentTotal, keepEarlier } from '@/lib/community/comments';
+import { postReport, type ReportReason } from '@/lib/community/reports';
 import { putFollow, putLike } from '@/lib/community/social';
 import type { HarnessComment, OpenHarness, SocialState } from '@/lib/community/types';
 import { useRefreshOnReturn } from './useRefreshOnReturn';
@@ -15,6 +16,8 @@ export function useHarnessDetail(id: string, initial: OpenHarness | null, onSign
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [ready, setReady] = useState(false), [unavailable, setUnavailable] = useState(false);
   // A failed read of a page already drawn: said aloud, since without it the author's Edit silently vanishes.
   const [failed, setFailed] = useState(false);
+  // This reader reported the harness: it is hidden from them from now on.
+  const [reported, setReported] = useState(false);
   const revision = useRef(0), writing = useRef(false), loaded = useRef(!!initial);
   // When the publication drawn here was last edited: a refresh that reports a later edit reads it again.
   const version = useRef(initial?.updatedAt ?? null);
@@ -84,10 +87,15 @@ export function useHarnessDetail(id: string, initial: OpenHarness | null, onSign
     const result = await putLike(id, !social.liked);
     setSocial(value => ({ ...value, ...result }));
   });
+  /** A comment gone from this page: deleted, or reported (hidden from its reporter at once). */
+  const dropComment = (comment: HarnessComment) =>
+    setSocial(value => ({ ...value, comments: value.comments.filter(item => item.id !== comment.id), commentCount: commentTotal(value) - 1 }));
   const removeComment = (comment: HarnessComment) => mutate(async () => {
     await communityRequest(`harnesses/${id}/comments/${comment.id}`, { method: 'DELETE' });
-    setSocial(value => ({ ...value, comments: value.comments.filter(item => item.id !== comment.id), commentCount: commentTotal(value) - 1 }));
+    dropComment(comment);
   });
+  const report = (reason: ReportReason) => mutate(async () => { await postReport('harness', id, reason); setReported(true); });
+  const reportComment = (comment: HarnessComment, reason: ReportReason) => mutate(async () => { await postReport('comment', comment.id, reason); dropComment(comment); });
   /** `clientId` makes a retried post return the same comment rather than a second one. */
   const postComment = (body: string, clientId: string, parentId?: string) => mutate(async () => {
     const data = await communityRequest<{ comment: HarnessComment }>(`harnesses/${id}/comments`, { method: 'POST', body: { body, clientId, ...(parentId ? { parentId } : {}) } });
@@ -107,5 +115,5 @@ export function useHarnessDetail(id: string, initial: OpenHarness | null, onSign
       return true;
     } catch { return false; }
   };
-  return { harness, social, ready, failed, error, busy, unavailable, load, follow, like, removeComment, postComment, loadEarlier };
+  return { harness, social, ready, failed, error, busy, unavailable, reported, load, follow, like, removeComment, postComment, loadEarlier, report, reportComment };
 }
