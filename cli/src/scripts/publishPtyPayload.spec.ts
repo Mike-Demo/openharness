@@ -1,0 +1,62 @@
+import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+
+// @ts-expect-error — plain ESM with no declaration file
+const { PTY_FILES: manifestFiles } = await import('../../scripts/windows-install-manifest.mjs') as { PTY_FILES: string[] }
+
+const script = join(process.cwd(), 'scripts', 'publish-pty-payload.sh')
+const FILES = ['harness-pty.exe', 'harness-launch.exe', 'harness.exe', 'conpty.dll', 'OpenConsole.exe']
+const hasPython = spawnSync('python3', ['--version']).status === 0
+const dirs: string[] = []
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
+
+function payloads(missing?: string) {
+  const root = mkdtempSync(join(tmpdir(), 'harness-pty-publish-'))
+  dirs.push(root)
+  for (const arch of ['x64', 'arm64']) {
+    mkdirSync(join(root, arch))
+    for (const name of FILES) if (!(arch === 'arm64' && name === missing)) writeFileSync(join(root, arch, name), `${arch}:${name}`)
+  }
+  return root
+}
+
+const run = (root: string, args: string[]) => spawnSync('bash', [script, ...args], {
+  encoding: 'utf8', env: { ...process.env, DRY_RUN: '1', DRY_RUN_OUT: join(root, 'out'), METADATA_PATH: 'harness/staging/pty/metadata.json', GCS_BUCKET: 's3-autonomous-upgrade-3', CDN_ASSET_BASE_URL: 'https://cdn.autonomous.ai' },
+})
+
+describe.skipIf(process.platform === 'win32' || !hasPython)('publish-pty-payload.sh, as a dry run', () => {
+  it('zips each architecture\'s five files at the root, and writes the pty key with their digests', () => {
+    const root = payloads()
+    const result = run(root, ['1.2.3', join(root, 'x64'), join(root, 'arm64')])
+    expect(result.status, result.stderr).toBe(0)
+    const doc = JSON.parse(readFileSync(join(root, 'out', 'metadata.json'), 'utf8'))
+    for (const key of ['win32-x64', 'win32-arm64']) {
+      const zip = `harness-pty-1.2.3-${key}.zip`
+      const bytes = readFileSync(join(root, 'out', zip))
+      expect(doc.pty[key]).toEqual({ version: '1.2.3', url: `https://cdn.autonomous.ai/harness/pty/1.2.3/${zip}`, sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length })
+      const listing = spawnSync('python3', ['-m', 'zipfile', '-l', join(root, 'out', zip)], { encoding: 'utf8' }).stdout
+      for (const name of FILES) expect(listing).toMatch(new RegExp(`^${name.replace('.', '\\.')}\\s`, 'm'))
+    }
+  })
+
+  it('refuses a payload missing a file, and a version that is not a release', () => {
+    const root = payloads('OpenConsole.exe')
+    const missing = run(root, ['1.2.3', join(root, 'x64'), join(root, 'arm64')])
+    expect(missing.status).toBe(1)
+    expect(missing.stderr).toContain('has no OpenConsole.exe')
+    expect(run(payloads(), ['1.2.3-dev.x', 'a', 'b']).status).toBe(2)
+  })
+
+  it('ships the same five files as the installer manifest and install.ps1', () => {
+    const sh = readFileSync(script, 'utf8').match(/^FILES=\((.*)\)$/m)?.[1].split(/\s+/)
+    const ps1 = readFileSync(join(process.cwd(), 'scripts', 'install.ps1'), 'utf8').match(/\$HarnessPtyFiles = @\((.*)\)/)?.[1].split(',').map((s) => s.trim().replace(/'/g, ''))
+    expect(FILES).toHaveLength(5)
+    expect(sh).toEqual(FILES)
+    expect(ps1).toEqual(FILES)
+    expect(manifestFiles).toEqual(FILES)
+  })
+})
