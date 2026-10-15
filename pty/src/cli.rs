@@ -82,8 +82,18 @@ pub fn main() {
             history_limit,
             reexec,
         }) => {
+            // Before anything else the host does: the daemon starts it with no stdio, so the log
+            // file is where its diagnostics go (stderr still has them for a host run by hand).
+            crate::logfile::install(&home);
+            log::info!(
+                "harness-pty {} (protocol {PROTOCOL}) serving {} (pid {})",
+                env!("CARGO_PKG_VERSION"),
+                home.display(),
+                std::process::id()
+            );
             if let Err(err) = serve(&home, history_limit, reexec) {
-                eprintln!("harness-pty: {err}");
+                log::error!("harness-pty: {err}");
+                log::logger().flush();
                 std::process::exit(1);
             }
         }
@@ -139,6 +149,7 @@ fn run_dir(home: &Path) -> std::io::Result<PathBuf> {
 pub fn serve(home: &Path, history_limit: usize, reexec: bool) -> std::io::Result<()> {
     #[cfg(windows)]
     if reexec && leave_job(home, history_limit) {
+        log::info!("a copy of this host started outside its job serves; exiting");
         return Ok(());
     }
     #[cfg(not(windows))]
@@ -146,6 +157,7 @@ pub fn serve(home: &Path, history_limit: usize, reexec: bool) -> std::io::Result
     let run = run_dir(home)?;
     // Before the endpoint and the pane counter: one host per home.
     let Some(_lock) = crate::host_lock::take(&run)? else {
+        log::info!("another host serves this home; exiting");
         return Ok(());
     };
     #[cfg(unix)]
@@ -184,7 +196,7 @@ fn set_discovery_aside(run: &Path) {
     aside.push(".stale");
     match crate::files::rename(&file, Path::new(&aside)) {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
-            eprintln!("harness-pty: cannot set the old discovery file aside: {err}")
+            log::error!("cannot set the old discovery file aside: {err}")
         }
         _ => {}
     }
@@ -196,7 +208,7 @@ fn set_discovery_aside(run: &Path) {
 fn leave_job(home: &Path, history_limit: usize) -> bool {
     use crate::breakaway::{Left, in_job, spawn_copy};
     let in_job = in_job().unwrap_or_else(|err| {
-        eprintln!("harness-pty: warning: cannot tell whether the host is in a job: {err}");
+        log::warn!("cannot tell whether the host is in a job: {err}");
         false
     });
     let args: Vec<std::ffi::OsString> = vec![
@@ -210,7 +222,7 @@ fn leave_job(home: &Path, history_limit: usize) -> bool {
     let left = crate::breakaway::leave_job(
         in_job,
         |flags| spawn_copy(&args, flags),
-        |warning| eprintln!("harness-pty: warning: {warning}"),
+        |warning| log::warn!("{warning}"),
     );
     matches!(left, Left::BrokeAway | Left::Detached)
 }
@@ -240,6 +252,7 @@ fn publish_and_serve<L: crate::transport::Listener>(
             token: info.token.clone(),
         },
     )?;
+    log::info!("listening as {} on {}", info.instance, listener.endpoint());
     let published = (crate::discovery::file_path(run), listener.endpoint());
     // Once: the connection that was granted it and its reply's deadline (server.rs) may both call it;
     // the second waits in `call_once` while the first exits.

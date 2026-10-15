@@ -5,6 +5,7 @@ mod files;
 pub mod host_lock;
 #[cfg(windows)]
 pub mod job;
+pub mod logfile;
 pub mod pane;
 pub mod pane_ids;
 pub mod panes;

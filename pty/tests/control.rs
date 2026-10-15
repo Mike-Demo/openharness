@@ -384,6 +384,67 @@ fn a_squatter_on_the_endpoint_fails_the_start_and_the_discovery_file_is_set_asid
     );
 }
 
+/// The log's text once it has [want] (the host writes it as it goes).
+fn wait_log(home: &std::path::Path, want: &str) -> String {
+    let path = harness_pty::logfile::log_path(home);
+    let end = Instant::now() + WAIT;
+    loop {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains(want) {
+            return text;
+        }
+        assert!(
+            Instant::now() < end,
+            "no {want:?} in {}: {text}",
+            path.display()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn the_host_logs_to_its_home_its_start_and_its_errors() {
+    let (h, disc) = start();
+    let text = wait_log(h.home.path(), "listening as");
+    assert!(
+        text.contains(&format!(
+            "INFO harness_pty::cli: harness-pty {}",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{text}"
+    );
+    assert!(text.contains(disc["endpoint"].as_str().unwrap()), "{text}");
+    // Never the token.
+    assert!(!text.contains(disc["token"].as_str().unwrap()), "{text}");
+    // A second start says why it does not serve.
+    assert!(host_command(h.home.path()).status().unwrap().success());
+    wait_log(h.home.path(), "another host serves this home");
+
+    // A start that fails logs why, as well as printing it.
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(home.path().join("run"), "not a directory").unwrap();
+    let out = host_command(home.path())
+        .arg("--no-reexec")
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let text = wait_log(home.path(), "ERROR harness_pty::cli: harness-pty: ");
+    assert!(text.contains("serving"), "{text}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("ERROR"),
+        "{out:?}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = harness_pty::logfile::log_path(home.path());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
 #[test]
 fn a_pane_without_a_cwd_starts_in_the_users_home() {
     let (_h, disc) = start();

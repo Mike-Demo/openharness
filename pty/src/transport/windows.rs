@@ -332,7 +332,7 @@ impl Listener for PipeListener {
             // The next instance before this one is handed out.
             match create_instance(&self.wide, false, &self.security) {
                 Ok(instance) => *next = Some(instance),
-                Err(err) => eprintln!("harness-pty: no pipe instance for the next client: {err}"),
+                Err(err) => log::error!("no pipe instance for the next client: {err}"),
             }
             match connected {
                 Ok(true) => return PipeConn::new(pipe),
