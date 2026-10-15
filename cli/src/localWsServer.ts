@@ -734,7 +734,9 @@ export function attachLocalWsServer(server: http.Server, options: LocalWsServerO
           }
           // Compatibility for windows that never report selection. A modern window restores every
           // terminal on reconnect; their attachment order is not the pane the person selected.
-          if (parsed?.type === 'terminal_open' && !explicitFocusClients.size && typeof agentId === 'string' && agentId) {
+          // (A watch-only open is hn with no terminal reading a pane: nobody is in front of it.)
+          if (parsed?.type === 'terminal_open' && !explicitFocusClients.size && typeof agentId === 'string' && agentId
+            && (parsed.payload as Record<string, unknown>).watch !== true) {
             options.onAppFocus?.(boundMachineId, agentId)
           }
         }

@@ -223,6 +223,25 @@ pub fn state_dir() -> std::path::PathBuf {
 /// The agent a reply is about (`agentId`).
 fn agent_id_of(reply: &Value) -> Option<String> { reply.get("agentId").and_then(Value::as_str).map(str::to_string) }
 
+/// `terminal_open` for a pane of [size]. [takeover]: take the keyboard from any other window.
+/// hn with no terminal ([headless]) has no one to give the keyboard or the size to: it opens as a
+/// watcher (`watch`), which the machine never counts as holding the terminal — otherwise, first
+/// back after a daemon restart, it took every agent of the desk at its 80x24 layout and left the
+/// window in use watching until someone typed. A command it runs that types still takes over.
+fn open_request(agent_id: &str, (cols, rows): (u16, u16), host: &str, takeover: bool, headless: bool) -> Value {
+    let mut request = json!({
+        "protocolVersion": 3,
+        "agentId": agent_id,
+        "cols": cols,
+        "rows": rows,
+        "compression": ["zlib", "none"],
+        "client": { "kind": "tui", "name": format!("{host} terminal") },
+        "takeover": takeover,
+    });
+    if headless && !takeover { request["watch"] = json!(true) }
+    request
+}
+
 /// Seconds since the epoch.
 pub fn epoch_secs() -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0) }
 
@@ -1892,7 +1911,8 @@ impl App {
     /// A user asks for control of this TUI: reclaim every available pane across its tabs and
     /// sessions without moving focus. Reconnects and ownership notifications never call this.
     pub fn take_control(&mut self) {
-        if self.read_only() { return }
+        // (hn with no terminal has no user to ask for it: it takes only a pane it types into.)
+        if self.read_only() || self.headless { return }
         let mut ids: Vec<u64> = self.tabs.iter().chain(self.sessions.iter()
             .filter(|s| !s.mirror.as_ref().is_some_and(|m| m.readonly))
             .flat_map(|s| s.tabs.iter())).flat_map(Tab::panes).collect();
@@ -1926,6 +1946,11 @@ impl App {
         }
         let Some(pane) = self.panes.get_mut(&pane_id) else { return };
         if pane.opening { return }
+        // hn with no terminal takes a terminal exactly when it has something to type into it (a
+        // command's send-keys, the first line of a shell it made). Whatever else asks — a retry
+        // while a harness starts, a view another window replaced, a pane a command brought forward —
+        // it watches: no one is there to give the keyboard to, and every window with a person keeps it.
+        let takeover = if self.headless { !pane.queued.is_empty() } else { takeover };
         // Do not send an open before machine_select has succeeded: its reply could otherwise
         // be discarded by the selecting link, leaving this pane waiting for 45 seconds.
         let Some(link) = self.links.get(&pane.machine_id).and_then(|s| s.link.clone())
@@ -1935,7 +1960,9 @@ impl App {
         };
         let (cols, rows) = content.unwrap_or((pane.cols, pane.rows));
         // The remote terminal follows the actual tile, including narrow or short split panes.
-        let (cols, rows) = pane::stream_size(cols, rows);
+        // hn with no terminal has no tile anyone sees: what it takes (a command typing into a pane,
+        // a shell it made) keeps the size the far pane already has, once a keyframe said it.
+        let (cols, rows) = if self.headless && pane.far_sized { (pane.cols, pane.rows) } else { pane::stream_size(cols, rows) };
         pane.opening = true;
         pane.want = (cols, rows);
         if !matches!(pane.phase, Phase::Watching(_)) || takeover { pane.phase = Phase::Connecting(if takeover { "Taking over…".into() } else { "Opening…".into() }) }
@@ -1947,17 +1974,9 @@ impl App {
         // recognised by this token and not allowed to overwrite the current state.
         pane.open_token += 1;
         let token = pane.open_token;
-        let host = self.fleet.local_machine_name();
+        let request = open_request(&agent_id, (cols, rows), &self.fleet.local_machine_name(), takeover, self.headless);
         self.spawn(async move {
-            link.request("terminal_open", json!({
-                "protocolVersion": 3,
-                "agentId": agent_id,
-                "cols": cols,
-                "rows": rows,
-                "compression": ["zlib", "none"],
-                "client": { "kind": "tui", "name": format!("{host} terminal") },
-                "takeover": takeover,
-            }), Duration::from_secs(45)).await
+            link.request("terminal_open", request, Duration::from_secs(45)).await
         }, move |app, reply| app.opened(pane_id, &machine_id, token, (cols, rows), reply));
     }
 
@@ -1990,8 +2009,9 @@ impl App {
                 let retake = takeover_requested && pane.read_only;
                 let queued = if retake { Vec::new() } else { std::mem::take(&mut pane.queued) };
                 let read_only = pane.read_only;
-                // The tile changed size while this was opening: tell the far pane now.
-                if !read_only && pane.want != asked {
+                // The tile changed size while this was opening: tell the far pane now. (hn with no
+                // terminal has no tile: it keeps the size it asked for, the far pane's own.)
+                if !read_only && !self.headless && pane.want != asked {
                     pane.resize_seq += 1;
                     let (seq, want) = (pane.resize_seq, pane.want);
                     if let (Some(stream), Some(link)) = (stream, self.links.get(machine_id).and_then(|s| s.link.clone())) {
@@ -2210,7 +2230,8 @@ impl App {
             if pane.want == want { continue }
             pane.want = want;
             let Some(stream) = pane.stream else { continue };
-            if pane.read_only { continue }
+            // hn with no terminal sizes no agent: its 80x24 layout is nobody's screen.
+            if pane.read_only || headless { continue }
             pane.resize_seq += 1;
             let seq = pane.resize_seq;
             if let Some(link) = self.links.get(&pane.machine_id).and_then(|s| s.link.clone()) {
@@ -4065,6 +4086,9 @@ impl App {
     /// A pane you come to (a click, a key, the bar) that another window has the keyboard of is
     /// yours at once — as typing in it would make it — not "Take control" first.
     pub fn take_if_watching(&mut self, pane: u64) {
+        // hn with no terminal: no one came to it (a script's select-window), and a takeover would
+        // size the agent to its 80x24 layout under the window someone is using.
+        if self.headless { return }
         let Some(p) = self.panes.get(&pane) else { return };
         if matches!(p.phase, Phase::Watching(_)) && !p.read_only && !p.opening { self.open_stream(pane, true) }
     }
@@ -7105,6 +7129,67 @@ mod recovery_tests {
                 assert!(app.links["test-peer"].link.is_none());
             }
         }
+    }
+
+    #[test]
+    fn hn_with_no_terminal_opens_a_pane_only_to_watch_it() {
+        let open = |takeover, headless| open_request("agent-1", (37, 22), "Mac Auto", takeover, headless);
+        // Back after a daemon restart, beside the window in use: it must not take the agent at its 80x24 layout.
+        assert_eq!(open(false, true)["watch"], json!(true));
+        assert_eq!(open(false, true)["takeover"], json!(false));
+        // A window with a person in it opens as it always has, and so does a command that types.
+        for (takeover, headless) in [(false, false), (true, false), (true, true)] {
+            assert!(open(takeover, headless).get("watch").is_none(), "{takeover} {headless}");
+        }
+        assert_eq!(open(true, false)["client"], json!({ "kind": "tui", "name": "Mac Auto terminal" }));
+        assert_eq!((open(true, false)["cols"].clone(), open(true, false)["rows"].clone()), (json!(37), json!(22)));
+    }
+
+    /// hn with no terminal (kept for the desk after its last window closed) took the desk's agents
+    /// at its 80x24 layout on 2026-10-14. It sizes none now, and takes a pane only to type into it.
+    #[tokio::test]
+    async fn hn_with_no_terminal_takes_a_pane_only_to_type_and_never_sizes_one() {
+        let mut app = fixture();
+        app.headless = true;
+        app.tabs[0].root = Some(Node::new(1, 80, 23));
+        app.tabs[0].focus = Some(1);
+        // The far pane is the size the window in use gave it; this layout would make it 80x24.
+        { let p = app.panes.get_mut(&1).unwrap(); p.want = (1, 1); p.keyframe(99, 55, b""); }
+        app.fit_panes();
+        assert_eq!(app.panes[&1].resize_seq, 0);
+        // Asked to take every pane, or one again, with nothing to type: it watches.
+        app.take_control();
+        assert!(!app.panes[&1].opening);
+        app.open_stream(1, true);
+        assert!(matches!(&app.panes[&1].phase, Phase::Connecting(s) if s == "Opening…"));
+        assert_eq!(app.panes[&1].want, (99, 55));
+        // A command types into it while that open is in flight: taken once the open answers.
+        crate::input::send_to_pane(&mut app, 1, b"y\r".to_vec());
+        assert!(app.panes[&1].takeover_pending);
+        // With something to type it takes the pane, at the size the far pane already has.
+        app.panes.get_mut(&1).unwrap().opening = false;
+        app.open_stream(1, false);
+        assert!(matches!(&app.panes[&1].phase, Phase::Connecting(s) if s == "Taking over…"));
+        assert_eq!(app.panes[&1].want, (99, 55));
+        app.links["test-peer"].link.as_ref().unwrap().close();
+    }
+
+    #[tokio::test]
+    async fn hn_with_no_terminal_takes_no_pane_it_is_brought_to() {
+        let mut app = fixture();
+        let pane = app.panes.get_mut(&1).unwrap();
+        // Taken over (`takenBy`), watching until someone comes to it.
+        pane.phase = Phase::Watching("Mac Auto terminal".into());
+        pane.read_only = false;
+        app.headless = true;
+        app.take_if_watching(1);
+        assert!(!app.panes[&1].opening);
+        assert_eq!(app.panes[&1].open_token, 7);
+        // A window with a terminal takes it at once, as it always has.
+        app.headless = false;
+        app.take_if_watching(1);
+        assert!(app.panes[&1].opening);
+        app.links["test-peer"].link.as_ref().unwrap().close();
     }
 
     #[tokio::test]

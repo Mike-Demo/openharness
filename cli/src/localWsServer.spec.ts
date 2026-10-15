@@ -745,6 +745,8 @@ describe('local CLI WebSocket', () => {
     ws.send(JSON.stringify({ type: 'machine_select', payload: { machineId, localProtocolVersion: 1 } }))
     await connected
 
+    // hn with no terminal reading a pane is no one's focus.
+    ws.send(JSON.stringify({ type: 'terminal_open', payload: { agentId: 'agent-watched', watch: true } }))
     // Opening a terminal still counts: that is all an older app build sends.
     ws.send(JSON.stringify({ type: 'terminal_open', payload: { agentId: 'agent-opened' } }))
     // And a window that MOVED without opening anything now says so — which is every click on a pane
@@ -759,7 +761,7 @@ describe('local CLI WebSocket', () => {
     ])
     // Consumed locally: it describes a hand at this desk, and the machine has no use for an unknown
     // frame type arriving on every pane click.
-    expect(backend.frames.map((frame) => frame.type)).toEqual(['terminal_open', 'terminal_open'])
+    expect(backend.frames.map((frame) => frame.type)).toEqual(['terminal_open', 'terminal_open', 'terminal_open'])
     ws.close()
   })
 

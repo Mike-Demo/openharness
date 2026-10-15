@@ -268,6 +268,8 @@ pub fn send_to_pane(app: &mut App, focus: u64, bytes: Vec<u8>) {
     let Some(pane) = app.panes.get_mut(&focus) else { return };
     if pane.read_only || matches!(pane.phase, Phase::Watching(_)) || pane.stream.is_none() {
         pane.queued.push(bytes);
+        // hn with no terminal takes only this pane, once its open in flight answers if there is one.
+        if app.headless && pane.opening { pane.takeover_pending = true }
         app.take_control();
         // A popup has no tab, so its own stream still needs to be opened here.
         if app.panes.get(&focus).is_some_and(|p| !p.opening) { app.open_stream(focus, true) }
@@ -1537,10 +1539,14 @@ fn shell_placed(app: &mut App, machine: String, placement: Placement, reply: Res
     let new_window = matches!(&placement, Placement::Fill(_));
     app.open_agent(&machine, id, placement);
     let (session, _, pane) = app.find_pane_anywhere(&machine, id).ok_or("create pane failed: target window or pane disappeared")?;
+    let typing = !typed.is_empty();
     if let Some(p) = app.panes.get_mut(&pane) {
         p.queued.extend(typed);
         p.start_command = reply.pointer("/agent/startCommand").and_then(serde_json::Value::as_str).map(str::to_string);
+        // hn with no terminal opened it to watch (there was nothing to type yet): now there is.
+        if app.headless && typing && p.opening { p.takeover_pending = true }
     }
+    if app.headless && typing && app.panes.get(&pane).is_some_and(|p| !p.opening && p.read_only) { app.open_stream(pane, true) }
     crate::os_welcome::shell_created(app, pane);
     // A new session's first pane may belong to a session not currently in front.
     let (back, before) = (app.session_id, app.swap_back);
