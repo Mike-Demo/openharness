@@ -63,6 +63,7 @@ Use the same words everywhere.
 
   | Tool | What it does |
   |---|---|
+  | `harness_whoami` | who the agent is, on which machine, whether it may start harnesses now, and its limits |
   | `harness_list` | the harnesses on this machine: state, who started each, what each is about |
   | `harness_start` | start Claude Code or Codex on a task in a folder, by name; returns at once |
   | `harness_wait` | wait until harnesses stop working (up to 600 seconds a call) |

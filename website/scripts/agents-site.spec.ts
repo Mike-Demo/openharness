@@ -52,8 +52,9 @@ describe("the pages and skill agents read", () => {
   });
 
   // The agent commands each page must teach, and where each command's usage (its options) is written.
-  const AGENT_VERBS = ["ps", "new", "wait", "show", "send", "close"];
+  const AGENT_VERBS = ["whoami", "ps", "new", "wait", "show", "send", "close"];
   const usageSources: Record<string, [string, string]> = {
+    whoami: ["cli/src/agentClient/commands.ts", "WHOAMI_USAGE"],
     ps: ["cli/src/agentClient/commands.ts", "PS_USAGE"],
     show: ["cli/src/agentClient/commands.ts", "SHOW_USAGE"],
     wait: ["cli/src/agentClient/commands.ts", "WAIT_USAGE"],

@@ -120,6 +120,9 @@ curl -fsSL https://raw.githubusercontent.com/autonomous-ai/openharness/main/plug
   <table>
     <thead><tr><th>Command</th><th>What it does</th></tr></thead>
     <tbody>
+      <tr><td><code>harness whoami</code></td><td>Who you are to Harness: which agent, on which machine, inside Harness or
+        not; whether you may start harnesses now and, if not, who can change that; how many of yours are open. Run it
+        first.</td></tr>
       <tr><td><code>harness ps [--all]</code></td><td>The harnesses on this machine: name, agent, state, who started it,
         when it was last active, its folder and what it is about. <code>--all</code> adds the ones stopped in the
         last week.</td></tr>
@@ -220,8 +223,9 @@ harness new codex --machine mini ~/code/app --name train -- "Run the training sc
       teammates in your tab, while Agent Messages are on (Settings ▸ Experimental, off by default). A harness you started,
       or the one that started you, is no exception.</li>
     <li><strong>Outside Harness</strong> (Claude Code or Codex in a terminal app, an editor or the person's own tmux):
-      Harness tells you by your session, from what your agent sets in its shell. <code>harness ps</code> says
-      "You are Claude Code, outside Harness." and marks what this session started as <code>you</code>; the limits
+      Harness tells you by your session, from what your agent sets in its shell. <code>harness whoami</code> (and the
+      top of <code>harness ps</code>) says "You: Claude Code, outside Harness, on &lt;machine&gt;.", and
+      <code>harness ps</code> marks what this session started as <code>you</code>; the limits
       below apply; each harness you start reads
       <code>[from Claude Code outside Harness · &lt;machine&gt;, the agent that started you. It reads your answer itself.]</code>
       above its task; and you may close only what this session started. Nothing can message you, and
@@ -237,6 +241,7 @@ harness new codex --machine mini ~/code/app --name train -- "Run the training sc
   <table>
     <thead><tr><th>Tool</th><th>Arguments</th><th>Same as</th></tr></thead>
     <tbody>
+      <tr><td><code>harness_whoami</code></td><td>none</td><td><code>harness whoami</code></td></tr>
       <tr><td><code>harness_list</code></td><td><code>all?</code></td><td><code>harness ps</code></td></tr>
       <tr><td><code>harness_start</code></td><td><code>task</code>, <code>name</code>, <code>folder?</code> or
         <code>project?</code> (a new project for scratch or new work), <code>agent?</code> (<code>claude</code> or

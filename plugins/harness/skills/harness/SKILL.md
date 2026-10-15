@@ -54,8 +54,9 @@ the person can watch and step in.
 
 ## New harness or an existing one
 
-1. List first: `harness ps`. It shows the harnesses here: state, who started each (`you` for yours), and what each
-   is about.
+1. Start with `harness whoami`: who you are, whether you may start harnesses now (and if not, who can change that),
+   and how many of yours are open. Then list: `harness ps`. It shows the harnesses here: state, who started each
+   (`you` for yours), and what each is about.
 2. You may give work only to a harness **you started**, or to a teammate in your tab while Agent Messages are on
    (`harness send` alone lists them). Never give work to, or close, a harness you did not start: those are the
    person's. You may `show` and `wait` on them.
@@ -67,6 +68,7 @@ the person can watch and step in.
 ## The verbs
 
 ```
+harness whoami                                      # who and where you are, whether you may start harnesses, your limits
 harness ps [--all] [--machine <name>]               # the harnesses here, or on another machine
 harness new [agent] [--machine <name>] [folder | project] --name <name> -- <task>
 harness wait <name>[,<name>…] [--any] [--timeout 30m]
@@ -101,8 +103,8 @@ harness close <name> [--now]                        # when you are done with one
   you, is no exception: outside your tab, or with Agent Messages off, put everything in the task and read the answer
   with `show`.
 - **Outside Harness** (Claude Code or Codex in a terminal app, an editor or the person's own tmux): Harness tells
-  you by your session. `harness ps` says "You are Claude Code, outside Harness." and marks what this session
-  started as `you`; the limits below apply; and you may close only what this session started. Nothing can
+  you by your session. `harness whoami` (and the top of `harness ps`) says "You: Claude Code, outside Harness, on
+  <machine>.", and `harness ps` marks what this session started as `you`; the limits below apply; and you may close only what this session started. Nothing can
   message you, and `harness send` is not available: put everything in the task, and for a follow-up start a new
   harness with the fuller task.
 
@@ -122,7 +124,7 @@ the answer. For several at once, start each with its own name and wait on all of
 ## Harness's MCP tools
 
 If Harness's MCP server (`harness mcp`) is connected, its tools are the same verbs under the same rules:
-`harness_list` (ps), `harness_start` (new: task, name, `folder` or `project`, `agent` claude or codex, `machine`),
+`harness_whoami` (whoami), `harness_list` (ps), `harness_start` (new: task, name, `folder` or `project`, `agent` claude or codex, `machine`),
 `harness_wait` (up to 120 seconds by default and 600 at most; if they are still working, call it again),
 `harness_read` (show), `harness_close` (close), and `harness_send` (send), offered only inside a harness.
 

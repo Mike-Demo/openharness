@@ -109,6 +109,17 @@ auto|ask|plan|full`, `--name`, `--new [name]` and `--json` are the rest. There i
 harness on another of your machines: `harness new claude --machine office --name check -- …`, then
 `harness wait --machine office check` and `harness show --machine office check`.
 
+`harness whoami` says, for an agent, where it is and what it may do before it acts (`--json` gives the same as
+`context`); the top of an agent's `harness ps` begins with it, and `harness mcp` puts it in its instructions:
+
+```
+You: Claude Code "lead" (94d984ee), inside Harness, on Mac Auto.
+Can start harnesses: no. The person has not turned on "Agents can start other agents". Ask them to run: harness settings agents-start-agents on
+Yours: 1 open of 4 · 3 of 20 starts in the last 10 minutes · other machines: office (running)
+```
+
+Run by the person, it prints the first line only: `You: the person, on Mac Auto.`
+
 ## Your devices
 
 Signing in is what makes a device trusted: every computer and app signed in to the account adds its

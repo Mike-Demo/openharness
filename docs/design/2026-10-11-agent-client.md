@@ -43,6 +43,7 @@ and the person's view of it.
 ## The agent's side
 
 ```
+harness whoami                                      # who and where you are, whether you may start, your limits (2026-10-15-agent-experience.md)
 harness ps [--all]                                  # the harnesses here: state, who started each, what each is about
 harness new [agent] [--machine <name>] [folder] --name N -- <task>   # exists; now knows when an agent runs it
 harness show <name> [--chars N]                     # its state, the last ask and the answer
