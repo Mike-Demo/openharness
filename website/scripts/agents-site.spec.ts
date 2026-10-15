@@ -247,4 +247,17 @@ describe("the pages and skill agents read", () => {
     expect(redirects.find((entry) => entry.source === "/cli/install.sh")?.destination).toMatch(/^https:\/\/cdn\.autonomous\.ai\//);
     for (const text of [page, llms, skill]) expect(text).toContain("curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash");
   });
+
+  // Nothing else on the site links to /agents or /llms.txt (/ is the web app): a search engine, or an agent searching
+  // the web, finds them through the sitemap robots.txt names.
+  it("can be found: robots.txt names a sitemap that lists /agents and /llms.txt", () => {
+    const robots = readFileSync(join(site, "public", "robots.txt"), "utf8");
+    expect(robots).toMatch(/^User-agent: \*$/m);
+    expect(robots).not.toMatch(/^Disallow: \/\s*$/m);
+    expect(robots).toMatch(/^Sitemap: https:\/\/harness\.autonomous\.ai\/sitemap\.xml$/m);
+    const sitemap = readFileSync(join(site, "public", "sitemap.xml"), "utf8");
+    for (const url of ["https://harness.autonomous.ai/agents", "https://harness.autonomous.ai/llms.txt"]) {
+      expect(sitemap).toContain(`<loc>${url}</loc>`);
+    }
+  });
 });

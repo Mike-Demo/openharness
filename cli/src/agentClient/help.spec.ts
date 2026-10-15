@@ -25,9 +25,13 @@ describe('harness --help', () => {
   it('points an agent to its help on the first line, and leaves the rest as it was', () => {
     expect(helpFor({}, full)).toBe(`An agent? Run: harness help agents\n${full}`)
   })
-  it('puts the agents\' help first when an agent asks', () => {
-    expect(helpFor({ CODEX_THREAD_ID: 't' }, full).startsWith(agentsHelp())).toBe(true)
-    expect(helpFor({ AI_AGENT: 'cursor' }, full).startsWith(agentsHelp())).toBe(true)
-    expect(helpFor({ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 's' }, full).endsWith(full)).toBe(true)
+  it('puts the agents\' help first when an agent asks, and does not point it to what it just read', () => {
+    for (const env of [{ CODEX_THREAD_ID: 't' }, { AI_AGENT: 'cursor' }, { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 's' }]) {
+      expect(helpFor(env, full)).toBe(`${agentsHelp()}\n\n${full}`)
+    }
+  })
+  it('does not claim every command ends with Next: whoami and a refusal do not', () => {
+    expect(agentsHelp()).not.toContain('Every command ends with Next')
+    expect(agentsHelp()).toContain('Most commands end with Next:')
   })
 })

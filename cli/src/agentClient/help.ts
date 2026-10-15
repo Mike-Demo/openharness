@@ -30,7 +30,7 @@ export function agentsHelp(): string {
     '  harness wait <name>',
     '  harness show <name>',
     '  harness close <name>',
-    'Every command ends with Next: the command to run next. --json gives it as "next".',
+    'Most commands end with Next: the command to run next. --json gives it as "next".',
     '',
     'States: working, idle, needs the person, installing, starting, stopped, gone, closed, failed.',
     `Exit codes: ${EXIT.ok} done · ${EXIT.failed} failed · ${EXIT.usage} wrong command · ${EXIT.needsInput} needs the person · `
@@ -48,6 +48,5 @@ export function agentsHelp(): string {
 
 /** `harness --help`: a line for agents first; an agent asking (by what its shell sets) gets its own help before the rest. */
 export function helpFor(env: NodeJS.ProcessEnv, full: string): string {
-  const text = `An agent? Run: harness help agents\n${full}`
-  return outsideCaller(env, '') ? `${agentsHelp()}\n\n${text}` : text
+  return outsideCaller(env, '') ? `${agentsHelp()}\n\n${full}` : `An agent? Run: harness help agents\n${full}`
 }

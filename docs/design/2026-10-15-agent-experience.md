@@ -71,8 +71,8 @@ Line 2, by case, in the order `spawnRefusal()` checks them:
 | Case | Line 2 |
 |---|---|
 | allowed | `Can start harnesses: yes.` |
-| switch off | `Can start harnesses: no. The person has not turned on "Agents can start other agents". Ask them to run: harness settings agents-start-agents on` |
-| this computer signed out | `Can start harnesses: no. This computer is signed out of Harness, and starting is the account's choice. Ask the person to run: harness login, then harness settings agents-start-agents on` |
+| switch off | `Can start harnesses: no. The person has not turned on "Agents can start other agents". Ask them to run, in their own terminal: harness settings agents-start-agents on` |
+| this computer signed out | `Can start harnesses: no. This computer is signed out of Harness, and starting is the account's choice. Ask the person to run, in their own terminal: harness login, then harness settings agents-start-agents on` |
 | started by an agent (depth) | `Can start harnesses: no. An agent started you, and only one level is allowed. Do the work yourself, or say in your answer what else is needed.` |
 | the most open (4) | `Can start harnesses: no. You have <open> open, the most. To free a place: harness close <name>` |
 | the most starts (20 in 10 minutes) | `Can start harnesses: not until <time> (<max starts> starts in <minutes> minutes).` |

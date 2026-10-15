@@ -545,7 +545,9 @@ export function psCommand(argv: readonly string[], deps: ClientDeps = {}): Promi
       const next = o.caller ? psNext(s.env, rows, !!context.canStart?.ok) : []
       // An agent reads its own first and at most AGENT_ROWS, unless it asked for all; programs and the person get every row.
       const { shown, more } = agent && !all ? forAgent(rows) : { shown: rows, more: 0 }
-      const rest = more ? `and ${more} more: ${step(s.env, 'ps', away ? machineOption(away.word) : '', { flag: '--all', arg: 'all: true' })}` : null
+      // `--all` lists the stopped ones too: said, so the agent knows what it asks for.
+      const hiddenYours = more > 0 && shown.filter((r) => r.yours).length < rows.filter((r) => r.yours).length
+      const rest = more ? `and ${more} more${hiddenYours ? '' : ', none of them yours'}: ${step(s.env, 'ps', away ? machineOption(away.word) : '', { flag: '--all', arg: 'all: true' })} (lists every one, and those stopped this week)` : null
       s.out(flags.has('--json') ? JSON.stringify({ you: o.caller ? o.caller.name : null, machine: on.machine, context, harnesses: rows, next }, null, 1)
         : [agent ? formatContext(context) : null, formatRows(shown, s.now(), away ? away.label : undefined), rest, formatNext(next)].filter(Boolean).join('\n'))
       return EXIT.ok

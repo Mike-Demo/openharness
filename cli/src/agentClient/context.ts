@@ -91,7 +91,8 @@ export function formatContext(c: Context): string {
     : `You: ${c.caller.agent}, outside Harness, on ${c.caller.machine}. Nothing can message you here.`
   if (!c.canStart) return who
   const s = c.canStart
-  const asking = s.fixBy === 'you' ? 'To free a place' : s.reason === 'SWITCH_OFF' ? 'Ask them to run' : 'Ask the person to run'
+  // The person's own terminal: an agent asked to run it itself is refused (settings.ts `settingsOnlyThePerson`).
+  const asking = s.fixBy === 'you' ? 'To free a place' : s.reason === 'SWITCH_OFF' ? 'Ask them to run, in their own terminal' : 'Ask the person to run, in their own terminal'
   const can = s.ok ? 'Can start harnesses: yes.'
     : s.reason === 'START_RATE' && c.quota?.nextStartAt ? `Can start harnesses: not until ${hhmm(c.quota.nextStartAt)} (${s.message.replace(/\.$/, '')}).`
     : `Can start harnesses: no. ${s.message}${s.fix ? ` ${asking}: ${s.fix}` : ''}`
