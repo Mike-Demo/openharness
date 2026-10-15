@@ -25,6 +25,7 @@ import type { NativeLaunch } from '../../engines/nativeLaunch.js'
 import { projectsRoot } from '../../lib/projectFolder.js'
 import { NativeFiles } from '../../engines/kit/nativeFiles.js'
 import { agentLaunchArgs } from '../../lib/agentAttribution.js'
+import { WindowsBatchLaunchRefused } from '../../lib/windows/launch.js'
 
 vi.mock('../../lib/projectFolder.js', async real => {
   const actual = await real<typeof import('../../lib/projectFolder.js')>()
@@ -371,6 +372,16 @@ describe('creating an agent', () => {
   })
 
   describe('refusals before any pane opens', () => {
+    it('a batch-file engine on Windows whose first message cmd.exe would read, by name; other errors are not refusals', async () => {
+      vi.mocked(buildEngineLaunchArgv).mockImplementationOnce(() => { throw new WindowsBatchLaunchRefused('claude', 'C:\\tools\\claude.cmd') })
+      expect(await setup().create(request({ prompt: 'fix&calc' }))).toEqual({
+        ok: false, error: 'ENGINE_LAUNCH_REFUSED', detail: expect.stringMatching(/^Harness cannot start claude on Windows .*claude\.cmd is a batch file/),
+      })
+      expect(createAndRegisterPane).not.toHaveBeenCalled()
+      vi.mocked(buildEngineLaunchArgv).mockImplementationOnce(() => { throw new Error('fixture') })
+      await expect(setup().create(request())).rejects.toThrow('fixture')
+    })
+
     it('without tmux, in a folder being purged, or in a folder that is not one', async () => {
       expect(await setup({ createBackend: null }).create(request())).toEqual({ ok: false, error: 'TMUX_UNAVAILABLE' })
       // Where the pty host is the configured backend (Windows), its own code: there is no tmux to install.

@@ -614,14 +614,15 @@ function argvTokens(args) {
 }
 
 /**
- * Mirrors programName in src/lib/processTable.ts: the file name, lower-cased, without a Windows program extension
- * (`claude.exe`, `node.exe` read as `claude`, `node`), either separator ending a folder; `cmd.exe` keeps its, since
- * it is the Windows command processor, not Command Code's `cmd`.
+ * Mirrors programName in src/lib/processTable.ts: the file name, lower-cased, without a Windows image's `.exe` or
+ * `.com` (`claude.exe`, `node.exe` read as `claude`, `node`; a `.cmd`/`.bat`/`.ps1` script is never a process image),
+ * either separator ending a folder; `cmd.exe` keeps its, since it is the Windows command processor, not Command
+ * Code's `cmd`.
  */
 function programName(token) {
   const path = String(token || '').replace(/[\\/]+$/, '')
   const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1).toLowerCase()
-  return name === 'cmd.exe' ? name : name.replace(/\.(?:exe|cmd|bat|ps1|com)$/, '')
+  return name === 'cmd.exe' ? name : name.replace(/\.(?:exe|com)$/, '')
 }
 
 function processEntrypoint(args) {

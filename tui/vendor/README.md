@@ -26,6 +26,10 @@ Local changes are marked `hn` in the relevant source:
   - `alacritty_terminal/src/tty/windows/mod.rs`: `Pty` drops its output pipe
     before the pseudoconsole (upstream drops it after), so `ClosePseudoConsole`
     never waits for a drain of output that nobody reads any more;
+  - `alacritty_terminal/src/tty/windows/mod.rs`: with `escape_args`, the program is
+    quoted when it has a space or tab (`push_program`), as the C runtime reads
+    argv[0]; upstream pushed it bare, so `C:\Users\John Doe\…\claude.exe` ran
+    `C:\Users\John.exe`;
   - `alacritty_terminal/Cargo.toml`: the `Win32_System_JobObjects` feature.
 
 Keeping these attributes in the native grid makes erase, scrolling, cursor save,

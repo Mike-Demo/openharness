@@ -670,17 +670,22 @@ printf '%s %s' "$harness_status" "$resumed"`], { encoding: 'utf8', stdio: ['igno
     expect(buildEngineLaunchArgv('claude', {}, 'zsh')).toEqual([engineBin('claude')])
   })
 
-  // Windows 11's default execution policy refuses npm's codex.ps1, which PowerShell would pick for a bare `codex`.
-  it('names the engine\'s .cmd shim or .exe on Windows, never its .ps1', () => {
+  // Windows 11's default execution policy refuses npm's codex.ps1, which PowerShell would pick for a bare `codex`, and
+  // cmd.exe would re-read the first message if the .cmd shim ran it (lib/windows/launch.ts): node runs the script.
+  it('runs an npm engine on Windows as node on its script, never its .ps1 or .cmd', () => {
     const npm = mkdtempSync(join(tmpdir(), 'engine-launch-npm-'))
     const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
     try {
-      for (const name of ['codex', 'codex.cmd', 'codex.ps1']) writeFileSync(join(npm, name), '')
+      for (const name of ['codex', 'codex.ps1', 'node.exe']) writeFileSync(join(npm, name), '')
+      writeFileSync(join(npm, 'codex.cmd'), readFileSync(join(import.meta.dirname, 'windows', 'fixtures', 'npm-codex.cmd')))
+      const script = join(npm, 'node_modules', '@openai', 'codex', 'bin', 'codex.js')
+      mkdirSync(join(script, '..'), { recursive: true })
+      writeFileSync(script, '')
       vi.stubEnv('PATH', npm)
       vi.stubEnv('CODEX_PATH', '')
       Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
-      expect(buildEngineCommandArgv('codex', { bypassPermission: true }))
-        .toEqual([join(npm, 'codex.cmd'), '--approve-for-me', ...CODEX_SCREEN])
+      expect(buildEngineCommandArgv('codex', { bypassPermission: true, firstPrompt: 'fix&calc "%PATH%"\n\nnext' }))
+        .toEqual([join(npm, 'node.exe'), script, '--approve-for-me', ...CODEX_SCREEN, ...firstPromptArgs('codex', 'fix&calc "%PATH%"\n\nnext')])
     } finally {
       Object.defineProperty(process, 'platform', platform)
       vi.unstubAllEnvs()

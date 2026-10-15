@@ -35,6 +35,7 @@ describe('the core terminal launch call', () => {
   })
   it('refuses when tmux is unavailable or the folder is being removed', async () => {
     expect(await setup({ tmuxBackend: null }).open({ argv: ['/bin/sh'], cwd: '/work' })).toEqual({ ok: false, error: 'TMUX_UNAVAILABLE' })
+    expect(await setup({ tmuxBackend: null, noBackendCode: 'PTY_HOST_UNAVAILABLE' }).open({ argv: ['/bin/sh'], cwd: '/work' })).toEqual({ ok: false, error: 'PTY_HOST_UNAVAILABLE' })
     expect(await setup({ blocksFolder: () => true }).open({ argv: ['/bin/sh'], cwd: '/work' })).toEqual({ ok: false, error: 'WORKTREE_BUSY' })
     expect(createAndRegisterPane).not.toHaveBeenCalled()
   })

@@ -65,15 +65,17 @@ function argvPrefix(args: string, nativeArgv?: readonly string[]): () => string 
 
 /**
  * A command's program name, as engine matching compares it: its file name, lower-cased, without a Windows program
- * extension (`claude.exe`, `codex.cmd`, `node.exe` read as `claude`, `codex`, `node`). Either separator ends a folder,
- * since a Windows row names its folders with a backslash and is read on every platform (the hook's copy, tests). `cmd.exe`
- * keeps its extension: it is the Windows command processor, never Command Code's `cmd`. A Unix name has none of these
- * extensions, so it reads as its basename did. Keep the standalone hook's copy (hook/notify.mjs) in sync.
+ * image's extension (`claude.exe`, `node.exe`, `codex.exe` read as `claude`, `node`, `codex`). Only `.exe` and `.com`:
+ * a script (`.cmd`, `.bat`, `.ps1`) is never a process image on Windows, since cmd.exe or PowerShell runs it, so a
+ * `claude.ps1` named in some folder's command line is not Claude Code. Either separator ends a folder, since a Windows
+ * row names its folders with a backslash and is read on every platform (the hook's copy, tests). `cmd.exe` keeps its
+ * extension: it is the Windows command processor, never Command Code's `cmd`. A Unix name has neither extension, so it
+ * reads as its basename did. Keep the standalone hook's copy (hook/notify.mjs) in sync.
  */
 export function programName(token: string): string {
   const path = token.replace(/[\\/]+$/, '')
   const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1).toLowerCase()
-  return name === 'cmd.exe' ? name : name.replace(/\.(?:exe|cmd|bat|ps1|com)$/, '')
+  return name === 'cmd.exe' ? name : name.replace(/\.(?:exe|com)$/, '')
 }
 
 const ORI_FLAGS_WITH_VALUE = new Set(['--model', '--log-level', '--completions'])

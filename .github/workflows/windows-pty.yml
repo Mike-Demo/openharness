@@ -12,6 +12,7 @@ on:
       - 'cli/src/lib/ptyHost/**'
       - 'cli/src/lib/ptyHostBackend*.ts'
       - 'cli/src/lib/windows/**'
+      - 'cli/scripts/lib/ptyPayload.mjs'
       - '.github/workflows/windows-pty.yml'
 
 concurrency:
@@ -29,9 +30,11 @@ jobs:
         include:
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
+            arch: x64
             artifact: harness-pty-windows-x64
           - runner: windows-11-arm
             target: aarch64-pc-windows-msvc
+            arch: arm64
             artifact: harness-pty-windows-arm64
     # Each runner builds and tests its own native target. Cross-building the other
     # target is dropped: it needs extra MSVC components and adds little signal.
@@ -59,6 +62,15 @@ jobs:
       - name: Build release
         working-directory: pty
         run: cargo build --release --target ${{ matrix.target }}
+      # The host loads conpty.dll (and through it OpenConsole.exe) from its own folder, as it ships in dist/pty/
+      # (cli/scripts/lib/ptyPayload.mjs): put them there so the contract suite tests what ships.
+      - name: Place the ConPTY payload beside the host
+        shell: pwsh
+        run: |
+          $release = "pty/target/${{ matrix.target }}/release"
+          Copy-Item "pty/vendor/conpty/${{ matrix.arch }}/conpty.dll", "pty/vendor/conpty/${{ matrix.arch }}/OpenConsole.exe" $release
+          Get-ChildItem $release -Filter '*.dll'
+          Get-ChildItem $release -Filter 'OpenConsole.exe'
       - name: CLI install
         working-directory: cli
         run: npm ci

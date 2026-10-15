@@ -37,6 +37,9 @@ type LaunchHelpers = ReturnType<typeof createLaunchHelpers>
 type RetargetAgent = NonNullable<BackendSocket['onRetargetAgent']>
 
 export interface RetargetDeps {
+  /** What it answers when no backend here can respawn a pane: the configured backend's own code (terminalBackend.ts
+   *  `noBackendCode`); `TMUX_UNAVAILABLE`, as before, by default. */
+  noBackendCode?: string
   /** Whether the engine's turn state says this session is mid-turn (normalizers.sessionTurnOpen). */
   sessionTurnOpen: (sessionId: string) => boolean
   /** Whether a purge holds this agent (PurgeAgentService.busy). */
@@ -62,14 +65,14 @@ export interface RetargetDeps {
 export function createAgentRetargeter({
   sessionTurnOpen, purgeBusy, terminals, registry, runtimeProfiles, launchOverridesDeps, acquireTerminalControl,
   relaunchOverrides, downgradedPermission, agentReconciler, restartJobs, paneSwapDeps, liveBypassPermission,
-  announceSession, refreshGridAssignment, opencodeDb,
+  announceSession, refreshGridAssignment, opencodeDb, noBackendCode = 'TMUX_UNAVAILABLE',
 }: RetargetDeps) {
   const authority = createLaunchAuthority({ byAgent: id => registry.byAgent(id),
     revision: id => restartJobs.revision(id), cancelled: () => false })
   const retargetAgent: RetargetAgent = async ({ agentId, grid }) => {
     if (purgeBusy(agentId)) return { ok: false, error: 'AGENT_BUSY' }
-    // No backend here can respawn a pane (tmux missing, the pty host down): the wire's code for it, as before.
-    if (!terminals.instances().some(canRestart)) return { ok: false, error: 'TMUX_UNAVAILABLE' }
+    // No backend here can respawn a pane (tmux missing, the pty host down): the configured backend's code.
+    if (!terminals.instances().some(canRestart)) return { ok: false, error: noBackendCode }
     const live = registry.resolve(agentId)
     if (!live) return { ok: false, error: 'AGENT_NOT_FOUND' }
     // Registry observations can update a row in place while a service or pane

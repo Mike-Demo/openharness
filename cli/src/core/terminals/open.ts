@@ -10,11 +10,14 @@ export interface TerminalOpenerDeps {
   registry: CreateAgentPaneDeps['registry'] & Pick<typeof registry, 'setLaunch'>
   announceSession(session: RegisteredSession): void
   blocksFolder(cwd: string): boolean
+  /** What it answers when no backend is ready: the configured backend's own code (terminalBackend.ts
+   *  `noBackendCode`); `TMUX_UNAVAILABLE`, as before, by default. */
+  noBackendCode?: string
 }
 
-export function createTerminalOpener({ tmuxBackend, registry, announceSession, blocksFolder }: TerminalOpenerDeps): Pick<TerminalsPort, 'open'> {
+export function createTerminalOpener({ tmuxBackend, registry, announceSession, blocksFolder, noBackendCode = 'TMUX_UNAVAILABLE' }: TerminalOpenerDeps): Pick<TerminalsPort, 'open'> {
   return { open: async ({ argv, cwd }) => {
-    if (!tmuxBackend) return { ok: false, error: 'TMUX_UNAVAILABLE' }
+    if (!tmuxBackend) return { ok: false, error: noBackendCode }
     if (blocksFolder(cwd)) return { ok: false, error: 'WORKTREE_BUSY' }
     const result = await createAndRegisterPane({
       tmuxBackend, registry, engine: 'terminal', cwd, spawnCwd: cwd,

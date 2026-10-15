@@ -28,6 +28,7 @@ vi.mock('node:fs', async (original) => {
 const { dshPreparations } = await import('../../dsh/preparation.js')
 const { AgentCreationReceipts, creationFingerprint } = await import('../agentCreationReceipt.js')
 const { createHomeAdopter } = await import('../../engines/kit/homeAdoption.js')
+const { DeviceResultJournal } = await import('../autonomous-device/resultJournal.js')
 
 const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
 // On a real Windows (the VM) the flush is EPERM whatever the fixture does, and two of these writers still check POSIX
@@ -77,6 +78,13 @@ describe('directory flushes on Windows', () => {
     expect(await asWindows(() => receipts.run('creation-intent-0001', fingerprint, async () => ({ state: 'created', agentId: 'a1' }))))
       .toEqual({ state: 'created', agentId: 'a1' })
     expect(windows.directoryFlushes).toBe(0)
+  })
+
+  it('a device result journal is saved without one', async () => {
+    const journal = new DeviceResultJournal(join(root, 'device', 'results.json'))
+    await asWindows(() => journal.save({ results: [1] }))
+    expect(windows.directoryFlushes).toBe(0)
+    expect(await asWindows(() => journal.load())).toEqual({ results: [1] })
   })
 
   // On a real Windows the journal's POSIX owner and mode checks refuse it first (homeAdoption.ts `inspect`).

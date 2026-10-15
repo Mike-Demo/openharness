@@ -749,7 +749,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     cloud: cloudDoors,
     cloudRows: () => (cloudAgents?.dialRows() ?? []) as unknown as RegisteredSession[],
     // Agents' terminals: a literal-argv launch, and a read-only view for Share's observers (core/terminalWatch.ts).
-    terminals: { ...TERMINALS_OFF, ...createTerminalOpener({ tmuxBackend: createBackend, registry, announceSession, blocksFolder: (cwd) => !!backendRef?.purgeAgentService?.blocksFolder(cwd) }), watch: terminalWatch.watch },
+    terminals: { ...TERMINALS_OFF, ...createTerminalOpener({ tmuxBackend: createBackend, registry, announceSession, blocksFolder: (cwd) => !!backendRef?.purgeAgentService?.blocksFolder(cwd), noBackendCode: createUnavailable }), watch: terminalWatch.watch },
     dataDir: env.ADAPTER_DATA_DIR,
     registry,
     stoppedAgents,
@@ -2466,6 +2466,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
 
   // Moving a running agent onto a grid, or back to its own login (core/agents/retarget.ts).
   backend.onRetargetAgent = createAgentRetargeter({
+    noBackendCode: createUnavailable,
     sessionTurnOpen,
     purgeBusy: (agentId) => restorePanes.busy(agentId) || backend.purgeAgentService?.busy(agentId),
     terminals,

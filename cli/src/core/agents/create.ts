@@ -44,6 +44,7 @@ import { projectsRoot } from '../../lib/projectFolder.js'
 import { NativeFiles } from '../../engines/kit/nativeFiles.js'
 import type { registry, RegisteredSession } from '../../lib/registry.js'
 import type { TerminalBackend } from '../../lib/terminalBackend.js'
+import { windowsLaunchRefusal } from '../../lib/windows/launch.js'
 import { tmuxTooOldForSessionEnv } from '../../lib/tmuxBackend.js'
 import { prepareInstructionWrites, scmLaunchEnv } from '../../scm/scmProjects.js'
 import { mergedLaunchEnv } from './launchEnv.js'
@@ -333,8 +334,12 @@ export function createAgentCreator({
     // carries into a relaunch (engineLaunch.ts, `firstPrompt`).
     const firstPrompt = prompt
     const launchOptions = { ...(native ? { native } : {}), bypassPermission, ...(permissionMode ? { permissionMode } : {}), extraArgs: extraArgs.length ? extraArgs : undefined, installIfMissing, clearEnv, cwd, harnessNode: dsh ? true : undefined, ...(firstPrompt ? { firstPrompt } : {}), terminalHint: { machineName: terminalHintMachineName() } }
-    const command = buildEngineCommandArgv(engine, launchOptions)
-    const argv = buildEngineLaunchArgv(engine, launchOptions)
+    // Windows refuses a batch-file engine whose arguments cmd.exe would read (lib/windows/launch.ts), before any pane.
+    let command: string[], argv: string[]
+    try {
+      command = buildEngineCommandArgv(engine, launchOptions)
+      argv = buildEngineLaunchArgv(engine, launchOptions)
+    } catch (error) { return windowsLaunchRefusal(error) }
     // A tmux route is enough to stream its screen. Register it before looking for a process so both
     // loopback and relayed Desktop clients can attach while the login shell/installer is still busy.
     // `tmuxBackend` exists whenever the CONFIG lists tmux — it is never a probe of the binary, so a

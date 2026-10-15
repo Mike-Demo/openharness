@@ -249,6 +249,8 @@ describe('retargeting an agent', () => {
       expect(await setup(agent(), { terminals: { backendFor: () => undefined, instances: () => [] } }).retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'TMUX_UNAVAILABLE' })
       // A backend with no restart primitives is none to retarget on, whatever its name.
       expect(await setup(agent(), { terminals: { backendFor: () => undefined, instances: () => [{ name: 'tmux' } as never] } }).retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'TMUX_UNAVAILABLE' })
+      // A pty host machine's own code (Windows).
+      expect(await setup(agent(), { noBackendCode: 'PTY_HOST_UNAVAILABLE', terminals: { backendFor: () => undefined, instances: () => [] } }).retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'PTY_HOST_UNAVAILABLE' })
       expect(await setup(null).retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'AGENT_NOT_FOUND' })
       expect(await setup(agent({ runtimes: [] } as Partial<RegisteredSession>)).retarget({ agentId: 'a1', grid })).toMatchObject({ error: 'RETARGET_UNSUPPORTED_BACKEND' })
       expect(await setup(agent({ processIdentity: undefined } as Partial<RegisteredSession>)).retarget({ agentId: 'a1', grid })).toEqual({ ok: false, error: 'NO_ACTIVE_PROCESS' })

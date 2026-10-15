@@ -35,13 +35,17 @@ const opencodeFromPowerShell = [
 ]
 
 describe('programName', () => {
-  it('drops a Windows program extension, in any case, after either separator', () => {
+  it('drops a Windows program image\'s extension, in any case, after either separator', () => {
     expect(programName('C:\\Users\\admin\\.local\\bin\\claude.exe')).toBe('claude')
-    expect(programName('C:\\Users\\admin\\AppData\\Roaming\\npm\\codex.CMD')).toBe('codex')
-    expect(programName('C:/tools/kilo.bat')).toBe('kilo')
-    expect(programName('C:\\npm\\opencode.ps1')).toBe('opencode')
+    expect(programName('C:/tools/KILO.EXE')).toBe('kilo')
     expect(programName('C:\\bin\\amp.com')).toBe('amp')
     expect(programName('"C:\\Program Files\\nodejs\\node.exe"'.slice(1, -1))).toBe('node')
+  })
+
+  it('keeps a script\'s extension: cmd.exe or PowerShell runs it, so it is never an engine\'s process', () => {
+    expect(programName('C:\\Users\\admin\\AppData\\Roaming\\npm\\codex.CMD')).toBe('codex.cmd')
+    expect(programName('C:/tools/kilo.bat')).toBe('kilo.bat')
+    expect(programName('C:\\npm\\opencode.ps1')).toBe('opencode.ps1')
   })
 
   it('keeps the command processor apart from Command Code', () => {
@@ -86,6 +90,22 @@ describe('engine recognition on Windows', () => {
     for (const shell of shells) {
       for (const engine of ['claude', 'codex', 'opencode', 'commandcode', 'cursor'] as const) {
         expect(engineProcessMatch(shell, engine).score, `${shell.executable} as ${engine}`).toBe(0)
+      }
+    }
+  })
+
+  it('takes no script in an unrelated folder for an engine', () => {
+    const scripts = [
+      row(9100, 1, 'powershell.exe', 'C:\\Users\\admin\\scripts\\claude.ps1 --resume'),
+      row(9101, 1, 'cmd.exe', 'C:\\tools\\codex.bat'),
+      row(9102, 1, 'claude.ps1', 'C:\\Users\\admin\\scripts\\claude.ps1'),
+      row(9103, 1, 'codex.bat', 'D:\\work\\codex.bat exec'),
+      row(9104, 1, 'node.exe', 'node C:\\Users\\admin\\scripts\\claude.ps1'),
+      row(9105, 1, 'opencode.cmd', `${NPM}\\opencode.cmd`),
+    ]
+    for (const script of scripts) {
+      for (const engine of ['claude', 'codex', 'opencode'] as const) {
+        expect(engineProcessMatch(script, engine).score, `${script.args} as ${engine}`).toBe(0)
       }
     }
   })

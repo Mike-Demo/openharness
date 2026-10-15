@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { installedDsh } from '../../dsh/installed.js'
 import { createAndRegisterPane } from '../../lib/createAgentPane.js'
+import { WindowsBatchLaunchRefused } from '../../lib/windows/launch.js'
 import { enginePathOverride } from '../../lib/engineBin.js'
 import { buildEngineLaunchArgv, refusePermissionFlagIfUnsupported, supportsNamedAgent } from '../../lib/engineLaunch.js'
 import { planFork } from '../../lib/forkAgent.js'
@@ -188,6 +189,14 @@ describe('forking an agent', () => {
     expect(prepareInstructionWrites).not.toHaveBeenCalled()
     expect(deps.prepareApiTools).not.toHaveBeenCalled()
     expect(createAndRegisterPane).not.toHaveBeenCalled()
+  })
+
+  it('refuses a batch-file engine on Windows whose first message cmd.exe would read, by name', async () => {
+    vi.mocked(buildEngineLaunchArgv).mockImplementationOnce(() => { throw new WindowsBatchLaunchRefused('claude', 'C:\\tools\\claude.cmd') })
+    expect(await setup(source()).fork({ agentId: 'a1', name: null, prompt: 'a & b' })).toMatchObject({ ok: false, error: 'ENGINE_LAUNCH_REFUSED', detail: expect.stringContaining('claude.cmd') })
+    expect(createAndRegisterPane).not.toHaveBeenCalled()
+    vi.mocked(buildEngineLaunchArgv).mockImplementationOnce(() => { throw new Error('fixture') })
+    await expect(setup(source()).fork({ agentId: 'a1', name: null, prompt: null })).rejects.toThrow('fixture')
   })
 
   it('refuses without tmux, an agent, a folder, or with a grid or a turn in progress', async () => {

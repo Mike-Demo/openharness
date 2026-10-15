@@ -23,6 +23,7 @@ import { forkName, planFork } from '../../lib/forkAgent.js'
 import { buildHarnessSessionLabel } from '../../lib/harnessSessionLabel.js'
 import { projectDisplayName, type registry, type RegisteredSession } from '../../lib/registry.js'
 import type { TerminalBackend } from '../../lib/terminalBackend.js'
+import { windowsLaunchRefusal } from '../../lib/windows/launch.js'
 import { prepareInstructionWrites, scmLaunchEnv } from '../../scm/scmProjects.js'
 import type { createLaunchHelpers } from './launch.js'
 import { mergedLaunchEnv } from './launchEnv.js'
@@ -164,8 +165,12 @@ export function createAgentForker({
     await prepareInstructionWrites(source.cwd)
     if (!dispatchCurrent()) return changed
     prepareApiTools(source.cwd, engine)
-    const command = buildEngineCommandArgv(engine, launchOptions)
-    const argv = buildEngineLaunchArgv(engine, launchOptions)
+    // Windows refuses a batch-file engine whose arguments cmd.exe would read (lib/windows/launch.ts), before any pane.
+    let command: string[], argv: string[]
+    try {
+      command = buildEngineCommandArgv(engine, launchOptions)
+      argv = buildEngineLaunchArgv(engine, launchOptions)
+    } catch (error) { return windowsLaunchRefusal(error) }
     return { ok: true, dispatch: async () => {
     if (!dispatchCurrent()) return changed
     const result = await createAndRegisterPane({
