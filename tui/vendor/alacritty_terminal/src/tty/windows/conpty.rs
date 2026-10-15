@@ -10,7 +10,10 @@ use windows_sys::Win32::Foundation::{HANDLE, S_OK};
 use windows_sys::Win32::System::Console::{
     COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
 };
-use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows_sys::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_APPLICATION_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
+    LoadLibraryExW,
+};
 use windows_sys::core::{HRESULT, PWSTR};
 use windows_sys::{s, w};
 
@@ -39,8 +42,10 @@ const PIPE_CAPACITY: usize = crate::event_loop::READ_BUFFER_SIZE;
 /// supports loading OpenConsole.exe, which offers many improvements and
 /// bugfixes compared to the standard conpty that ships with Windows.
 ///
-/// The conpty.dll and OpenConsole.exe files will be searched in PATH and in
-/// the directory where Alacritty's executable is located.
+/// hn: conpty.dll is loaded only from the directory of the executable (or
+/// System32), never through PATH or the current directory, where anyone who can
+/// write a folder on PATH could plant one; upstream used `LoadLibraryW`.
+/// conpty.dll finds OpenConsole.exe beside itself.
 type CreatePseudoConsoleFn =
     unsafe extern "system" fn(COORD, HANDLE, HANDLE, u32, *mut HPCON) -> HRESULT;
 type ResizePseudoConsoleFn = unsafe extern "system" fn(HPCON, COORD) -> HRESULT;
@@ -75,7 +80,12 @@ impl ConptyApi {
     fn load_conpty() -> Option<Self> {
         type LoadedFn = unsafe extern "system" fn() -> isize;
         unsafe {
-            let hmodule = LoadLibraryW(w!("conpty.dll"));
+            // hn: no PATH search (see above).
+            let hmodule = LoadLibraryExW(
+                w!("conpty.dll"),
+                std::ptr::null_mut(),
+                LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+            );
             if hmodule.is_null() {
                 return None;
             }

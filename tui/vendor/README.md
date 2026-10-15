@@ -34,6 +34,11 @@ Local changes are marked `hn` in the relevant source:
     names left out of the environment the child inherits (compared without case, as Windows
     does), so a pane's cleared variables (a grid launch's provider keys) are not handed down from
     the host's own environment; upstream could only add variables;
+  - `alacritty_terminal/src/tty/windows/conpty.rs`: the bundled `conpty.dll` is loaded with
+    `LoadLibraryExW(LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32)`, from
+    the executable's own directory only (where `OpenConsole.exe` sits beside it); upstream's
+    `LoadLibraryW` searched the current directory and PATH, so a planted `conpty.dll` there
+    would run inside the host;
   - `alacritty_terminal/Cargo.toml`: the `Win32_System_JobObjects` feature.
 
 Keeping these attributes in the native grid makes erase, scrolling, cursor save,
