@@ -52,9 +52,14 @@ A is first because every other piece needs a terminal backend that is not tmux.
 ### `harness-pty` (Rust, new crate `pty/`)
 
 - Shares the vendored `alacritty_terminal` and `vte` from `tui/vendor`.
-- One host per user and `HARNESS_HOME`, listening on
-  `\\.\pipe\harness-pty-<hash(user SID + HARNESS_HOME)>[-p<protocol>]` with an owner-only DACL.
-  On Unix (tests only) it listens on a Unix socket in `HARNESS_HOME/run/`.
+- One host per user and `HARNESS_HOME` (the home's lock, `run/pty-host-<protocol>.lock`), listening on
+  `\\.\pipe\harness-pty-<hash(user SID + HARNESS_HOME)>-<16 random hex>-p<protocol>` with an
+  owner-only DACL. The random part is new at each host start and is published only in the owner-only
+  discovery file (section 4); clients connect only to the endpoint named there. Node's pipe client
+  (libuv) cannot ask for `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`, so a process that held the
+  name first could impersonate the daemon; a name nobody else can know is the mitigation (the host's
+  own Rust client does connect with `SECURITY_IDENTIFICATION`). On Unix (tests only) it listens on a
+  Unix socket in `HARNESS_HOME/run/`.
 - Per pane:
   - a ConPTY via `alacritty_terminal::tty`, using the bundled `conpty.dll`/`OpenConsole.exe`;
   - the child process in its own Job Object, kill-on-close. Only the host holds the job's handle

@@ -345,6 +345,9 @@ fn a_host_that_lost_its_socket_file_still_owns_its_home() {
     assert_eq!(wait_discovery(h.home.path()), disc);
 }
 
+// Unix only: a Windows host draws a new random pipe name each start (no squatter can know it), as
+// `a_pipe_name_is_new_each_start_and_a_squatter_on_an_old_one_is_passed_by` shows.
+#[cfg(unix)]
 #[test]
 fn a_squatter_on_the_endpoint_fails_the_start_and_the_discovery_file_is_set_aside() {
     let home = tempfile::tempdir().unwrap();
@@ -354,19 +357,9 @@ fn a_squatter_on_the_endpoint_fails_the_start_and_the_discovery_file_is_set_asid
     let file = run.join(format!("pty-host-{PROTOCOL}.json"));
     std::fs::write(&file, r#"{"stale":true}"#).unwrap();
     // Another process has the endpoint while no host holds the home's lock.
-    #[cfg(unix)]
     let _squatter =
         std::os::unix::net::UnixListener::bind(run.join(format!("pty-host-{PROTOCOL}.sock")))
             .unwrap();
-    #[cfg(windows)]
-    let _squatter = {
-        use harness_pty::transport::{Bound, windows};
-        let name = windows::pipe_name_for(home.path()).unwrap();
-        let Ok(Bound::Listening(squatter)) = windows::bind(&name) else {
-            panic!("no squatter on {name}")
-        };
-        squatter
-    };
     // `--no-reexec`: the status is this host's own, not that of a first host that started it.
     let out = host_command(home.path())
         .arg("--no-reexec")
@@ -382,6 +375,54 @@ fn a_squatter_on_the_endpoint_fails_the_start_and_the_discovery_file_is_set_asid
         std::fs::read_to_string(&aside).unwrap(),
         r#"{"stale":true}"#
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_pipe_name_is_new_each_start_and_a_squatter_on_an_old_one_is_passed_by() {
+    use harness_pty::transport::{Bound, windows};
+    let (h, first) = start();
+    let old = first["endpoint"].as_str().unwrap().to_owned();
+    assert!(old.starts_with(r"\\.\pipe\harness-pty-"), "{old}");
+    // The host dies; another process takes the name it had, which it learned somehow.
+    common::kill_pid(h.pid);
+    let end = Instant::now() + WAIT;
+    let squatter = loop {
+        match windows::bind(&old).unwrap() {
+            Bound::Listening(squatter) => break squatter,
+            Bound::Taken => {
+                assert!(Instant::now() < end, "the dead host's pipe is still there");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
+    // The next host of the home serves on a new name, and its discovery file names it.
+    let child = host_command(h.home.path()).spawn().unwrap();
+    let end = Instant::now() + WAIT;
+    let second = loop {
+        let disc = wait_discovery(h.home.path());
+        if disc["pid"] != first["pid"] {
+            break disc;
+        }
+        assert!(Instant::now() < end, "no new host");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let _second = common::Host {
+        child,
+        home: tempfile::tempdir().unwrap(),
+        pid: second["pid"].as_u64().unwrap() as u32,
+    };
+    let new = second["endpoint"].as_str().unwrap();
+    assert_ne!(new, old);
+    // Same user and home: only the random part differs.
+    let home_part = |name: &str| name.rsplitn(3, '-').nth(2).unwrap().to_owned();
+    assert_eq!(home_part(new), home_part(&old));
+    let (mut w, mut r) = connect(&second);
+    assert_eq!(
+        call(&mut w, &mut r, r#"{"id":1,"op":"titles"}"#)["ok"],
+        true
+    );
+    drop(squatter);
 }
 
 /// The log's text once it has [want] (the host writes it as it goes).

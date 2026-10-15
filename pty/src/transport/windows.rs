@@ -1,10 +1,16 @@
-//! The named pipe `\\.\pipe\harness-pty-<hash>-p<protocol>`, open to its owner only.
+//! The named pipe `\\.\pipe\harness-pty-<hash>-<random>-p<protocol>`, open to its owner only.
 //!
 //! - The name hashes the user's SID and the canonical home, so each user and each home has its
 //!   own pipe, and a long home path cannot make the name too long.
+//! - Each host start adds 16 random hex digits, so no other process can know the name before the
+//!   host publishes it in its owner-only discovery file. A process of another user could otherwise
+//!   create the pipe first and wait for the daemon: the hello's proof keeps such a squatter from
+//!   passing for the host, but Node's pipe client (libuv's `CreateFileW`) cannot ask for
+//!   `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`, so the squatter could impersonate the daemon
+//!   on the connection. Clients connect only to the endpoint the discovery file names. One host per
+//!   home is the home's lock (`host_lock`), not the name.
 //! - The first instance is created with `FILE_FLAG_FIRST_PIPE_INSTANCE`: when another process
-//!   already has the name (another host), creating it fails with `ERROR_ACCESS_DENIED`, and this
-//!   host is not the one serving.
+//!   already has the name, creating it fails with `ERROR_ACCESS_DENIED` (`Bound::Taken`).
 //! - Every instance has the DACL `D:P(A;;GA;;;<user SID>)`: only the user can connect, and
 //!   `PIPE_REJECT_REMOTE_CLIENTS` keeps the network out.
 //! - A connection's reader and writer are separate threads on one pipe handle. A synchronous
@@ -37,7 +43,8 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL,
-    FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile,
+    SECURITY_IDENTIFICATION, WriteFile,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::{
@@ -70,21 +77,31 @@ fn wide_path(path: &Path) -> Vec<u16> {
         .collect()
 }
 
-/// `\\.\pipe\harness-pty-<16 hex of SHA-256(sid + "\0" + home)>-p<protocol>`.
-pub fn pipe_name(user_sid: &str, canonical_home: &str) -> String {
+/// `\\.\pipe\harness-pty-<16 hex of SHA-256(sid + "\0" + home)>-<suffix>-p<protocol>`.
+pub fn pipe_name(user_sid: &str, canonical_home: &str, suffix: &str) -> String {
     let mut hash = Sha256::new();
     hash.update(user_sid.as_bytes());
     hash.update([0]);
     hash.update(canonical_home.as_bytes());
     let digest = hash.finalize();
     let hex: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
-    format!(r"\\.\pipe\harness-pty-{hex}-p{PROTOCOL}")
+    format!(r"\\.\pipe\harness-pty-{hex}-{suffix}-p{PROTOCOL}")
 }
 
-/// The pipe name of the host serving `home` (which must exist) for this user.
+/// 16 random hex digits (64 bits from the system's random source, through a v4 UUID).
+pub fn random_suffix() -> String {
+    let random = Sha256::digest(uuid::Uuid::new_v4().as_bytes());
+    random[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A new pipe name for a host of `home` (which must exist) for this user: random each call.
 pub fn pipe_name_for(home: &Path) -> io::Result<String> {
     let home = std::fs::canonicalize(home)?;
-    Ok(pipe_name(&user_sid()?, &home.to_string_lossy()))
+    Ok(pipe_name(
+        &user_sid()?,
+        &home.to_string_lossy(),
+        &random_suffix(),
+    ))
 }
 
 /// This process's `TOKEN_USER`, in u64 words (so it is aligned): the user's SID is inside.
@@ -381,6 +398,8 @@ pub fn connect(name: &str) -> io::Result<PipeConn> {
             .read(true)
             .write(true)
             .custom_flags(FILE_FLAG_OVERLAPPED)
+            // The server may identify this client, never act as it (std adds SECURITY_SQOS_PRESENT).
+            .security_qos_flags(SECURITY_IDENTIFICATION)
             .open(name);
         match opened {
             Ok(file) => return PipeConn::new(OwnedHandle::from(file)),
@@ -738,37 +757,58 @@ mod tests {
     use std::io::{BufRead, BufReader};
 
     fn unique_name() -> String {
-        pipe_name(&user_sid().unwrap(), &uuid::Uuid::new_v4().to_string())
+        pipe_name(
+            &user_sid().unwrap(),
+            &uuid::Uuid::new_v4().to_string(),
+            &random_suffix(),
+        )
     }
 
     #[test]
-    fn the_name_hashes_the_user_and_the_home() {
-        let a = pipe_name("S-1-5-21-1", r"\\?\C:\Users\a\.harness");
-        assert_eq!(a, pipe_name("S-1-5-21-1", r"\\?\C:\Users\a\.harness"));
+    fn the_name_hashes_the_user_and_the_home_and_is_new_each_start() {
+        let a = pipe_name("S-1-5-21-1", r"\\?\C:\Users\a\.harness", "0123456789abcdef");
+        assert_eq!(
+            a,
+            pipe_name("S-1-5-21-1", r"\\?\C:\Users\a\.harness", "0123456789abcdef")
+        );
         let hash = a
             .strip_prefix(r"\\.\pipe\harness-pty-")
             .unwrap()
-            .strip_suffix(&format!("-p{PROTOCOL}"))
+            .strip_suffix(&format!("-0123456789abcdef-p{PROTOCOL}"))
             .unwrap();
         assert_eq!(hash.len(), 16);
-        assert_ne!(a, pipe_name("S-1-5-21-2", r"\\?\C:\Users\a\.harness"));
-        assert_ne!(a, pipe_name("S-1-5-21-1", r"\\?\C:\Users\b\.harness"));
+        let s = "0123456789abcdef";
+        assert_ne!(a, pipe_name("S-1-5-21-2", r"\\?\C:\Users\a\.harness", s));
+        assert_ne!(a, pipe_name("S-1-5-21-1", r"\\?\C:\Users\b\.harness", s));
         // The separator keeps "ab"+"c" apart from "a"+"bc".
-        assert_ne!(pipe_name("ab", "c"), pipe_name("a", "bc"));
+        assert_ne!(pipe_name("ab", "c", s), pipe_name("a", "bc", s));
         // SHA-256("S-1-5-21-1\0C:\h"), first 8 bytes.
         let digest = Sha256::digest(b"S-1-5-21-1\0C:\\h");
         let want: String = digest[..8].iter().map(|b| format!("{b:02x}")).collect();
         assert_eq!(
-            pipe_name("S-1-5-21-1", r"C:\h"),
-            format!(r"\\.\pipe\harness-pty-{want}-p{PROTOCOL}")
+            pipe_name("S-1-5-21-1", r"C:\h", s),
+            format!(r"\\.\pipe\harness-pty-{want}-{s}-p{PROTOCOL}")
         );
-        // The same home, however it is written, names the same pipe.
+        // A new name each call, for the same home, however it is written: only its hash part is
+        // the home's.
         let home = tempfile::tempdir().unwrap();
         let other = format!("{}\\.\\", home.path().display());
-        assert_eq!(
+        let (first, second) = (
             pipe_name_for(home.path()).unwrap(),
-            pipe_name_for(Path::new(&other)).unwrap()
+            pipe_name_for(Path::new(&other)).unwrap(),
         );
+        assert_ne!(first, second);
+        let home_part =
+            |name: &str| name[..name.len() - format!("-{s}-p{PROTOCOL}").len()].to_owned();
+        assert_eq!(home_part(&first), home_part(&second));
+        let suffix = random_suffix();
+        assert_eq!(suffix.len(), 16);
+        assert!(
+            suffix
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+        assert_ne!(suffix, random_suffix());
     }
 
     #[test]

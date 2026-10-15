@@ -6,8 +6,8 @@
 //! and reserve the same block of pane ids (Task 15 review).
 //!
 //! - Unix: `flock(LOCK_EX | LOCK_NB)` on the file. The kernel drops it with the process.
-//! - Windows: the file open with no sharing. The pipe's first instance is a lock as well, but
-//!   the name hashes the home's spelling; the file is the home's own.
+//! - Windows: the file open with no sharing. The pipe name is random per start
+//!   (transport/windows.rs), so it is no lock at all; the file is the home's own.
 
 use std::fs::File;
 use std::io;

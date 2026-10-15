@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 
 use crate::protocol::PROTOCOL;
 
+/// How many random pipe names a Windows host tries before it gives up.
+#[cfg(windows)]
+const PIPE_NAME_TRIES: usize = 3;
+
 /// tmux's default `history-limit`.
 const DEFAULT_HISTORY_LIMIT: usize = 2000;
 
@@ -170,15 +174,28 @@ pub fn serve(home: &Path, history_limit: usize, reexec: bool) -> std::io::Result
         unsafe { libc::umask(old) };
         bound
     };
+    // A new random name each start (transport/windows.rs): a name another process holds is one it
+    // happened on, so the next is tried; the home's lock, not the name, keeps one host per home.
     #[cfg(windows)]
-    let bound = crate::transport::windows::bind(&crate::transport::windows::pipe_name_for(home)?);
+    let bound = {
+        use crate::transport::{Bound, windows};
+        let mut bound = windows::bind(&windows::pipe_name_for(home)?);
+        for _ in 1..PIPE_NAME_TRIES {
+            if !matches!(bound, Ok(Bound::Taken)) {
+                break;
+            }
+            log::warn!("the pipe name drawn is taken; drawing another");
+            bound = windows::bind(&windows::pipe_name_for(home)?);
+        }
+        bound
+    };
     match bound? {
         crate::transport::Bound::Listening(listener) => {
             publish_and_serve(listener, &run, history_limit)
         }
         // This host holds the home's lock, so no other host of this home has the endpoint:
-        // another process squats on the name. The discovery file (a dead host's) points at it;
-        // set it aside so no client follows it there.
+        // another process squats on the name (on Windows, on every random name drawn). The
+        // discovery file (a dead host's) may point at it; set it aside so no client follows it.
         crate::transport::Bound::Taken => {
             set_discovery_aside(&run);
             Err(std::io::Error::new(

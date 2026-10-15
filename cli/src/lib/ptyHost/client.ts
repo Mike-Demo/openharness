@@ -95,7 +95,10 @@ function provesToken(proof: unknown, token: string, nonce: string): boolean {
  */
 function hello(discovery: PtyHostDiscovery, role: HelloRole, timeoutMs: number): Promise<HelloOutcome> {
   return new Promise(resolve => {
-    // Node takes `\\.\pipe\…` names here on Windows, so one call serves both transports.
+    // Node takes `\\.\pipe\…` names here on Windows, so one call serves both transports. It cannot ask for
+    // SECURITY_IDENTIFICATION (libuv opens the pipe with no SQOS flags), so a pipe server may impersonate this
+    // process: the host's pipe name is random per start (pty/src/transport/windows.rs) and read only from the
+    // owner-only discovery file, so no other user's process can be listening on it.
     const socket = net.connect(discovery.endpoint)
     const lines = new LineSplitter()
     let connected = false

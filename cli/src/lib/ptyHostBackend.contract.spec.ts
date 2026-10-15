@@ -74,7 +74,13 @@ async function readyBackend(home: string): Promise<PtyHostBackend> {
       // The reconnect, 1 s after the loss, starts a new host: it has no panes.
       const inventory = await until<TerminalInventoryResult>(() => backend.inventory(), (inv) => inv.state === 'available')
       expect(inventory).toEqual({ state: 'available', roots: [] })
-      expect(readDiscovery(home, PTY_PROTOCOL)!.pid).not.toBe(before.pid)
+      const after = readDiscovery(home, PTY_PROTOCOL)!
+      expect(after.pid).not.toBe(before.pid)
+      // A Windows host draws a new pipe name each start; the reconnect followed the discovery file to it.
+      if (process.platform === 'win32') {
+        expect(after.endpoint).not.toBe(before.endpoint)
+        expect(after.endpoint).toMatch(/^\\\\\.\\pipe\\harness-pty-[0-9a-f]{16}-[0-9a-f]{16}-p\d+$/)
+      }
       expect(replaced).toHaveLength(1)
       expect(await backend.paneState(created.runtime)).toBe('gone')
       // The new host never hands out an id the dead one used: the old runtime cannot name a new pane.
