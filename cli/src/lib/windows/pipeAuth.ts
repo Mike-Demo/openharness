@@ -11,9 +11,12 @@
  * nothing at the next daemon's pipe, whose nonce window starts empty.
  *
  * Nothing here depends on the transport: the same checks run over a Unix socket in the tests on macOS and Linux.
+ * The one exception is the token file at the end (daemonTokenPath): it reads and writes the daemon's data folder.
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
-import { closeSync, constants, fchmodSync, fsyncSync, lstatSync, openSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  closeSync, constants, fchmodSync, fsyncSync, linkSync, lstatSync, openSync, rmSync, unlinkSync, writeFileSync,
+} from 'node:fs'
 import type { IncomingHttpHeaders } from 'node:http'
 import { join } from 'node:path'
 import { readPrivateStateFile, requireWindowsStateFile, secureStateDirectory, syncStateDirectory } from '../secureState.js'
@@ -103,6 +106,12 @@ export function newPipeNonce(endpoint: string): string {
 export const DAEMON_TOKEN_FILE = 'daemon-token'
 /** A whole token file: 64 hex digits and a newline. */
 const TOKEN_FILE_BYTES = 65
+/** A short file older than this was left by a crash or an old writer; a younger one may be a writer mid-write. */
+const STALE_MS = 10_000
+/** How long a start waits for a young short file to be filled before it gives up. */
+const WAIT_MS = 2_000
+const POLL_MS = 50
+const TOKEN_TEXT = /^[0-9a-f]{64}\n?$/
 
 export function daemonTokenPath(dataDir: string): string {
   return join(dataDir, DAEMON_TOKEN_FILE)
@@ -112,33 +121,67 @@ export function daemonTokenPath(dataDir: string): string {
  * The daemon's token in [dataDir], or null when there is none or it cannot be trusted. On Unix the folder and the file
  * pass secureState's owner and mode checks. On Windows the folder must be inside the profile, and the file must be a
  * real file there, not a link (requireWindowsStateFile). The profile's ACL is the protection, as for the hook
- * credential.
+ * credential. The file is exactly 64 lowercase hex digits and an optional newline.
  */
 export function readDaemonToken(dataDir: string): Buffer | null {
   try {
     secureStateDirectory(dataDir, false)
     const file = daemonTokenPath(dataDir)
     if (process.platform === 'win32') requireWindowsStateFile(file)
-    const text = readPrivateStateFile(file, 128).trim()
-    return HEX64.test(text) ? Buffer.from(text, 'hex') : null
+    const text = readPrivateStateFile(file, 128)
+    return TOKEN_TEXT.test(text) ? Buffer.from(text.slice(0, 64), 'hex') : null
   } catch {
     return null
   }
 }
 
-/** A token file a crash cut short between its create and its write: a regular file shorter than a whole one. */
-function cutShort(file: string): boolean {
+/** Age in ms of a regular file shorter than a whole token (a crash cut it short), or null when it is anything else. */
+function shortFileAge(file: string): number | null {
   try {
     const entry = lstatSync(file)
-    return entry.isFile() && entry.size < TOKEN_FILE_BYTES
+    return entry.isFile() && entry.size < TOKEN_FILE_BYTES ? Date.now() - entry.mtimeMs : null
   } catch {
-    return false
+    return null
+  }
+}
+
+function sleep(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+/**
+ * Publish [token] at [file] whole or not at all: write a temp file beside it (owner-only, flushed), then hard-link it
+ * into place. The link fails with EEXIST when another start got there first, and a reader never sees a part of a token.
+ * Returns whether this call published it.
+ */
+function publish(dataDir: string, file: string, token: Buffer): boolean {
+  const temp = join(dataDir, `.${DAEMON_TOKEN_FILE}.${process.pid}.${randomBytes(6).toString('hex')}`)
+  const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+  try {
+    try {
+      writeFileSync(fd, `${token.toString('hex')}\n`)
+      fchmodSync(fd, 0o600)
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+    try {
+      linkSync(temp, file)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
+      throw error
+    }
+    syncStateDirectory(dataDir)
+    return true
+  } finally {
+    unlinkSync(temp)
   }
 }
 
 /**
- * The daemon's token, made on the first start: 32 random bytes, written owner-only with O_EXCL, so two starts at
- * once agree on one. A token cut short is replaced. Any other file that cannot be read as a token (a link, one
+ * The daemon's token, made on the first start: 32 random bytes, published whole with a hard link, so two starts at
+ * once agree on the winner's. A short file left by a crash or an old writer is replaced once it is older than
+ * STALE_MS; a younger one is waited on for up to WAIT_MS. Any other file that cannot be read as a token (a link, one
  * another account could write, one outside the profile) is refused: the daemon does not start on it.
  */
 export function ensureDaemonToken(dataDir: string): Buffer {
@@ -146,23 +189,23 @@ export function ensureDaemonToken(dataDir: string): Buffer {
   if (existing) return existing
   secureStateDirectory(dataDir)
   const file = daemonTokenPath(dataDir)
-  if (cutShort(file)) rmSync(file, { force: true })
-  const token = randomBytes(32)
-  let fd: number
-  try {
-    fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-  } catch (error) {
-    const raced = readDaemonToken(dataDir)
-    if (raced) return raced
-    throw new Error(`the daemon token ${file} cannot be read or replaced: ${(error as Error).message}`)
+  const deadline = Date.now() + WAIT_MS
+  for (;;) {
+    const token = randomBytes(32)
+    if (publish(dataDir, file, token)) return token
+    const winner = readDaemonToken(dataDir)
+    if (winner) return winner
+    const age = shortFileAge(file)
+    if (age === null) break
+    if (age >= STALE_MS) {
+      // Look again just before removing: a writer may have replaced it since.
+      const again = shortFileAge(file)
+      if (again !== null && again >= STALE_MS) rmSync(file, { force: true })
+    } else if (Date.now() >= deadline) {
+      break
+    } else {
+      sleep(POLL_MS)
+    }
   }
-  try {
-    writeFileSync(fd, `${token.toString('hex')}\n`)
-    fchmodSync(fd, 0o600)
-    fsyncSync(fd)
-  } finally {
-    closeSync(fd)
-  }
-  syncStateDirectory(dataDir)
-  return token
+  throw new Error(`the daemon token ${file} cannot be read or replaced`)
 }
