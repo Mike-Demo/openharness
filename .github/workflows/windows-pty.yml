@@ -9,6 +9,9 @@ name: Windows PTY
 # harness.exe (the `harness` command, pty/src/command.rs), conpty.dll and OpenConsole.exe.
 on:
   workflow_dispatch:
+  # TEMPORARY: remove before merging (workflow_dispatch needs the file on main)
+  push:
+    branches: [feat/windows-native-cli]
   workflow_call:
     inputs:
       version:
