@@ -4,6 +4,8 @@ import Feed from './Feed';
 import Detail from './Detail';
 import CreatorPage from './CreatorPage';
 import ReportsPage from '../reports/page';
+import NotificationsPage from '../notifications/page';
+import { Header } from './Header';
 import { CommunityError, emptySocial } from '@/lib/community/client';
 import { starterHarnesses } from '@/lib/community/starters';
 import type { OpenHarness } from '@/lib/community/types';
@@ -378,6 +380,31 @@ describe('community navigation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
     expect(await screen.findByText(/Restored/)).toBeInTheDocument();
     expect(request).toHaveBeenCalledWith('reports/review', { method: 'POST', body: { targetType: 'harness', targetId: 'h1', decision: 'restore' } });
+  });
+  it('rings the bell with the unread count only for someone signed in', async () => {
+    const { unmount } = render(<Header />);
+    await act(async () => {});
+    expect(screen.queryByRole('link', { name: /Notifications/ })).not.toBeInTheDocument();
+    unmount();
+    localStorage.setItem('harness.web.v1.auth_access_token', 'token');
+    request.mockResolvedValueOnce({ unread: 3 });
+    render(<Header />);
+    expect(await screen.findByRole('link', { name: 'Notifications, 3 unread' })).toHaveAttribute('href', '/hub/notifications');
+    expect(request).toHaveBeenCalledWith('notifications/unread');
+    localStorage.clear();
+  });
+  it('lists notifications where they lead, and marks them read', async () => {
+    const at = '2026-10-15T08:00:00.000Z';
+    request.mockResolvedValueOnce({ unread: 2, notifications: [
+      { id: 'n1', kind: 'fork', harnessId: 'h1', harnessTitle: 'Orbit', actorName: 'Bob', targetId: 'f1', createdAt: at, read: false },
+      { id: 'n2', kind: 'reply', harnessId: 'h1', harnessTitle: 'Orbit', actorName: 'Cy', targetId: 'c1', createdAt: at, read: false },
+      { id: 'n3', kind: 'comment', harnessId: 'h2', harnessTitle: 'Lamp', actorName: 'Di', targetId: 'c2', createdAt: at, read: true },
+    ] }).mockResolvedValueOnce({ read: 2 });
+    render(<NotificationsPage />);
+    expect(await screen.findByRole('link', { name: /Bob forked Orbit/ })).toHaveAttribute('href', '/hub/f1');
+    expect(screen.getByRole('link', { name: /Cy replied to your comment on Orbit/ })).toHaveAttribute('href', '/hub/h1?comments=1');
+    expect(screen.getByRole('link', { name: /Di commented on Lamp/ })).toHaveAttribute('href', '/hub/h2?comments=1');
+    await waitFor(() => expect(request).toHaveBeenCalledWith('notifications/read', { method: 'POST' }));
   });
   it('opens a touch screen’s share sheet instead of copying', async () => {
     request.mockResolvedValue({ harness: null, social: emptySocial });

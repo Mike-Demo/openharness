@@ -200,3 +200,5 @@
 .authorLink:hover{text-decoration:underline}
 .reportForm{display:flex;flex-direction:column;gap:2px;margin:0 0 30px;padding:18px 20px;background:#f7f7f5;font-size:13px}.reportForm .check{margin:6px 0}.reportForm small{color:#777;margin:8px 0 4px}.reportForm .submitRow{margin:8px 0 0}
 .review{border-bottom:1px solid #efefed;padding:16px 0;font-size:13px;display:flex;flex-direction:column;gap:6px}.review p{color:#777}.review .submitRow{margin:4px 0 0}
+.bell{position:relative;display:inline-flex}.bell svg{width:19px;height:19px}.badge{position:absolute;top:-7px;right:-9px;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:#a4483f;color:#fff;font-size:10px;line-height:16px;text-align:center}
+.notification{display:flex;justify-content:space-between;gap:16px;padding:14px 0;border-bottom:1px solid #efefed;font-size:14px}.notification small{color:#999;flex-shrink:0}.notification.unread{font-weight:500}

@@ -106,6 +106,26 @@ model CommunityHidden {
   @@map("community_hidden")
 }
 
+/// Something that happened to a creator's work on the Hub, for their bell (lib/communityNotifications.ts):
+/// a comment on their harness, a reply to their comment, a fork of their harness. It names who did it and
+/// where, never what they wrote.
+model CommunityNotification {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  autonomousEnv String    @default("prod")
+  userId        String    // who is told
+  kind          String    // 'comment' | 'reply' | 'fork'
+  harnessId     String    // the harness commented on, or the one forked
+  harnessTitle  String
+  actorName     String
+  targetId      String    // the comment, or the fork
+  createdAt     DateTime  @default(now())
+  readAt        DateTime?
+
+  @@index([autonomousEnv, userId, createdAt])
+  @@index([autonomousEnv, userId, readAt])
+  @@map("community_notifications")
+}
+
 model CommunityFollow {
   id            String   @id @default(auto()) @map("_id") @db.ObjectId
   autonomousEnv String   @default("prod")

@@ -69,6 +69,7 @@ const db = vi.hoisted(() => {
         else { row = { id: crypto.randomUUID(), createdAt: new Date(), ...create } as Row; rows.push(row) }
         return row
       }),
+      createMany: vi.fn(async ({ data }: { data: Record<string, unknown>[] }) => { for (const row of data) rows.push({ id: crypto.randomUUID(), createdAt: new Date(), ...defaults, ...row } as Row); return { count: data.length } }),
       deleteMany: vi.fn(async ({ where }: Query) => { const removed = rows.filter(row => matches(row, where)); removed.forEach(row => rows.splice(rows.indexOf(row), 1)); return { count: removed.length } }),
       updateMany: vi.fn(async ({ where, data }: Query & { data: Record<string, unknown> }) => {
         const found = rows.filter(row => matches(row, where))
@@ -80,12 +81,13 @@ const db = vi.hoisted(() => {
     }
   }
   return { communityHarness: table({ defaults: { likeCount: 0 } }), communityLike: table({ unique: ['autonomousEnv', 'harnessId', 'userId'] }), communityComment: table(), communityFollow: table(),
-    communityReport: table({ unique: ['autonomousEnv', 'targetType', 'targetId', 'userId'] }), communityHidden: table({ defaults: { restoredAt: null } }), user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({ name: where.id === 'alice' ? 'Alice' : 'Bob' })) } }
+    communityReport: table({ unique: ['autonomousEnv', 'targetType', 'targetId', 'userId'] }), communityHidden: table({ defaults: { restoredAt: null } }), communityNotification: table(), user: { findUnique: vi.fn(async ({ where }: { where: { id: string } }) => ({ name: where.id === 'alice' ? 'Alice' : 'Bob' })) } }
 })
 vi.mock('../lib/prisma.js', () => ({ prisma: db }))
 import { communityRoutes, publicationSchema } from './community.js'
 import { communityCommentRoutes } from './communityComments.js'
 import { communityCreatorRoutes } from './communityCreators.js'
+import { communityNotificationRoutes } from './communityNotifications.js'
 import { communityReportRoutes, resetReportRateLimits } from './communityReports.js'
 import { communityEditRoutes, resetEditRateLimits } from './communityEdit.js'
 import { registerAuthMiddleware } from '../middlewares/authMiddleware.js'
@@ -104,14 +106,14 @@ async function publish(token = 'alice', payload = sample, env = 'prod') {
   return response.json().data.id as string
 }
 beforeEach(async () => {
-  for (const model of [db.communityHarness, db.communityLike, db.communityComment, db.communityFollow, db.communityReport, db.communityHidden]) model.rows.splice(0)
+  for (const model of [db.communityHarness, db.communityLike, db.communityComment, db.communityFollow, db.communityReport, db.communityHidden, db.communityNotification]) model.rows.splice(0)
   vi.clearAllMocks(); resetEditRateLimits(); resetReportRateLimits()
   app = Fastify(); app.setErrorHandler(errorHandler)
   registerAuthMiddleware(app, async (token, autonomousEnv = 'prod') => {
     if (!['alice', 'bob', 'carol', 'dave', 'admin'].includes(token)) throw new Error('Invalid token')
     return { sub: token, email: `${token}@example.com`, role: token === 'admin' ? 'admin' : 'user', autonomousEnv }
   })
-  await app.register(communityRoutes); await app.register(communityEditRoutes); await app.register(communityCommentRoutes); await app.register(communityCreatorRoutes); await app.register(communityReportRoutes); await app.ready()
+  await app.register(communityRoutes); await app.register(communityEditRoutes); await app.register(communityCommentRoutes); await app.register(communityCreatorRoutes); await app.register(communityReportRoutes); await app.register(communityNotificationRoutes); await app.ready()
 })
 afterEach(async () => app.close())
 
@@ -557,6 +559,33 @@ describe('persistent social actions', () => {
     await review('harness', id, 'remove')
     expect((await call('GET', `harnesses/${id}`, 'alice')).statusCode).toBe(404)
     expect((await call('GET', 'reports', 'admin')).json().data.reports.find((row: { targetId: string }) => row.targetId === id).state).toBe('removed')
+  })
+  it('tells a creator of comments, replies and forks on their work, never of their own', async () => {
+    const id = await publish('alice', { ...sample, title: 'Orbit' })
+    const post = (token: string, body: string, parentId?: string) => call('POST', `harnesses/${id}/comments`, token, { body, clientId: crypto.randomUUID(), ...(parentId ? { parentId } : {}) })
+    const question = (await post('bob', 'How?')).json().data.comment
+    await post('alice', 'Like this.', question.id)
+    await post('alice', 'Talking to myself.')
+    const fork = await publish('bob', { ...sample, title: 'My orbit', forkedFrom: id } as typeof sample)
+    await publish('bob', { ...sample, forkedFrom: starter } as typeof sample)
+    const bell = async (token: string) => (await call('GET', 'notifications', token)).json().data
+    const alice = await bell('alice'), bob = await bell('bob')
+    expect(alice.unread).toBe(2)
+    expect(alice.notifications.map((row: { kind: string; actorName: string; harnessTitle: string }) => [row.kind, row.actorName, row.harnessTitle]).sort())
+      .toEqual([['comment', 'Bob', 'Orbit'], ['fork', 'Bob', 'Orbit']])
+    expect(alice.notifications.find((row: { kind: string }) => row.kind === 'fork').targetId).toBe(fork)
+    expect(bob.notifications).toEqual([expect.objectContaining({ kind: 'reply', actorName: 'Alice', harnessId: id, read: false })])
+    expect(JSON.stringify(alice)).not.toContain('How?')
+    expect((await call('GET', 'notifications/unread', 'alice')).json().data).toEqual({ unread: 2 })
+    expect((await call('POST', 'notifications/read', 'alice')).json().data).toEqual({ read: 2 })
+    expect((await call('GET', 'notifications/unread', 'alice')).json().data).toEqual({ unread: 0 })
+    expect((await call('GET', 'notifications')).statusCode).toBe(401)
+  })
+  it('tells a comment writer of a reply on their own harness once, as a reply', async () => {
+    const id = await publish('alice')
+    const mine = (await call('POST', `harnesses/${id}/comments`, 'alice', { body: 'Ask me anything', clientId: crypto.randomUUID() })).json().data.comment
+    await call('POST', `harnesses/${id}/comments`, 'bob', { body: 'Why?', clientId: crypto.randomUUID(), parentId: mine.id })
+    expect((await call('GET', 'notifications', 'alice')).json().data.notifications.map((row: { kind: string }) => row.kind)).toEqual(['reply'])
   })
   it('sends a harness page only its output when asked', async () => {
     const payload = { ...sample, files: [...sample.files, { path: 'src/app.js', content: 'console.log(1)' }] }

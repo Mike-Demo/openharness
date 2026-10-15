@@ -5,6 +5,7 @@ import { parseAutonomousEnvironment } from '../lib/autonomousEnvironment.js'
 import { communityStarterAuthor, communityStarters } from '../lib/communityAccess.js'
 import { feedPage, feedSorts, feedStats } from '../lib/communityFeed.js'
 import { saveLike } from '../lib/communityLikes.js'
+import { notify } from '../lib/communityNotifications.js'
 import { hiddenFrom, isHiddenFrom } from '../lib/communityReports.js'
 import { communityCategories, communityEngines, communityHarnessIds, communityHarnessMarkers, communityLimits, communityPathPattern, communityReservedName } from '../lib/communityContract.js'
 import { validateBody, validateParams, validateQuery } from '../middlewares/validation.js'
@@ -255,6 +256,10 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
       if (!clientId || (error as { code?: string }).code !== 'P2002') throw error
       post = await prisma.communityHarness.findFirst({ where: { id: clientId, autonomousEnv, authorId: userId, deletedAt: null } })
       if (!post) return sendError(reply, 'This publication request is no longer available. Start a new draft.', 'CONFLICT', 409)
+      return sendSuccess(reply, { id: post.id }, 201)
+    }
+    if (original && 'title' in original) {
+      await notify(autonomousEnv, userId, [{ userId: original.authorId, kind: 'fork', harnessId: original.id, harnessTitle: original.title, actorName: data.authorName, targetId: post.id }])
     }
     sendSuccess(reply, { id: post.id }, 201)
   })
@@ -284,6 +289,11 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
     if (!existing && await prisma.communityComment.count({ where: { autonomousEnv, userId, createdAt: { gt: new Date(Date.now() - 60_000) } } }) >= 10)
       return sendError(reply, 'Please wait before adding another comment.', 'RATE_LIMITED', 429)
     const row = existing ?? await prisma.communityComment.upsert({ where: { autonomousEnv_harnessId_userId_clientId: key }, create: { ...key, body: req.body.body, authorName: await authorName(userId), parentId: parent?.id, parentAuthorName: parent?.authorName }, update: {} })
+    // A retried post was told about the first time. A reply's comment writer hears of it as a reply, even when they made the harness.
+    if (!existing && 'title' in post) {
+      const where = { harnessId, harnessTitle: post.title, actorName: row.authorName, targetId: row.id }
+      await notify(autonomousEnv, userId, [...(parent ? [{ ...where, userId: parent.userId, kind: 'reply' as const }] : []), { ...where, userId: post.authorId, kind: 'comment' }])
+    }
     sendSuccess(reply, { comment: commentView(row, post.authorId, userId) })
   })
 
