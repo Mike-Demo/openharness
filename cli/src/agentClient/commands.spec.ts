@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { addressOf, agentOrigin, AGENTS_START_AGENTS_OFF, closeCommand, DEPTH_REFUSAL, EXIT, parseDuration, psCommand, showCommand, spawnRefusal, SPAWN_LIMITS, waitCommand, type ClientDeps } from './commands.js'
+import { addressOf, agentOrigin, AGENTS_START_AGENTS_OFF, closeCommand, DEPTH_REFUSAL, EXIT, parseDuration, psCommand, showCommand, spawnCheck, spawnCount, spawnRefusal, SPAWN_LIMITS, waitCommand, type ClientDeps } from './commands.js'
 import { AgentClientError, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath } from './ledger.js'
 import { agentSettingsPath } from '../lib/agentSettings.js'
@@ -1324,5 +1324,26 @@ describe('a harness on another machine, named with --machine', () => {
     // `near` is starting on this machine, not office.
     expect(await showCommand(['--machine', 'office', 'near'], h.deps)).toBe(EXIT.failed)
     expect(h.err.at(-1)).toBe('No harness named "near" on office. `harness ps --machine office` lists them.')
+  })
+})
+
+describe('spawnCheck and spawnCount', () => {
+  const lead = { machineId: 'm', agentId: 'lead', name: 'lead', engine: 'claude' }
+
+  it('counts what the limits count, and names the limit that refuses', () => {
+    const ledger = new Ledger(ledgerPath(dir))
+    for (const kid of ['a', 'b', 'c', 'd']) started(ledger, 'lead', kid)
+    const live = new Set(['m/a', 'm/b', 'm/c', 'm/d'])
+    expect(spawnCount(lead, live, ledger, NOW)).toEqual({ open: 4, starts: 4, depth: 0, oldestStartAt: NOW })
+    expect(spawnCheck(lead, live, ledger, 'm', NOW)).toEqual({ reason: 'OPEN_LIMIT', message: spawnRefusal(lead, live, ledger, 'm', NOW) })
+    expect(spawnCheck(lead, new Set(['m/a']), ledger, 'm', NOW)).toBeNull()
+    expect(spawnCheck({ ...lead, startedByAgent: true }, new Set(), ledger, 'm', NOW)).toEqual({ reason: 'DEPTH', message: DEPTH_REFUSAL })
+  })
+
+  it('names the start rate, and the oldest start in the window', () => {
+    const ledger = new Ledger(ledgerPath(dir))
+    for (let i = 0; i < SPAWN_LIMITS.perWindow; i++) started(ledger, 'lead', `k${i}`, 'm', NOW - 60_000 + i)
+    expect(spawnCheck(lead, new Set(), ledger, 'm', NOW)?.reason).toBe('START_RATE')
+    expect(spawnCount(lead, new Set(), ledger, NOW)).toMatchObject({ open: 0, starts: SPAWN_LIMITS.perWindow, oldestStartAt: NOW - 60_000 })
   })
 })

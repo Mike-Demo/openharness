@@ -22,6 +22,7 @@ import { readAgentSettings } from '../lib/agentSettings.js'
 import { MAX_FIRST_PROMPT_CHARS } from '../lib/engineLaunch.js'
 import { NewUsageError, resolveNewMachine, type NewMachine, type NewOrigin } from '../lib/newCommand.js'
 import { engineName } from '../messages/model.js'
+import type { SpawnCount, SpawnReason } from './context.js'
 import { AgentClientError, openDaemon, whereFor, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath, type Pending, type Started } from './ledger.js'
 import { messagesRpc, type Rpc } from '../messages/rpc.js'
@@ -825,29 +826,46 @@ export const DUPLICATE_WITHIN_MS = 10 * 60_000
 const memberKey = (machineId: string, agentId: string): string => `${machineId}/${agentId}`
 
 /**
- * Why [caller] may not start another harness now, or null. [live] holds the live harnesses the limits count: this
- * machine's, and the caller's on the other machines it reached.
+ * What the limits count for [caller]: its live harnesses, and those asked for and not started yet ([waiting]), its
+ * starts in the window, and its depth.
  */
-export function spawnRefusal(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number, waiting: readonly Pending[] = []): string | null {
-  // Its depth by the record, or by the core's row when the record has no line for it: rotated away, a write that failed,
-  // or a start from another machine or from outside Harness, recorded only where the starter ran.
-  if (Math.max(ledger.depthOf(caller), caller.startedByAgent ? 1 : 0) >= SPAWN_LIMITS.depth) return DEPTH_REFUSAL
-  // Harnesses asked for and not started yet ([waiting]) count as running: each starts by itself once its engine is
-  // installed, and an agent asking for more meanwhile would otherwise pass every limit until they all started at once.
+export function spawnCount(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, now: number, waiting: readonly Pending[] = []): SpawnCount {
   const mine = ledger.childrenOf(caller)
   const liveMine = new Set(mine.filter((row) => live.has(memberKey(row.child.machineId, row.child.agentId))).map((row) => memberKey(row.child.machineId, row.child.agentId)))
-  const running = liveMine.size + waiting.length
-  if (running >= SPAWN_LIMITS.livePerHarness) {
-    return `You have ${running} harnesses running${waiting.length ? ' or starting' : ''}. Close one you are done with first (harness close <name>).`
+  const recent = [...mine, ...waiting].map((row) => row.at).filter((at) => now - at < SPAWN_LIMITS.windowMs)
+  // Its depth by the record, or by the core's row when the record has no line for it: rotated away, a write that failed,
+  // or a start from another machine or from outside Harness, recorded only where the starter ran.
+  return {
+    open: liveMine.size + waiting.length, starts: recent.length, depth: Math.max(ledger.depthOf(caller), caller.startedByAgent ? 1 : 0),
+    oldestStartAt: recent.length ? Math.min(...recent) : null,
+  }
+}
+
+/**
+ * Which limit refuses [caller] another harness now, and what it is told, or null. [live] holds the live harnesses the
+ * limits count: this machine's, and the caller's on the other machines it reached.
+ */
+export function spawnCheck(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number, waiting: readonly Pending[] = []): { reason: SpawnReason; message: string } | null {
+  const count = spawnCount(caller, live, ledger, now, waiting)
+  if (count.depth >= SPAWN_LIMITS.depth) return { reason: 'DEPTH', message: DEPTH_REFUSAL }
+  // Harnesses asked for and not started yet ([waiting]) count as running: each starts by itself once its engine is
+  // installed, and an agent asking for more meanwhile would otherwise pass every limit until they all started at once.
+  if (count.open >= SPAWN_LIMITS.livePerHarness) {
+    return { reason: 'OPEN_LIMIT', message: `You have ${count.open} harnesses running${waiting.length ? ' or starting' : ''}. Close one you are done with first (harness close <name>).` }
   }
   const machineWide = new Set(ledger.all().filter((row) => row.child.machineId === localMachineId && live.has(memberKey(localMachineId, row.child.agentId))).map((row) => row.child.agentId))
   if (machineWide.size + waiting.filter((row) => row.creation.machineId === localMachineId).length >= SPAWN_LIMITS.livePerMachine) {
-    return `Agents have ${machineWide.size} harnesses running on this machine, the most allowed. Close some first.`
+    return { reason: 'MACHINE_LIMIT', message: `Agents have ${machineWide.size} harnesses running on this machine, the most allowed. Close some first.` }
   }
-  if (mine.filter((row) => now - row.at < SPAWN_LIMITS.windowMs).length + waiting.filter((row) => now - row.at < SPAWN_LIMITS.windowMs).length >= SPAWN_LIMITS.perWindow) {
-    return `You started ${SPAWN_LIMITS.perWindow} harnesses in 10 minutes. Wait, or work with the ones you have.`
+  if (count.starts >= SPAWN_LIMITS.perWindow) {
+    return { reason: 'START_RATE', message: `You started ${SPAWN_LIMITS.perWindow} harnesses in 10 minutes. Wait, or work with the ones you have.` }
   }
   return null
+}
+
+/** Why [caller] may not start another harness now, or null: `spawnCheck`'s message. */
+export function spawnRefusal(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number, waiting: readonly Pending[] = []): string | null {
+  return spawnCheck(caller, live, ledger, localMachineId, now, waiting)?.message ?? null
 }
 
 /** How long a harness started on another machine counts toward the limits when that machine cannot be asked. */
