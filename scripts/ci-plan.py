@@ -30,8 +30,9 @@ COMPONENTS = {"cli": "cli", "tests": "cli", "desktop": "desktop", "tui": "tui", 
               "devices": "firmware", "mobile": "mobile", "daemons": "daemons", "pty": "pty", "term": "pty"}
 # Paths inside another component that also select a suite: the PTY host's suite runs the CLI's
 # ptyhost terminal contract against the host it builds, and the host builds on the vendored terminal.
+# The shipped TUI (`hn`) builds on term/ as the host does, so a term/ change runs its tests too.
 ALSO = {"cli/src/lib/ptyHost/": "pty", "cli/src/lib/ptyHostBackend": "pty",
-        "cli/src/lib/terminalBackend.contract.ts": "pty", "tui/vendor/": "pty"}
+        "cli/src/lib/terminalBackend.contract.ts": "pty", "tui/vendor/": "pty", "term/": "tui"}
 
 
 def git(root, *args):

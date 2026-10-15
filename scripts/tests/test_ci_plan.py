@@ -27,7 +27,7 @@ class SelectionTests(unittest.TestCase):
             "provider/spec.md": {"provider"}, "devices/harness-device/firmware/main/main.c": {"firmware"},
             "devices/harness-pro/firmware/main/app/pro_app.c": {"firmware"},
             "mobile/pubspec.lock": {"mobile"}, "daemons/tools/card.mjs": {"daemons"},
-            "pty/src/stream.rs": {"pty"}, "term/src/capture.rs": {"pty"},
+            "pty/src/stream.rs": {"pty"},
         }.items():
             with self.subTest(path=path):
                 self.assertEqual(planner.select([path])[0], expected)
@@ -42,6 +42,12 @@ class SelectionTests(unittest.TestCase):
         }.items():
             with self.subTest(path=path):
                 self.assertEqual(planner.select([path])[0], expected)
+
+    def test_the_shared_terminal_crate_selects_both_the_pty_host_and_the_tui(self):
+        # term/ is a dependency of the PTY host and of the shipped TUI (`hn`): both suites run.
+        for path in ("term/src/capture.rs", "term/Cargo.toml"):
+            with self.subTest(path=path):
+                self.assertEqual(planner.select([path])[0], {"pty", "tui"})
 
     def test_invalid_paths_fail(self):
         for path in ["../cli/code.ts", "/absolute", ""]:
