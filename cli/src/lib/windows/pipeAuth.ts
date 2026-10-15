@@ -13,7 +13,10 @@
  * Nothing here depends on the transport: the same checks run over a Unix socket in the tests on macOS and Linux.
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
+import { closeSync, constants, fchmodSync, fsyncSync, lstatSync, openSync, rmSync, writeFileSync } from 'node:fs'
 import type { IncomingHttpHeaders } from 'node:http'
+import { join } from 'node:path'
+import { readPrivateStateFile, requireWindowsStateFile, secureStateDirectory, syncStateDirectory } from '../secureState.js'
 
 export const PIPE_AUTH_HEADER = 'x-harness-auth'
 export const PIPE_PROOF_HEADER = 'x-harness-proof'
@@ -95,4 +98,71 @@ export function newPipeNonce(endpoint: string): string {
   const id = pipeIdOf(endpoint)
   if (!id) throw new Error(`${endpoint} is not a Harness pipe`)
   return id + randomBytes(16).toString('hex')
+}
+
+export const DAEMON_TOKEN_FILE = 'daemon-token'
+/** A whole token file: 64 hex digits and a newline. */
+const TOKEN_FILE_BYTES = 65
+
+export function daemonTokenPath(dataDir: string): string {
+  return join(dataDir, DAEMON_TOKEN_FILE)
+}
+
+/**
+ * The daemon's token in [dataDir], or null when there is none or it cannot be trusted. On Unix the folder and the file
+ * pass secureState's owner and mode checks. On Windows the folder must be inside the profile, and the file must be a
+ * real file there, not a link (requireWindowsStateFile). The profile's ACL is the protection, as for the hook
+ * credential.
+ */
+export function readDaemonToken(dataDir: string): Buffer | null {
+  try {
+    secureStateDirectory(dataDir, false)
+    const file = daemonTokenPath(dataDir)
+    if (process.platform === 'win32') requireWindowsStateFile(file)
+    const text = readPrivateStateFile(file, 128).trim()
+    return HEX64.test(text) ? Buffer.from(text, 'hex') : null
+  } catch {
+    return null
+  }
+}
+
+/** A token file a crash cut short between its create and its write: a regular file shorter than a whole one. */
+function cutShort(file: string): boolean {
+  try {
+    const entry = lstatSync(file)
+    return entry.isFile() && entry.size < TOKEN_FILE_BYTES
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The daemon's token, made on the first start: 32 random bytes, written owner-only with O_EXCL, so two starts at
+ * once agree on one. A token cut short is replaced. Any other file that cannot be read as a token (a link, one
+ * another account could write, one outside the profile) is refused: the daemon does not start on it.
+ */
+export function ensureDaemonToken(dataDir: string): Buffer {
+  const existing = readDaemonToken(dataDir)
+  if (existing) return existing
+  secureStateDirectory(dataDir)
+  const file = daemonTokenPath(dataDir)
+  if (cutShort(file)) rmSync(file, { force: true })
+  const token = randomBytes(32)
+  let fd: number
+  try {
+    fd = openSync(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+  } catch (error) {
+    const raced = readDaemonToken(dataDir)
+    if (raced) return raced
+    throw new Error(`the daemon token ${file} cannot be read or replaced: ${(error as Error).message}`)
+  }
+  try {
+    writeFileSync(fd, `${token.toString('hex')}\n`)
+    fchmodSync(fd, 0o600)
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  syncStateDirectory(dataDir)
+  return token
 }
