@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { communityRequest, emptySocial, CommunityError } from '@/lib/community/client';
 import { commentTotal } from '@/lib/community/comments';
+import { putLike } from '@/lib/community/social';
 import type { HarnessComment, OpenHarness, SocialState } from '@/lib/community/types';
 import { useRefreshOnReturn } from './useRefreshOnReturn';
 
@@ -74,7 +75,7 @@ export function useHarnessDetail(id: string, initial: OpenHarness | null, onSign
     setSocial(value => ({ ...value, following: next }));
   });
   const like = () => mutate(async () => {
-    const result = await communityRequest<{ liked: boolean; likes: number }>(`harnesses/${id}/like`, { method: 'PUT', body: { liked: !social.liked } });
+    const result = await putLike(id, !social.liked);
     setSocial(value => ({ ...value, ...result }));
   });
   const removeComment = (comment: HarnessComment) => mutate(async () => {

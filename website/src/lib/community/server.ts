@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { starterHarnesses, starterConversation, starterSlug } from './starters';
+import { feedPath, type FeedPage, type FeedView } from './feed';
 import type { OpenHarness } from './types';
 
 export function communityApiOrigin(): string {
@@ -9,6 +10,9 @@ export function communityApiOrigin(): string {
     throw new Error('COMMUNITY_API_URL must use HTTPS or loopback HTTP.');
   return url.origin;
 }
+
+/** How long a page the server draws waits for the Hub before leaving the read to the browser. */
+export const serverReadMs = 2500;
 
 /** `viewerOnly` reads just the page readers see: a harness page needs no source files, and a starter's run to megabytes. */
 export type HarnessRead = { timeoutMs?: number; viewerOnly?: boolean };
@@ -43,4 +47,18 @@ export async function getPublicHarness(id: string, read: HarnessRead = {}): Prom
   const harness: OpenHarness | null = (await response.json()).data.harness;
   // A backend older than `?files=viewer` still sends every file.
   return harness && read.viewerOnly ? onlyViewer(harness) : harness;
+}
+
+/**
+ * A feed's first page as a visitor reads it, for the page the server draws: the reader's sign-in is
+ * only in their browser, which reads the page again with it. Null past `timeoutMs` or on any failure,
+ * and the browser loads the feed itself.
+ */
+export async function getFeedPage(view: FeedView, timeoutMs: number): Promise<FeedPage | null> {
+  try {
+    const response = await fetch(`${communityApiOrigin()}/api/community/${feedPath(view)}`, { cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) });
+    if (!response.ok) return null;
+    const body = await response.json();
+    return body.success ? body.data as FeedPage : null;
+  } catch { return null; }
 }

@@ -5,7 +5,7 @@ import { communityLimits, missingMarker } from '@/lib/community/contract';
 import { validateDraft } from '@/lib/community/drafts';
 import { previewDocument } from '@/lib/community/preview';
 import { outsideResources } from '@/lib/community/outputCheck';
-import { findSecrets } from '@/lib/community/secrets';
+import { secretsInConversation, secretsInFiles } from '@/lib/community/secrets';
 import { Header, SignIn } from '../components/Header';
 import { useSignedIn } from '../components/useSignedIn';
 import { ConversationEditor } from './components/ConversationEditor';
@@ -29,7 +29,9 @@ export default function PublishPage() {
   const { draft, update, applyBundle, saveError, loadError, publishOnce } = usePublishDraft();
   const english = useEnglishDraft(draft, update, signedIn);
   const [confirmed, setConfirmed] = useState(false), [checkedSecrets, setCheckedSecrets] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('');
-  const findings = useMemo(() => findSecrets(draft.files, draft.conversation), [draft.files, draft.conversation]);
+  const fileFindings = useMemo(() => secretsInFiles(draft.files), [draft.files]);
+  const turnFindings = useMemo(() => secretsInConversation(draft.conversation), [draft.conversation]);
+  const findings = useMemo(() => [...fileFindings, ...turnFindings], [fileFindings, turnFindings]);
   // The acknowledgement is for these findings: a new one needs checking again.
   const findingsKey = JSON.stringify(findings), secretsChecked = !findings.length || checkedSecrets === findingsKey;
   const marker = missingMarker(draft.harnessId, draft.files.map(file => file.path));

@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { defaultFeedView, inFeedOrder, type FeedView } from '@/lib/community/feed';
+import { defaultFeedView, inFeedOrder, type FeedPage, type FeedView } from '@/lib/community/feed';
 import { starterHarnesses } from '@/lib/community/starters';
 import type { HarnessSummary } from '@/lib/community/types';
 import { FeedCard, FeedSkeleton } from './FeedCard';
@@ -22,11 +22,12 @@ function EmptyFeed({ narrowed, mine }: { narrowed: boolean; mine: boolean }) {
   return <div className={styles.empty}><h1>Your people. Their next ideas.</h1><p>Follow a creator from a harness page to see their work here.</p></div>;
 }
 
-type Props = { following?: boolean; mine?: boolean; initialView?: FeedView };
+/** `initialPage` is the first page of `initialView` as the server read it for a visitor (Explore only). */
+type Props = { following?: boolean; mine?: boolean; initialView?: FeedView; initialPage?: FeedPage | null };
 
-export default function Feed({ following = false, mine = false, initialView = defaultFeedView }: Props) {
+export default function Feed({ following = false, mine = false, initialView = defaultFeedView, initialPage }: Props) {
   const search = useFeedView(initialView), { view } = search;
-  const { posts, order, follows, stats, cursor, settled, error, likeError, signedOut, busy, liking, more, load, like } = useFeed({ following, mine, ...view });
+  const { posts, order, follows, stats, cursor, settled, error, likeError, signedOut, busy, liking, more, load, like } = useFeed({ following, mine, ...view }, initialPage);
   const narrowed = !!(view.query || view.category);
   // Starters follow the last page: drawn sooner, every page loaded while scrolling would land above
   // them. A narrowed view or a failed page shows them at once: there is nothing to scroll past.

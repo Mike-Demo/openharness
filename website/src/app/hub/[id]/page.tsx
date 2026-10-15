@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { cache } from 'react';
 import { notFound } from 'next/navigation';
-import { getPublicHarness } from '@/lib/community/server';
+import { getPublicHarness, serverReadMs } from '@/lib/community/server';
 import type { OpenHarness } from '@/lib/community/types';
 import Detail from '../components/Detail';
 type Props = { params: Promise<{ id: string }>; searchParams: Promise<{ comments?: string }> };
@@ -16,7 +16,7 @@ const validId = (id: string) => /^starter-[a-z-]+$/.test(id) || /^[a-f0-9-]{36}$
 const readHarness = cache(async (id: string): Promise<OpenHarness | null> => {
   if (!validId(id)) return null;
   // A slow backend must not hold the page: past this, the browser loads the harness itself.
-  return getPublicHarness(id, { timeoutMs: 2500, viewerOnly: true }).catch(() => null);
+  return getPublicHarness(id, { timeoutMs: serverReadMs, viewerOnly: true }).catch(() => null);
 });
 
 /** A link preview's image: link unfurlers read raster covers, not a starter's SVG. */

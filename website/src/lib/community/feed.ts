@@ -11,6 +11,12 @@ export type FeedSort = typeof feedSorts[number];
 export type FeedView = { query: string; category: string; sort: FeedSort };
 export const defaultFeedView: FeedView = { query: '', category: '', sort: 'newest' };
 
+/** A card's counts and the reader's like. `forks` comes from a backend that counts them; an older one leaves it out. */
+export type Stats = { likes: number; comments: number; liked: boolean; forks?: number };
+
+/** One page of a feed. `order` comes with a popular feed from a backend that ranks the starters too; an older one leaves it out. */
+export type FeedPage = { harnesses: HarnessSummary[]; order?: string[]; nextCursor: string | null; following: string[]; stats?: Record<string, Stats>; signedIn?: boolean };
+
 /** Which publications one feed lists: a tab's, or one harness's forks, narrowed by a view. */
 export type FeedQuery = Partial<FeedView> & { following?: boolean; mine?: boolean; forkedFrom?: string };
 

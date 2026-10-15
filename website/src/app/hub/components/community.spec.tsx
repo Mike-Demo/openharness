@@ -258,4 +258,27 @@ describe('community navigation', () => {
     await screen.findByText('Link copied');
     expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/hub/starter-orbit`);
   });
+  it('draws the page the server read at once, then reads it again with the reader’s sign-in', async () => {
+    let answer: (page: unknown) => void = () => {};
+    request.mockReturnValueOnce(new Promise(resolve => { answer = resolve; }));
+    const page = { harnesses: [{ ...sample, id: 'first', title: 'Server card' }], nextCursor: null, following: [], stats: { first: { likes: 4, comments: 1, liked: false } } };
+    render(<Feed initialPage={page} />);
+    expect(screen.getByRole('link', { name: 'Open Server card' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Like Server card' })).toHaveTextContent('4');
+    await act(async () => { answer({ ...page, stats: { first: { likes: 4, comments: 1, liked: true } }, signedIn: true }); });
+    expect(screen.getByRole('button', { name: 'Unlike Server card' })).toBeInTheDocument();
+  });
+  it('opens a touch screen’s share sheet instead of copying', async () => {
+    request.mockResolvedValue({ harness: null, social: emptySocial });
+    const share = vi.fn(async () => {}), writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, 'share', { value: share, configurable: true });
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    Object.defineProperty(window, 'matchMedia', { configurable: true, value: (query: string) => ({ matches: query === '(pointer: coarse)', addEventListener: vi.fn(), removeEventListener: vi.fn() }) });
+    render(<Detail id={sample.id} initial={sample} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Share this harness' }));
+    await waitFor(() => expect(share).toHaveBeenCalledWith({ title: 'Orbit', url: `${window.location.origin}/hub/starter-orbit` }));
+    expect(writeText).not.toHaveBeenCalled();
+    Object.defineProperty(window, 'matchMedia', { configurable: true, value: undefined });
+    Object.defineProperty(navigator, 'share', { value: undefined, configurable: true });
+  });
 });

@@ -1,9 +1,9 @@
 'use client';
 import Link from 'next/link';
 import { GitFork, Heart, MessageCircle } from 'lucide-react';
+import type { Stats } from '@/lib/community/feed';
 import type { HarnessSummary } from '@/lib/community/types';
 import { HarnessTags } from './HarnessTags';
-import type { Stats } from './useFeed';
 import styles from '../community.module.css';
 
 type Props = { item: HarnessSummary; stats?: Stats; liking: boolean; onLike: () => void };
