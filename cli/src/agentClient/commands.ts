@@ -22,6 +22,7 @@ import { readAgentSettings } from '../lib/agentSettings.js'
 import { MAX_FIRST_PROMPT_CHARS } from '../lib/engineLaunch.js'
 import { NewUsageError, resolveNewMachine, type NewMachine, type NewOrigin } from '../lib/newCommand.js'
 import { engineName } from '../messages/model.js'
+import { machineListCachePath } from '../device/machineList.js'
 import { readAuthSession } from '../lib/authSession.js'
 import { buildContext, formatContext, type Context, type SpawnCount, type SpawnReason } from './context.js'
 import { AgentClientError, openDaemon, whereFor, type Daemon, type Where } from './daemon.js'
@@ -46,8 +47,6 @@ export interface ClientDeps {
   record?: Rpc
   /** The account's machines, for `--machine` (cli.ts asks the backend, as `harness new` does). */
   machines?: () => Promise<NewMachine[]>
-  /** How long the context block waits for the account's machines (2 s); tests shorten it. */
-  contextMachinesMs?: number
 }
 
 const ON_MACHINE = '--machine <name> is another of your machines, by its name or id as harness new takes it; this one when left out.'
@@ -149,7 +148,6 @@ function setup(deps: ClientDeps) {
     machines: deps.machines ?? (async (): Promise<NewMachine[]> => {
       throw new AgentClientError('MACHINES_UNAVAILABLE', 'Harness could not list your machines here.')
     }),
-    contextMachinesMs: deps.contextMachinesMs ?? 2_000,
   }
 }
 type Setup = ReturnType<typeof setup>
@@ -524,10 +522,9 @@ export function psCommand(argv: readonly string[], deps: ClientDeps = {}): Promi
       })))
       const note = o.caller ? openNote(s.env, rows) : null
       // An agent is told where it is and what it may do before the list; a person's ps is as it was.
-      const context = await contextFor(s, o)
-      const block = o.caller || o.orphan ? formatContext(context) : null
-      s.out(flags.has('--json') ? JSON.stringify({ you: o.caller ? o.caller.name : null, machine: on.machine, context, harnesses: rows }, null, 1)
-        : [block, formatRows(rows, s.now(), away ? away.label : undefined), note].filter(Boolean).join('\n'))
+      const agent = !!o.caller || o.orphan
+      s.out(flags.has('--json') ? JSON.stringify({ you: o.caller ? o.caller.name : null, machine: on.machine, context: contextFor(s, o), harnesses: rows }, null, 1)
+        : [agent ? formatContext(contextFor(s, o)) : null, formatRows(rows, s.now(), away ? away.label : undefined), note].filter(Boolean).join('\n'))
       return EXIT.ok
     } finally { line?.close(); o.daemon.close() }
   })
@@ -546,17 +543,29 @@ export function openNote(env: NodeJS.ProcessEnv, rows: readonly Row[]): string |
     + `Close each once you have its answer: ${step(env, 'close', '<name>')}.`
 }
 
-/** The account's machines for the context block, or none: the block never holds a verb up (2 s at most). */
-async function machinesForContext(s: Setup): Promise<NewMachine[]> {
-  let timer: NodeJS.Timeout | undefined
+/**
+ * The account's machines for the context block, as this computer's daemon keeps them (`<data>/machines.json`,
+ * device/machineList.ts, read again every minute), or none. Never the backend: a request still open after the block
+ * printed held the process 10 to 35 s, and a person's `ps` waited on the network for nothing (review, 2026-10-15).
+ * Only a list kept for the account signed in now, as the daemon serves it (`MachineListCache.lastResponse`).
+ */
+function machinesForContext(where: Where): NewMachine[] {
+  const owner = readAuthSession()?.machineId
   try {
-    return await Promise.race([s.machines(), new Promise<NewMachine[]>((done) => { timer = setTimeout(() => done([]), s.contextMachinesMs); timer.unref?.() })])
-  } catch { return [] } finally { clearTimeout(timer) }
+    const kept = JSON.parse(readFileSync(machineListCachePath(where.dataDir), 'utf8')) as { machines?: unknown; bodyOwner?: unknown }
+    if (!owner || kept.bodyOwner !== owner || !Array.isArray(kept.machines)) return []
+    return (kept.machines as Array<Record<string, unknown>>).filter((m) => typeof m.machineId === 'string').map((m) => ({
+      machineId: String(m.machineId), label: typeof m.name === 'string' && m.name.trim() ? m.name.trim() : '(unnamed)',
+      // The daemon's `ready` is what `harness machines` calls running.
+      status: m.state === 'ready' ? 'running' : typeof m.state === 'string' ? m.state : 'unknown',
+      current: m.local === true || m.machineId === where.machineId || m.machineId === owner,
+    }))
+  } catch { return [] }
 }
 
 /** Where the caller is and what it may do (context.ts), from what `opened` read: this machine's live harnesses only,
  *  so it costs no other machine a question; `new` still counts the other machines' exactly. */
-async function contextFor(s: Setup, o: Opened): Promise<Context> {
+function contextFor(s: Setup, o: Opened): Context {
   const live = new Set(o.frames.filter((f) => f.status === 'active').map((f) => memberKey(o.where.machineId, f.id)))
   const waiting = o.asked.filter((a) => a.state !== 'failed').map((a) => a.row)
   const caller = o.caller
@@ -565,7 +574,7 @@ async function contextFor(s: Setup, o: Opened): Promise<Context> {
     signedIn: !!readAuthSession(), switchOn: readAgentSettings(o.where.dataDir).agentsStartAgents,
     check: caller ? spawnCheck(caller, live, o.ledger, o.where.machineId, s.now(), waiting) : null,
     count: caller ? spawnCount(caller, live, o.ledger, s.now(), waiting) : null,
-    limits: SPAWN_LIMITS, machines: await machinesForContext(s), closeStep: step(s.env, 'close', '<name>'),
+    limits: SPAWN_LIMITS, machines: machinesForContext(o.where), closeStep: step(s.env, 'close', '<name>'),
   })
 }
 
@@ -577,7 +586,7 @@ export function whoamiCommand(argv: readonly string[], deps: ClientDeps = {}): P
     if (names.length || machine !== null) throw new UsageError('harness whoami takes no names and no --machine: it is about you, here.')
     const o = await opened(s)
     try {
-      const context = await contextFor(s, o)
+      const context = contextFor(s, o)
       s.out(flags.has('--json') ? JSON.stringify({ context }, null, 1) : formatContext(context))
       return EXIT.ok
     } finally { o.daemon.close() }

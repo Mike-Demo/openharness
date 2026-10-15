@@ -6,7 +6,7 @@ import { addressOf, agentOrigin, AGENTS_START_AGENTS_OFF, closeCommand, DEPTH_RE
 import { AgentClientError, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath } from './ledger.js'
 import { agentSettingsPath } from '../lib/agentSettings.js'
-import { setAgentSettingsForTest, signedOutForTest } from '../testing/agentSettings.js'
+import { setAgentSettingsForTest, signedOutForTest, TEST_ACCOUNT } from '../testing/agentSettings.js'
 import type { Frame } from './model.js'
 
 const NOW = Date.parse('2026-10-11T12:00:00Z')
@@ -1362,20 +1362,43 @@ describe('spawnCheck and spawnCount', () => {
 })
 
 describe('harness whoami', () => {
-  const office = { machineId: 'o', label: 'office', status: 'running', current: false }
+  /** The account's machines as this computer's daemon keeps them (`<data>/machines.json`, device/machineList.ts). */
+  const cacheMachines = (owner = TEST_ACCOUNT.machineId) => writeFileSync(join(dir, 'machines.json'), JSON.stringify({
+    machines: [
+      { machineId: 'm', name: 'studio', state: 'ready', local: true },
+      { machineId: 'o', name: 'office', state: 'ready', local: false },
+      { machineId: 'b', name: 'box', state: 'offline', local: false },
+    ],
+    bodyOwner: owner, fetchedAt: NOW,
+  }))
+  /** The account's machines from the backend: the block must never ask for them. */
+  const network = () => { const asked = { n: 0 }; return { asked, machines: () => { asked.n++; return new Promise<never>(() => {}) } } }
 
   it('tells an agent in a pane who and where it is, that it may start, and its counts', async () => {
+    cacheMachines()
     const d = new FakeDaemon()
     d.frames = [frame('lead', { engine: 'claude' }), frame('kid')]
-    const h = harness(d, { machines: async () => [office] })
+    const net = network()
+    const h = harness(d, { machines: net.machines })
     started(h.ledger, 'lead', 'kid')
     expect(await whoamiCommand([], h.deps)).toBe(EXIT.ok)
     expect(h.out.join('\n')).toBe([
       'You: Claude Code "lead" (lead), inside Harness, on studio.',
       'Can start harnesses: yes.',
-      'Yours: 1 open of 4 · 1 of 20 starts in the last 10 minutes · other machines: office (running)',
+      'Yours: 1 open of 4 · 1 of 20 starts in the last 10 minutes · other machines: office (running), box (offline)',
     ].join('\n'))
     expect(d.closed).toBe(true)
+    // The list the daemon keeps, never the backend: a request left open held the process for 10 to 35 s (review).
+    expect(net.asked.n).toBe(0)
+  })
+
+  it('lists no machines from a list another account\'s daemon kept', async () => {
+    cacheMachines('another-account')
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' })]
+    const h = harness(d)
+    expect(await whoamiCommand([], h.deps)).toBe(EXIT.ok)
+    expect(h.out.join('\n')).not.toContain('other machines')
   })
 
   it('says the switch is off, and gives the context as JSON', async () => {
@@ -1390,23 +1413,26 @@ describe('harness whoami', () => {
   })
 
   it('signed out: says to sign in first, and lists no machines', async () => {
+    cacheMachines()
     signedOutForTest()
     const d = new FakeDaemon()
     d.frames = [frame('lead', { engine: 'claude' })]
-    const h = harness(d, { machines: async () => { throw new AgentClientError('MACHINES_UNAVAILABLE', 'no') } })
+    const h = harness(d)
     expect(await whoamiCommand([], h.deps)).toBe(EXIT.ok)
     expect(h.out.join('\n').split('\n')[1]).toMatch(/^Can start harnesses: no\. This computer is signed out of Harness/)
     expect(h.out.join('\n')).not.toContain('other machines')
   })
 
-  it('does not wait long for the account\'s machines', async () => {
+  it('ps asks the network nothing for the block, an agent\'s or a person\'s', async () => {
+    cacheMachines()
     const d = new FakeDaemon()
     d.frames = [frame('lead', { engine: 'claude' })]
-    const h = harness(d, { machines: () => new Promise(() => {}), contextMachinesMs: 5 })
-    const t0 = Date.now()
-    expect(await whoamiCommand([], h.deps)).toBe(EXIT.ok)
-    expect(Date.now() - t0).toBeLessThan(1_000)
-    expect(h.out.join('\n')).not.toContain('other machines')
+    for (const over of [{}, { pane: undefined }]) {
+      const net = network()
+      const h = harness(d, { machines: net.machines, ...over })
+      expect(await psCommand([], h.deps)).toBe(EXIT.ok)
+      expect(net.asked.n).toBe(0)
+    }
   })
 
   it('says why when Harness cannot be reached, as ps does', async () => {
