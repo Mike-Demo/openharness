@@ -45,7 +45,7 @@ export function unpackCommand(
 
 /**
  * What differs on Windows: nodejs.org's archive is a zip with `node.exe` at its root folder, not `bin/node`. The
- * pointer line ends in CRLF there, because harness.cmd reads it with `set /p`.
+ * pointer line ends in CRLF there, as install.ps1 writes it (installLayout.ts writePointer).
  */
 export function runtimeLayout(platform: NodeJS.Platform = process.platform): { archiveSuffix: '.zip' | '.tar.gz'; nodeBinary: string; eol: string } {
   return platform === 'win32'

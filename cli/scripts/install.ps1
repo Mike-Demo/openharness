@@ -24,7 +24,7 @@ $HarnessScriptPath = $MyInvocation.MyCommand.Path
 
 $HarnessCliVersionPattern = '^\d+\.\d+\.\d+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$'
 $HarnessPtyVersionPattern = '^\d+(\.\d+)*$'
-$HarnessPtyFiles = @('harness-pty.exe', 'harness-launch.exe', 'conpty.dll', 'OpenConsole.exe')
+$HarnessPtyFiles = @('harness-pty.exe', 'harness-launch.exe', 'harness.exe', 'conpty.dll', 'OpenConsole.exe')
 
 function Get-HarnessPlatform {
   # The platform from the NATIVE architecture, read where Windows keeps it for the whole system. An x64
@@ -205,16 +205,42 @@ function Move-HarnessFile {
   }
 }
 
+function Test-HarnessSameFile([string]$Source, [string]$Destination) {
+  if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) { return $false }
+  if ((Get-Item -LiteralPath $Source).Length -ne (Get-Item -LiteralPath $Destination).Length) { return $false }
+  return (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
+}
+
 function Copy-HarnessFile {
+  # Copy through a temporary file and a rename, and only when the bytes differ: a file that is already right is left
+  # alone. A program that is running (a `harness` someone left open) can be renamed but not deleted. Replace then
+  # renames it to <name>~RF<hex>.TMP itself and succeeds (seen on the VM, 2026-10-16); should it fail instead, the
+  # program is moved aside to .<name>.old-<pid>-<time>. Remove-HarnessAside deletes either once it has exited.
   param([string]$Source, [string]$Destination)
+  if (Test-HarnessSameFile $Source $Destination) { return }
   $temp = "$Destination.tmp-$PID"
   Copy-Item -LiteralPath $Source -Destination $temp -Force
-  Move-HarnessFile -Source $temp -Destination $Destination
+  try {
+    Move-HarnessFile -Source $temp -Destination $Destination
+  } catch {
+    if (-not [IO.File]::Exists($Destination)) { throw }
+    $aside = Join-Path (Split-Path -Parent $Destination) (".{0}.old-{1}-{2}" -f (Split-Path -Leaf $Destination), $PID, [DateTime]::UtcNow.Ticks)
+    [IO.File]::Move($Destination, $aside)
+    Copy-Item -LiteralPath $Source -Destination $temp -Force
+    Move-HarnessFile -Source $temp -Destination $Destination
+  }
+}
+
+function Remove-HarnessAside([string]$Dir) {
+  # The programs Copy-HarnessFile moved aside. One that still runs cannot be deleted yet, and waits for the next run.
+  foreach ($pattern in '.*.old-*', '*~RF*.TMP') {
+    Get-ChildItem -LiteralPath $Dir -Filter $pattern -Force -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+  }
 }
 
 function Write-HarnessPointer {
-  # One line and CRLF, UTF-8 with no BOM, through a rename (installLayout.ts writePointer). harness.cmd reads it
-  # with `set /p`, which would keep a BOM as part of the value.
+  # One line and CRLF, UTF-8 with no BOM, through a rename (installLayout.ts writePointer). The Rust reader
+  # (pty/src/launcher.rs, which harness.exe and harness-launch.exe use) would keep a BOM as part of the value.
   param([string]$Path, [string]$Value)
   $temp = "$Path.tmp-$PID"
   [IO.File]::WriteAllText($temp, "$Value`r`n", (New-Object Text.UTF8Encoding $false))
@@ -263,41 +289,6 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
 
 # --- Install ---
 
-# bin\harness.cmd, the `harness` command. It holds no path itself: it finds the install from its own folder
-# (%~dp0) and reads the two pointers the installer and the updater keep. Node and the CLI can therefore move on
-# without rewriting it. A running batch file is re-read from disk by cmd line by line, so it is rewritten only
-# when its bytes change. It uses no delayed expansion and no parenthesised blocks, so a `!` or `)` in a profile
-# folder's name cannot change what cmd parses. The pointers are UTF-8, so they are read in code page 65001 and
-# a non-ASCII profile name survives. The person's code page is restored before Node starts. It exits with node's
-# exit code.
-$HarnessCmd = @'
-@echo off
-rem Harness: the harness command, written by install.ps1. It runs the CLI that cli\current names on the Node
-rem that runtime\current-node names. The arguments pass through untouched; nothing here parses them.
-setlocal DisableDelayedExpansion
-rem A variable a person set named ERRORLEVEL would hide the real exit code below.
-set "ERRORLEVEL="
-set "HARNESS_ROOT=%~dp0.."
-set "HARNESS_CLI_VERSION="
-set "HARNESS_NODE="
-set "HARNESS_CODEPAGE="
-for /f "tokens=2 delims=:." %%C in ('chcp') do set "HARNESS_CODEPAGE=%%C"
-chcp 65001 >nul 2>&1
-set /p HARNESS_CLI_VERSION=<"%HARNESS_ROOT%\cli\current"
-set /p HARNESS_NODE=<"%HARNESS_ROOT%\runtime\current-node"
-if defined HARNESS_CODEPAGE chcp %HARNESS_CODEPAGE% >nul 2>&1
-if not defined HARNESS_CLI_VERSION goto broken
-if not defined HARNESS_NODE goto broken
-if not exist "%HARNESS_NODE%" goto broken
-if not exist "%HARNESS_ROOT%\cli\%HARNESS_CLI_VERSION%\cli.js" goto broken
-rem The exit is on node's line, and reads node's exit code through call, once node has run. A plain exit /b here
-rem hands cmd /c, which every caller goes through, 0 instead (seen on the VM, 2026-10-16).
-"%HARNESS_NODE%" "%HARNESS_ROOT%\cli\%HARNESS_CLI_VERSION%\cli.js" %* & call exit /b %%errorlevel%%
-:broken
-echo Harness is not installed completely. Install it again: irm https://cdn.autonomous.ai/harness/cli/install.ps1 ^| iex 1>&2
-exit /b 1
-'@
-
 function Test-HarnessPtyFolder([string]$Dir) {
   foreach ($name in $HarnessPtyFiles) { if (-not (Test-Path -LiteralPath (Join-Path $Dir $name) -PathType Leaf)) { return $false } }
   return $true
@@ -305,7 +296,7 @@ function Test-HarnessPtyFolder([string]$Dir) {
 
 function Install-HarnessNode {
   # runtime\node-<version>-<platform>\node.exe, from nodejs.org's own zip (node-<version>-win-<arch>\node.exe).
-  # current-node is written last, and only once node.exe has answered. The CLI, the desktop app and harness.cmd
+  # current-node is written last, and only once node.exe has answered. The CLI, the desktop app and harness.exe
   # all execute what it names.
   param([string]$Root, $Entry, [string]$Source, [string]$Tar, [string]$Platform)
   $version = [string]$Entry.version
@@ -368,9 +359,9 @@ function Install-HarnessCli {
 }
 
 function Install-HarnessPty {
-  # runtime\pty\<version>\ with the host, the launcher and ConPTY, then current-pty and bin\harness-launch.exe. A
-  # complete version folder is never replaced: a host may be running from it, and a running .exe cannot be
-  # overwritten on Windows (A's spec, host upgrade).
+  # runtime\pty\<version>\ with the host, the launcher, the harness command and ConPTY, then current-pty and
+  # bin\harness-launch.exe. A complete version folder is never replaced: a host may be running from it, and a running
+  # .exe cannot be overwritten on Windows (A's spec, host upgrade). It returns the version folder.
   param([string]$Root, $Entry, [string]$Source, [string]$Tar)
   $version = [string]$Entry.version
   if ($version -notmatch $HarnessPtyVersionPattern) { throw "The terminal host manifest names an unexpected version '$version'." }
@@ -395,21 +386,22 @@ function Install-HarnessPty {
   New-Item -ItemType Directory -Force -Path $bin | Out-Null
   Copy-HarnessFile -Source (Join-Path $target 'harness-launch.exe') -Destination (Join-Path $bin 'harness-launch.exe')
   Write-Host "  OK terminal host $version -> $target"
+  return $target
 }
 
-function Write-HarnessLaunchers {
-  param([string]$Root)
+function Install-HarnessCommand {
+  # bin\harness.exe, the `harness` command (pty/src/command.rs), from the terminal host's version folder. It holds
+  # no path itself: it finds the install from its own folder and reads the two pointers the installer and the
+  # updater keep, so Node and the CLI can move on without it. It is a program and not a batch file, so cmd never
+  # parses the arguments a second time. A harness.cmd that an earlier install wrote goes: it re-parsed them.
+  param([string]$Root, [string]$PtyFolder)
   $bin = Join-Path $Root 'bin'
   New-Item -ItemType Directory -Force -Path $bin | Out-Null
-  $command = Join-Path $bin 'harness.cmd'
-  $text = ($HarnessCmd -replace "`r?`n", "`r`n") + "`r`n"
-  $bytes = [Text.Encoding]::ASCII.GetBytes($text)
-  $same = (Test-Path -LiteralPath $command -PathType Leaf) -and ([Convert]::ToBase64String([IO.File]::ReadAllBytes($command)) -eq [Convert]::ToBase64String($bytes))
-  if (-not $same) {
-    $temp = "$command.tmp-$PID"
-    [IO.File]::WriteAllBytes($temp, $bytes)
-    Move-HarnessFile -Source $temp -Destination $command
-  }
+  $command = Join-Path $bin 'harness.exe'
+  Copy-HarnessFile -Source (Join-Path $PtyFolder 'harness.exe') -Destination $command
+  $old = Join-Path $bin 'harness.cmd'
+  if (Test-Path -LiteralPath $old) { Remove-Item -LiteralPath $old -Force }
+  Remove-HarnessAside $bin
   return $command
 }
 
@@ -434,12 +426,14 @@ function Register-HarnessService {
   # not a failed install.
   param([string]$Command)
   $exit = 1
+  $why = ''
   try {
     & $Command service install | ForEach-Object { Write-Host "  $_" }
     $exit = $LASTEXITCODE
-  } catch { }
+  } catch { $why = $_.Exception.Message }
   if ($exit -ne 0) {
-    Write-Host "  Harness could not set itself to start when you sign in (harness service install exited $exit)."
+    if (-not $why) { $why = "harness service install exited $exit" }
+    Write-Host "  Harness could not set itself to start when you sign in ($why)."
     Write-Host "  It still works: run 'harness start' to connect this computer."
     return
   }
@@ -488,9 +482,9 @@ function Install-Harness {
     $version = Install-HarnessCli -Root $root -Entry $sources.cli.entry -Source $sources.cli.source
     # The terminal host is installed in -Desktop mode too: the daemon the app starts runs its terminals on it.
     $step = 'Installing the terminal host'
-    Install-HarnessPty -Root $root -Entry $sources.pty.entry -Source $sources.pty.source -Tar $tar
-    $step = 'Writing the harness command'
-    $command = Write-HarnessLaunchers -Root $root
+    $ptyFolder = Install-HarnessPty -Root $root -Entry $sources.pty.entry -Source $sources.pty.source -Tar $tar
+    $step = 'Installing the harness command'
+    $command = Install-HarnessCommand -Root $root -PtyFolder $ptyFolder
     $step = 'Adding Harness to your PATH'
     Add-HarnessPath -Root $root
     $step = 'Checking the installed CLI'

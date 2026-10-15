@@ -3,17 +3,16 @@
  * Windows cannot replace a running file, and creating a symlink needs Developer Mode or a privilege.
  *
  *   %USERPROFILE%\.harness\
- *     bin\harness.cmd, bin\harness-launch.exe
+ *     bin\harness.exe, bin\harness-launch.exe
  *     cli\<version>\cli.js, notify.mjs, package.json
  *     cli\current              the version in use: one line, one folder name
  *     cli\notify.mjs           the stable copy that hook command lines name (B4)
  *     runtime\current-node     node.exe's full path, as on a Mac (managedNodePath)
  *     runtime\pty\current-pty  the pty host's version folder (ptyHost/launch.ts currentPtyVersion)
  *
- * install.ps1 and the updater (B3) write these files. harness.cmd, harness-launch.exe (pty/src/launcher.rs) and
- * the desktop app read them. The pointer readers in Node and in Rust (harness-launch.exe) apply the rules this file
- * applies: one segment, resolved inside its root. harness.cmd cannot do the containment check in cmd; it relies on
- * `if not exist` checks of the files the pointers resolve to.
+ * install.ps1 and the updater (B3) write these files. harness.exe (pty/src/command.rs), harness-launch.exe
+ * (pty/src/launcher.rs) and the desktop app read them. The pointer readers in Node and in Rust (both programs share
+ * launcher::resolve) apply the rules this file applies: one segment, resolved inside its root.
  */
 import { existsSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { join, sep } from 'node:path'
@@ -68,8 +67,8 @@ const ATTEMPTS = 5
 
 /**
  * Point `<root>\<name>` at [value] by writing a temporary file and renaming it over the old one. A reader sees
- * either the old pointer or the new one, never half of one. The line ends in CRLF with no BOM: harness.cmd reads
- * it with `set /p`, which would keep a BOM as part of the value.
+ * either the old pointer or the new one, never half of one. The line ends in CRLF with no BOM: the Rust reader
+ * (pty/src/launcher.rs) would keep a BOM as part of the value.
  */
 export function writePointer(root: string, name: string, value: string, fs: PointerFs = defaultFs): void {
   if (!isSingleSegment(value)) throw new Error(`a pointer names one folder, not ${JSON.stringify(value)}`)

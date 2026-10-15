@@ -1,6 +1,6 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -31,20 +31,12 @@ describe('install.ps1, as written', () => {
     expect(source).toContain('if ($HarnessScriptPath) { exit $harnessExit }')
   })
 
-  it('writes a harness.cmd that only reads the two pointers and passes the arguments through untouched', () => {
-    const template = source.slice(source.indexOf("$HarnessCmd = @'"), source.indexOf("'@", source.indexOf("$HarnessCmd = @'")))
-    expect(template).toContain('set /p HARNESS_CLI_VERSION=<"%HARNESS_ROOT%\\cli\\current"')
-    expect(template).toContain('set /p HARNESS_NODE=<"%HARNESS_ROOT%\\runtime\\current-node"')
-    expect(template.match(/%\*/g)).toHaveLength(1)
-    // The exit shares node's line and reads node's exit code through `call`, after node has run: a plain `& exit /b`
-    // hands `cmd /c` (every caller) 0, and a `%ERRORLEVEL%` read anywhere else is expanded before node starts.
-    expect(template).toMatch(/%\* & call exit \/b %%errorlevel%%\s*$/m)
-    expect(template.replace('%%errorlevel%%', '')).not.toMatch(/%errorlevel%/i)
-    expect(template).toContain('set "ERRORLEVEL="')
-    // No delayed expansion (`!`) and no parenthesised blocks: a profile folder named "Jo (work)" or with a `!`
-    // must not change what cmd parses.
-    expect(template).not.toContain('!')
-    expect(template).not.toMatch(/\)\s*$/m)
+  it('installs harness.exe, a program, as the harness command: no batch file re-parses the arguments', () => {
+    expect(source).not.toMatch(/@echo off|%\*/i)
+    expect(source).toContain("$HarnessPtyFiles = @('harness-pty.exe', 'harness-launch.exe', 'harness.exe', 'conpty.dll', 'OpenConsole.exe')")
+    expect(source).toContain("$command = Join-Path $bin 'harness.exe'")
+    // An earlier install's harness.cmd is removed, not left beside it.
+    expect(source).toContain("$old = Join-Path $bin 'harness.cmd'")
   })
 
   it('never installs hn or tmux on Windows', () => {
@@ -55,9 +47,12 @@ describe('install.ps1, as written', () => {
 const windows = process.platform === 'win32'
 const scratch: string[] = []
 const subkeys: string[] = []
+// The registry keys first: a folder a still-running program holds cannot be removed, and must not leave keys behind.
 afterAll(() => {
-  for (const dir of scratch) rmSync(dir, { recursive: true, force: true })
   for (const key of subkeys) spawnSync('reg.exe', ['delete', `HKCU\\${key}`, '/f'], { encoding: 'utf8' })
+  for (const dir of scratch) {
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* left in the temp folder */ }
+  }
 })
 
 /** Run [script] in Windows PowerShell 5.1 with the installer dot-sourced in library mode. */
@@ -165,13 +160,26 @@ describe.runIf(windows)('install.ps1 building blocks, in Windows PowerShell 5.1'
 // case on the ARM64 VM.
 describe.runIf(windows)('install.ps1, installing for real from a local manifest', { timeout: 300_000 }, () => {
   /**
+   * The real harness.exe (pty/src/command.rs), which these cases run: $HARNESS_EXE_BIN, or this tree's cargo build.
+   * Build it with `cd pty && cargo build --bin harness`.
+   */
+  function harnessExe(): Buffer {
+    const candidates = [process.env.HARNESS_EXE_BIN, ...['release', 'debug'].map((profile) => join(process.cwd(), '..', 'pty', 'target', profile, 'harness.exe'))]
+    const found = candidates.find((file): file is string => !!file && existsSync(file))
+    if (!found) throw new Error('No harness.exe: build it with `cd pty && cargo build --bin harness`, or set HARNESS_EXE_BIN.')
+    return readFileSync(found)
+  }
+
+  /**
    * A build of everything install.ps1 downloads:
    * - a Node zip of nodejs.org's shape, holding the Node running this test;
-   * - a pty zip whose four files only need to exist (nothing here runs them);
-   * - a CLI that answers `version` and echoes any other arguments as JSON.
-   * Each manifest entry names its file relative to the manifest.
+   * - a pty zip with the real harness.exe, and four files that only need to exist (nothing here runs them);
+   * - a CLI that answers `version`, waits on `wait <file>` until that file exists, and echoes any other arguments
+   *   as JSON.
+   * Each manifest entry names its file relative to the manifest. [exeSuffix] makes a harness.exe with other bytes
+   * that still runs (bytes after a program's end are ignored).
    */
-  function build(platform: string, overrides: { cliSha?: string } = {}) {
+  function build(platform: string, overrides: { cliSha?: string; exeSuffix?: string; ptyVersion?: string } = {}) {
     const dir = mkdtempSync(join(tmpdir(), 'harness-ps1-build-'))
     scratch.push(dir)
     const tar = join(process.env.SystemRoot!, 'System32', 'tar.exe')
@@ -181,8 +189,16 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
     spawnSync(tar, ['-a', '-cf', join(dir, 'node.zip'), '-C', join(dir, 'src'), archiveRoot])
     mkdirSync(join(dir, 'payload'))
     for (const name of ['harness-pty.exe', 'harness-launch.exe', 'conpty.dll', 'OpenConsole.exe']) writeFileSync(join(dir, 'payload', name), name)
-    spawnSync(tar, ['-a', '-cf', join(dir, 'pty.zip'), '-C', join(dir, 'payload'), 'harness-pty.exe', 'harness-launch.exe', 'conpty.dll', 'OpenConsole.exe'])
-    writeFileSync(join(dir, 'cli.js'), "const a = process.argv.slice(2); if (a[0] === 'version') console.log('9.8.7'); else { console.log(JSON.stringify(a)); process.exitCode = a.includes('fail') ? 7 : 0 }\n")
+    writeFileSync(join(dir, 'payload', 'harness.exe'), Buffer.concat([harnessExe(), Buffer.from(overrides.exeSuffix ?? '')]))
+    spawnSync(tar, ['-a', '-cf', join(dir, 'pty.zip'), '-C', join(dir, 'payload'), 'harness-pty.exe', 'harness-launch.exe', 'harness.exe', 'conpty.dll', 'OpenConsole.exe'])
+    writeFileSync(join(dir, 'cli.js'), [
+      "import { existsSync } from 'node:fs'",
+      'const a = process.argv.slice(2)',
+      "if (a[0] === 'version') console.log('9.8.7')",
+      "else if (a[0] === 'wait') { setInterval(() => { if (existsSync(a[1])) process.exit(0) }, 100); setTimeout(() => process.exit(9), 120000) }",
+      "else { console.log(JSON.stringify(a)); process.exitCode = a.includes('fail') ? 7 : 0 }",
+      '',
+    ].join('\n'))
     writeFileSync(join(dir, 'notify.mjs'), 'export {}\n')
     const ref = (name: string) => {
       const bytes = readFileSync(join(dir, name))
@@ -192,20 +208,20 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
     const manifest = {
       cli: { version: '9.8.7', cli: { ...cli, sha256: overrides.cliSha ?? cli.sha256 }, notify: ref('notify.mjs') },
       node: { [platform]: { version: 'v22.0.0', ...ref('node.zip'), archiveRoot } },
-      pty: { [platform]: { version: '9.8.7', ...ref('pty.zip') } },
+      pty: { [platform]: { version: overrides.ptyVersion ?? '9.8.7', ...ref('pty.zip') } },
     }
     writeFileSync(join(dir, 'install-manifest.json'), JSON.stringify(manifest, null, 2))
     return join(dir, 'install-manifest.json')
   }
 
   /**
-   * A fresh profile whose name has a space, a non-ASCII letter, a CJK character and an `&`: cmd quoting and
-   * set /p's code page are what such a name breaks.
+   * A fresh profile whose name has a space, a non-ASCII letter, a CJK character and an `&`: quoting and code pages
+   * are what such a name breaks.
    */
   function profile(): string {
     const dir = mkdtempSync(join(tmpdir(), 'harness-ps1-home-'))
     scratch.push(dir)
-    const home = join(dir, 'J\u00f6 \u65e5 & co')
+    const home = join(dir, 'Jö 日 & co')
     mkdirSync(home)
     return home
   }
@@ -217,10 +233,23 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
   }
 
   const platform = () => ps('Get-HarnessPlatform').stdout
+  const freshKey = () => {
+    const subkey = `Software\\HarnessInstallTest\\${randomUUID()}`
+    subkeys.push(subkey)
+    return subkey
+  }
+
+  /** This process's environment with [bin] first on PATH, under the name Windows gave PATH here. */
+  function withBin(bin: string): NodeJS.ProcessEnv {
+    const env = { ...process.env }
+    const name = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'Path'
+    env[name] = `${bin};${env[name] ?? ''}`
+    return env
+  }
 
   /**
    * The Path value under HKCU\<subkey>, as stored (not expanded). Not through `reg.exe query`: it prints to a pipe in
-   * the OEM code page, which turns `\u00f6` and `\u65e5` into other bytes, so the profile path would never match.
+   * the OEM code page, which turns `ö` and `日` into other bytes, so the profile path would never match.
    * PowerShell prints the value as base64 of its UTF-16 bytes, which no code page can change.
    */
   function userPathValue(subkey: string): string {
@@ -229,11 +258,15 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
     return Buffer.from(run.stdout.trim(), 'base64').toString('utf16le')
   }
 
-  it('lays the version folders, the pointers and both launchers down, and harness works through harness.cmd', () => {
+  const ticks = (file: string) => spawnSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Item -LiteralPath '${file}').LastWriteTimeUtc.Ticks`], { encoding: 'utf8' }).stdout.trim()
+
+  it('lays the version folders, the pointers and both programs down, and harness works by its full path', () => {
     const home = profile()
-    const subkey = `Software\\HarnessInstallTest\\${randomUUID()}`
-    subkeys.push(subkey)
+    const subkey = freshKey()
     const key = platform()
+    // What an earlier install wrote: a harness.cmd, which re-parsed its arguments. It must go.
+    mkdirSync(join(home, '.harness', 'bin'), { recursive: true })
+    writeFileSync(join(home, '.harness', 'bin', 'harness.cmd'), '@echo off\r\n')
     const run = install(home, build(key), subkey)
     expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0)
 
@@ -245,47 +278,71 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
     expect(JSON.parse(readFileSync(join(root, 'cli', '9.8.7', 'package.json'), 'utf8'))).toEqual({ type: 'module' })
     expect(readFileSync(join(root, 'cli', 'notify.mjs'), 'utf8')).toBe('export {}\n')
     expect(readFileSync(join(root, 'bin', 'harness-launch.exe'), 'utf8')).toBe('harness-launch.exe')
+    expect(readFileSync(join(root, 'bin', 'harness.exe')).equals(harnessExe())).toBe(true)
+    expect(existsSync(join(root, 'bin', 'harness.cmd'))).toBe(false)
     for (const name of ['harness-pty.exe', 'conpty.dll', 'OpenConsole.exe']) expect(readFileSync(join(root, 'runtime', 'pty', '9.8.7', name), 'utf8')).toBe(name)
 
-    // How a person runs it: by name, from PowerShell, in a new window (PATH from the registry, as Explorer gives it).
-    const command = join(root, 'bin', 'harness.cmd')
+    // By its full path, whose folder has a space, an `&` and letters outside the ANSI code page: from PowerShell,
+    // and from cmd, with the exit code passed back both ways.
+    const command = join(root, 'bin', 'harness.exe')
     const viaPowerShell = spawnSync('powershell.exe', ['-NoProfile', '-Command', `& '${command}' echo 'two words' '50%'; exit $LASTEXITCODE`], { encoding: 'utf8' })
     expect(viaPowerShell.stdout.trim()).toBe('["echo","two words","50%"]')
-    // And from cmd, with the exit code passed back.
+    expect(spawnSync('powershell.exe', ['-NoProfile', '-Command', `& '${command}' fail; exit $LASTEXITCODE`], { encoding: 'utf8' }).status).toBe(7)
     const viaCmd = spawnSync('cmd.exe', ['/d', '/s', '/c', `""${command}" version"`], { encoding: 'utf8', windowsVerbatimArguments: true })
     expect(viaCmd.stdout.trim()).toBe('9.8.7')
-    const failing = spawnSync('cmd.exe', ['/d', '/s', '/c', `""${command}" fail"`], { encoding: 'utf8', windowsVerbatimArguments: true })
-    expect(failing.status).toBe(7)
-    // A variable named ERRORLEVEL in the person's environment does not hide it.
-    const shadowed = spawnSync('cmd.exe', ['/d', '/s', '/c', `""${command}" fail"`], { encoding: 'utf8', windowsVerbatimArguments: true, env: { ...process.env, ERRORLEVEL: '5' } })
-    expect(shadowed.status).toBe(7)
+    expect(spawnSync('cmd.exe', ['/d', '/s', '/c', `""${command}" fail"`], { encoding: 'utf8', windowsVerbatimArguments: true }).status).toBe(7)
 
     const path = userPathValue(subkey)
     expect(path.split(';')).toContain(join(root, 'bin'))
     expect(run.stdout).toContain('harness 9.8.7 installed')
   })
 
-  it('runs again over itself: nothing downloaded twice, PATH not doubled, harness.cmd left as it is', () => {
+  it('runs again over itself: nothing downloaded twice, PATH not doubled, the programs and notify.mjs left as they are', () => {
     const home = profile()
-    const subkey = `Software\\HarnessInstallTest\\${randomUUID()}`
-    subkeys.push(subkey)
+    const subkey = freshKey()
     const manifest = build(platform())
     expect(install(home, manifest, subkey).status).toBe(0)
-    const command = join(home, '.harness', 'bin', 'harness.cmd')
-    const before = spawnSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Item -LiteralPath '${command}').LastWriteTimeUtc.Ticks`], { encoding: 'utf8' }).stdout.trim()
+    const kept = ['bin\\harness.exe', 'bin\\harness-launch.exe', 'cli\\notify.mjs'].map((name) => join(home, '.harness', name))
+    const before = kept.map(ticks)
     const again = install(home, manifest, subkey)
     expect(again.status, again.stdout).toBe(0)
     expect(again.stdout).not.toContain('Downloading')
-    const after = spawnSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Item -LiteralPath '${command}').LastWriteTimeUtc.Ticks`], { encoding: 'utf8' }).stdout.trim()
-    expect(after).toBe(before)
+    expect(kept.map(ticks)).toEqual(before)
     const path = userPathValue(subkey)
     expect(path.split(';').filter((entry) => entry === join(home, '.harness', 'bin'))).toHaveLength(1)
   })
 
+  it('replaces a harness.exe that is running, and removes the old one once it has exited', async () => {
+    const home = profile()
+    const subkey = freshKey()
+    const platformKey = platform()
+    expect(install(home, build(platformKey), subkey).status).toBe(0)
+    const bin = join(home, '.harness', 'bin')
+    const release = join(home, 'release')
+    const running = spawn(join(bin, 'harness.exe'), ['wait', release], { stdio: 'ignore' })
+    const exited = new Promise((resolve) => running.on('exit', resolve))
+    // What Copy-HarnessFile leaves of a program that was running: Replace's own name for it, or its fallback's.
+    const aside = (name: string) => /~RF.*\.TMP$/i.test(name) || name.includes('.old-')
+    // A newer terminal host, whose harness.exe has other bytes. The same version would keep its complete folder.
+    const newer = build(platformKey, { exeSuffix: 'newer', ptyVersion: '9.8.8' })
+    try {
+      const run = install(home, newer, subkey)
+      expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0)
+      expect(readFileSync(join(bin, 'harness.exe')).subarray(-'newer'.length).toString()).toBe('newer')
+      expect(spawnSync(join(bin, 'harness.exe'), ['version'], { encoding: 'utf8' }).stdout.trim()).toBe('9.8.7')
+      // The running one was renamed, as a running program can be; it cannot be deleted yet.
+      expect(readdirSync(bin).filter(aside)).toHaveLength(1)
+    } finally {
+      writeFileSync(release, '')
+      await exited
+    }
+    expect(install(home, newer, subkey).status).toBe(0)
+    expect(readdirSync(bin).filter(aside)).toEqual([])
+  })
+
   it('says, in a sentence, which step failed, and points nothing at a CLI it did not verify', () => {
     const home = profile()
-    const subkey = `Software\\HarnessInstallTest\\${randomUUID()}`
-    subkeys.push(subkey)
+    const subkey = freshKey()
     const run = install(home, build(platform(), { cliSha: '0'.repeat(64) }), subkey)
     expect(run.status).toBe(1)
     expect(run.stdout).toContain('Harness could not be installed. The step that failed: Installing the Harness CLI.')
@@ -296,63 +353,70 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
   it('reports the failure and leaves the PowerShell it was iex-ed into running', () => {
     const missing = join(tmpdir(), `harness-missing-${randomUUID()}.json`)
     // The throwaway PATH key as well: the install must fail before PATH, but if it ever did not, it lands there.
-    const subkey = `Software\\HarnessInstallTest\\${randomUUID()}`
-    subkeys.push(subkey)
+    const subkey = freshKey()
     const text = `$env:HARNESS_INSTALL_MANIFEST = '${missing}'; Get-Content -Raw -LiteralPath '${installer}' | Invoke-Expression; Write-Output "after $LASTEXITCODE"`
     const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(text, 'utf16le').toString('base64')], { encoding: 'utf8', env: { ...process.env, USERPROFILE: profile(), HARNESS_INSTALL_ENV_KEY: subkey }, timeout: 120_000 })
     expect(run.stdout).toContain('The step that failed: Reading the release manifests.')
     expect(run.stdout.trim().endsWith('after 1')).toBe(true)
   })
 
-  it('passes arguments through harness.cmd as every caller does, through cmd.exe /d /s /c: unchanged', () => {
+  it('passes arguments to the CLI exactly as cmd and Windows PowerShell 5.1 users quote them, and runs nothing else', () => {
     const home = profile()
-    const subkey = `Software\\HarnessInstallTest\\${randomUUID()}`
-    subkeys.push(subkey)
+    const subkey = freshKey()
     expect(install(home, build(platform()), subkey).status).toBe(0)
-    const command = join(home, '.harness', 'bin', 'harness.cmd')
-    // Each argument quoted the way the C runtime reads it back: in double quotes, an inner `"` as `\"`.
-    const quote = (arg: string) => `"${arg.replace(/"/g, '\\"')}"`
-    const through = (args: string[]) =>
-      spawnSync('cmd.exe', ['/d', '/s', '/c', `""${command}" ${args.map(quote).join(' ')}"`], { encoding: 'utf8', windowsVerbatimArguments: true })
-    // [what is passed, what the CLI receives]. A case cmd cannot carry is pinned here as what cmd does, and its
-    // characters are listed in the B1 notes.
-    const cases: Array<[string[], string[]]> = [
-      [['a b'], ['a b']],
-      [['a&b'], ['a&b']],
-      [['50%'], ['50%']],
-      [['x^y'], ['x^y']],
-      [['wow!'], ['wow!']],
-      [['say "hi"'], ['say "hi"']],
-      [['say "hi" 50%'], ['say "hi" 50%']],
-      [['a%%b'], ['a%%b']],
-      // Pinned as what cmd does: the caller's cmd /c expands a %name% that names a defined variable.
-      [['%OS%'], ['Windows_NT']],
+    const env = withBin(join(home, '.harness', 'bin'))
+    const work = mkdtempSync(join(tmpdir(), 'harness-ps1-args-'))
+    scratch.push(work)
+
+    // cmd: `harness <what a cmd user types>`. Quotes or `^` keep cmd's own `&`, `|`, `<`, `>` and `^` away; inside
+    // quotes `""` is a quote; `%^OS%` keeps cmd from expanding a variable. What arrives is what was meant.
+    const typed: Array<[string, string[]]> = [
+      ['"a b"', ['a b']],
+      ['"a&b"', ['a&b']],
+      ['a^&b', ['a&b']],
+      ['50%', ['50%']],
+      ['"x^y"', ['x^y']],
+      ['x^^y', ['x^y']],
+      ['wow!', ['wow!']],
+      ['%^OS%', ['%OS%']],
+      ['"say ""hi"" & echo pwned > x"', ['say "hi" & echo pwned > x']],
+      ['send agent-1 "a & b | c > d"', ['send', 'agent-1', 'a & b | c > d']],
     ]
-    for (const [args, expected] of cases) {
-      const run = through(args)
-      expect(run.status, `${JSON.stringify(args)}: ${run.stderr}`).toBe(0)
-      expect(JSON.parse(run.stdout.trim()), JSON.stringify(args)).toEqual(expected)
+    for (const [line, expected] of typed) {
+      const run = spawnSync('cmd.exe', ['/d', '/s', '/c', `"harness ${line}"`], { encoding: 'utf8', windowsVerbatimArguments: true, env, cwd: work })
+      expect(run.status, `${line}: ${run.stderr}`).toBe(0)
+      expect(JSON.parse(run.stdout.trim()), line).toEqual(expected)
     }
-    // Pinned as what cmd does (B1 notes, "characters harness.cmd cannot carry"): an inner `"` ends cmd's quoting, so
-    // the `&` after it ends the command and cmd runs the rest as a command of its own.
-    const split = through(['say "a&b"'])
-    expect(split.status).not.toBe(0)
-    expect(JSON.parse(split.stdout.trim())).toEqual(['say "a '])
-    expect(split.stderr).toContain('b\\""')
+
+    // Windows PowerShell 5.1: `harness '<text>'`. No cmd is involved at all.
+    const said: Array<[string, string[]]> = [
+      ["& harness 'a&b'", ['a&b']],
+      ["harness 'a & b | c > d' '%OS%' '50%' 'x^y' 'wow!'", ['a & b | c > d', '%OS%', '50%', 'x^y', 'wow!']],
+      // 5.1 passes an inner `"` to a program unescaped, so the program reads it as quoting: the quotes are lost,
+      // and nothing else happens. `\"` is how 5.1 users write a quote for a program; PowerShell 7.3+ needs neither.
+      ["harness 'say \"hi\" & echo pwned > x'", ['say hi & echo pwned > x']],
+      ["harness 'say \\\"hi\\\" & echo pwned > x'", ['say "hi" & echo pwned > x']],
+    ]
+    for (const [line, expected] of said) {
+      const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(`${line}; exit $LASTEXITCODE`, 'utf16le').toString('base64')], { encoding: 'utf8', env, cwd: work })
+      expect(run.status, `${line}: ${run.stderr}`).toBe(0)
+      expect(JSON.parse(run.stdout.trim()), line).toEqual(expected)
+    }
+    // Nothing ran but the CLI: no `> x` or `> d` made a file.
+    expect(readdirSync(work)).toEqual([])
   })
 
   it('installs by irm | iex under the Restricted execution policy, and harness then runs from a Restricted PowerShell', () => {
     const home = profile()
-    const subkey = `Software\\HarnessInstallTest\\${randomUUID()}`
-    subkeys.push(subkey)
+    const subkey = freshKey()
     const manifest = build(platform())
     const text = `Get-Content -Raw -LiteralPath '${installer}' | Invoke-Expression; Write-Output "after $LASTEXITCODE"`
     const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Restricted', '-EncodedCommand', Buffer.from(text, 'utf16le').toString('base64')], {
       encoding: 'utf8', env: { ...process.env, USERPROFILE: home, HARNESS_INSTALL_ENV_KEY: subkey, HARNESS_INSTALL_MANIFEST: manifest }, timeout: 300_000,
     })
     expect(run.stdout.trim().endsWith('after 0'), `${run.stdout}\n${run.stderr}`).toBe(true)
-    // The launcher is a .cmd, never a .ps1, so a Restricted PowerShell runs it.
-    const command = join(home, '.harness', 'bin', 'harness.cmd')
+    // The command is a program, never a .ps1, so a Restricted PowerShell runs it.
+    const command = join(home, '.harness', 'bin', 'harness.exe')
     const version = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Restricted', '-Command', `& '${command}' version; exit $LASTEXITCODE`], { encoding: 'utf8' })
     expect(version.status, version.stderr).toBe(0)
     expect(version.stdout.trim()).toBe('9.8.7')
