@@ -26,7 +26,7 @@ export default function Detail({ id, initial, initialComments = false }: { id: s
     <DetailNotice social={social} ready={ready} failed={page.failed} onRetry={() => void page.load()} />
     <div className={styles.split}><Viewer harness={harness} />
       <SidePanel harness={harness} social={social} ready={ready} busy={busy} panel={panel} error={page.error}
-        onClose={() => setPanel('log')} onRetry={() => void page.load()} onRemove={comment => void page.removeComment(comment)} onPost={page.postComment} />
+        onClose={() => setPanel('log')} onRetry={() => void page.load()} onEarlier={page.loadEarlier} onRemove={comment => void page.removeComment(comment)} onPost={page.postComment} />
     </div>
     {!!social.forks && <Forks id={id} count={social.forks} />}
   </main></>;

@@ -1,6 +1,6 @@
-/** Only the feed and one harness (with its social state or cover) are public. Mutations and following inventory stay authenticated. */
+/** Only the feed and one harness (with its social state, cover or earlier comments) are public. Mutations and following inventory stay authenticated. */
 export function isPublicCommunityRead(method: string, url: string): boolean {
-  return method === 'GET' && /^\/api\/community\/harnesses(?:\/[a-z0-9-]{1,80}(?:\/(?:social|cover))?)?$/.test(url.split('?')[0])
+  return method === 'GET' && /^\/api\/community\/harnesses(?:\/[a-z0-9-]{1,80}(?:\/(?:social|cover|comments))?)?$/.test(url.split('?')[0])
 }
 
 /**

@@ -6,7 +6,7 @@ import { SignIn } from './Header';
 import styles from '../community.module.css';
 
 type Props = {
-  social: SocialState; ready: boolean; busy: boolean; onRetry: () => void;
+  social: SocialState; ready: boolean; busy: boolean; onRetry: () => void; onEarlier: () => Promise<boolean>;
   onRemove: (comment: HarnessComment) => void; onPost: (body: string, clientId: string, parentId?: string) => Promise<boolean>;
 };
 
@@ -24,8 +24,18 @@ function Comment({ comment, busy, canReply, onReply, onRemove }: { comment: Harn
   </article>;
 }
 
+/** How many of the comments are shown, and a way further back: a page at a time, said when one fails. */
+function EarlierComments({ shown, total, onEarlier }: { shown: number; total: number; onEarlier: () => Promise<boolean> }) {
+  const [state, setState] = useState<'idle' | 'loading' | 'failed'>('idle');
+  const load = async () => { setState('loading'); setState(await onEarlier() ? 'idle' : 'failed'); };
+  return <p className={styles.notice}>
+    {state === 'failed' ? 'Earlier comments could not be loaded.' : `Showing the latest ${shown} of ${total} comments.`}
+    <button type="button" disabled={state === 'loading'} onClick={() => void load()}>{state === 'loading' ? 'Loading…' : state === 'failed' ? 'Retry' : 'Show earlier'}</button>
+  </p>;
+}
+
 /** The conversation under a harness: the comments, each reply under its thread, and a form to add one or reply to one. */
-export function Comments({ social, ready, busy, onRetry, onRemove, onPost }: Props) {
+export function Comments({ social, ready, busy, onRetry, onEarlier, onRemove, onPost }: Props) {
   const [draft, setDraft] = useState(''), [replyTo, setReplyTo] = useState<HarnessComment | null>(null);
   // Kept across a failed post, so a retry of the same text is recognised as the same comment.
   const requestId = useRef<string | null>(null);
@@ -39,7 +49,7 @@ export function Comments({ social, ready, busy, onRetry, onRemove, onPost }: Pro
   return <>
     {!ready && <p className={styles.notice}>Comments are unavailable right now. <button onClick={onRetry}>Retry</button></p>}
     {ready && !social.comments.length && <p className={styles.notice}>What would you make from here?</p>}
-    {ready && commentTotal(social) > social.comments.length && <p className={styles.notice}>Showing the latest {social.comments.length} of {commentTotal(social)} comments.</p>}
+    {ready && commentTotal(social) > social.comments.length && <EarlierComments shown={social.comments.length} total={commentTotal(social)} onEarlier={onEarlier} />}
     {threadComments(social.comments).map(comment => <Comment key={comment.id} comment={comment} busy={busy} canReply={social.signedIn} onReply={() => reply(comment)} onRemove={() => onRemove(comment)} />)}
     {social.signedIn ? <form className={styles.commentForm} onSubmit={event => { event.preventDefault(); void submit(); }}>
       <label htmlFor="comment">{replyTo ? `Reply to ${replyTo.authorName}` : 'Join the conversation'}</label>

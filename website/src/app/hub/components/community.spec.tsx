@@ -219,6 +219,21 @@ describe('community navigation', () => {
     expect(screen.getByRole('button', { name: 'Unlike Orbit' })).toHaveTextContent('2');
     expect(screen.getByRole('button', { name: 'Unlike Orbit' })).toBeEnabled();
   });
+  it('reads earlier comments a page at a time, and says when a page fails', async () => {
+    const latest = { id: 'c2', body: 'Latest', authorName: 'Cy', mine: false, createdAt: '2026-10-07' };
+    const earlier = { id: 'c1', body: 'Earlier', authorName: 'Bob', mine: false, createdAt: '2026-10-06' };
+    request.mockResolvedValueOnce({ harness: null, social: { ...emptySocial, comments: [latest], commentCount: 2 } });
+    render(<Detail id={sample.id} initial={sample} initialComments />);
+    await screen.findByText('Showing the latest 1 of 2 comments.');
+    request.mockRejectedValueOnce(new Error('offline'));
+    fireEvent.click(screen.getByRole('button', { name: 'Show earlier' }));
+    await screen.findByText('Earlier comments could not be loaded.');
+    request.mockResolvedValueOnce({ comments: [earlier], more: false });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await screen.findByText('Earlier');
+    expect(request).toHaveBeenLastCalledWith('harnesses/starter-orbit/comments?before=c2');
+    expect(screen.queryByText(/Showing the latest/)).not.toBeInTheDocument();
+  });
   it('counts every comment, threads replies, and lists the forks', async () => {
     const parent = { id: 'c1', body: 'First', authorName: 'Bob', mine: false, createdAt: '2026-10-06' };
     const other = { id: 'c2', body: 'Second', authorName: 'Cy', mine: false, createdAt: '2026-10-07' };

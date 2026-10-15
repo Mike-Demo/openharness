@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { communityRequest, emptySocial, CommunityError } from '@/lib/community/client';
-import { commentTotal } from '@/lib/community/comments';
+import { commentTotal, keepEarlier } from '@/lib/community/comments';
 import { putLike } from '@/lib/community/social';
 import type { HarnessComment, OpenHarness, SocialState } from '@/lib/community/types';
 import { useRefreshOnReturn } from './useRefreshOnReturn';
@@ -44,7 +44,7 @@ export function useHarnessDetail(id: string, initial: OpenHarness | null, onSign
       const data = await read();
       if (current !== revision.current) return;
       if (data.harness) { loaded.current = true; version.current = data.harness.updatedAt ?? null; setHarness(data.harness); }
-      setSocial(data.social); setReady(true); setError(''); setFailed(false);
+      setSocial(previous => ({ ...data.social, comments: keepEarlier(previous.comments, data.social.comments) })); setReady(true); setError(''); setFailed(false);
     } catch (e) {
       if (current !== revision.current) return;
       setReady(false);
@@ -97,5 +97,15 @@ export function useHarnessDetail(id: string, initial: OpenHarness | null, onSign
       return { ...value, comments: [...value.comments.filter(item => item.id !== data.comment.id), data.comment], commentCount: commentTotal(value) + (known ? 0 : 1) };
     });
   });
-  return { harness, social, ready, failed, error, busy, unavailable, load, follow, like, removeComment, postComment };
+  /** The page of comments before the oldest one here, which the page does not read at first; false when it could not be read. */
+  const loadEarlier = async (): Promise<boolean> => {
+    const oldest = social.comments[0];
+    if (!oldest) return true;
+    try {
+      const { comments } = await communityRequest<{ comments: HarnessComment[] }>(`harnesses/${id}/comments?before=${oldest.id}`);
+      setSocial(value => ({ ...value, comments: [...comments.filter(comment => !value.comments.some(known => known.id === comment.id)), ...value.comments] }));
+      return true;
+    } catch { return false; }
+  };
+  return { harness, social, ready, failed, error, busy, unavailable, load, follow, like, removeComment, postComment, loadEarlier };
 }

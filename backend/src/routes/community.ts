@@ -107,14 +107,24 @@ async function authorName(userId: string): Promise<string> {
 
 type Publication = NonNullable<Awaited<ReturnType<typeof publication>>>
 
+/** Comments a read sends at once: the latest with a harness's social state, and each earlier page. */
+export const commentPageSize = 100
+
+type CommentRow = { id: string; body: string; authorName: string; createdAt: Date; parentId: string | null; parentAuthorName: string | null; userId: string }
+
+/** One comment as a reader sees it: whether its harness's creator wrote it, and whether this reader may delete it. */
+export function commentView(row: CommentRow, authorId: string, userId?: string) {
+  return { id: row.id, body: row.body, authorName: row.authorName, createdAt: row.createdAt, parentId: row.parentId, parentAuthorName: row.parentAuthorName, creator: row.userId === authorId, mine: row.userId === userId || authorId === userId }
+}
+
 async function socialState(post: Publication, autonomousEnv: string, userId: string | undefined) {
   const harnessId = post.id
   const [likes, liked, comments, follow, commentCount, forks] = await Promise.all([
     prisma.communityLike.count({ where: { autonomousEnv, harnessId } }),
     userId ? prisma.communityLike.findUnique({ where: { autonomousEnv_harnessId_userId: { autonomousEnv, harnessId, userId } } }) : null,
-    prisma.communityComment.findMany({ where: { autonomousEnv, harnessId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: 100 }),
+    prisma.communityComment.findMany({ where: { autonomousEnv, harnessId }, orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], take: commentPageSize }),
     userId ? prisma.communityFollow.findUnique({ where: { autonomousEnv_authorId_userId: { autonomousEnv, authorId: post.authorId, userId } } }) : null,
-    // The comments above are the latest 100; these say how many there are in all, and how many public forks.
+    // The comments above are the latest page (routes/communityComments.ts reads earlier ones); these say how many there are in all, and how many public forks.
     prisma.communityComment.count({ where: { autonomousEnv, harnessId } }),
     prisma.communityHarness.count({ where: { autonomousEnv, deletedAt: null, forkedFrom: harnessId } }),
   ])
@@ -122,11 +132,11 @@ async function socialState(post: Publication, autonomousEnv: string, userId: str
     likes, liked: !!liked, following: !!follow, signedIn: !!userId, mine: post.authorId === userId, commentCount, forks,
     // When its author last edited it: a page drawn before then reads the publication again.
     updatedAt: 'updatedAt' in post ? post.updatedAt : null,
-    comments: comments.reverse().map(row => ({ id: row.id, body: row.body, authorName: row.authorName, createdAt: row.createdAt, parentId: row.parentId, parentAuthorName: row.parentAuthorName, creator: row.userId === post.authorId, mine: row.userId === userId || post.authorId === userId })),
+    comments: comments.reverse().map(row => commentView(row, post.authorId, userId)),
   }
 }
 
-async function publication(id: string, autonomousEnv: string) {
+export async function publication(id: string, autonomousEnv: string) {
   if (communityStarters.has(id)) return { id, authorId: communityStarterAuthor, authorName: 'Harness', credits: [] }
   return prisma.communityHarness.findFirst({ where: { id, autonomousEnv, deletedAt: null } })
 }
@@ -258,7 +268,7 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
     if (!existing && await prisma.communityComment.count({ where: { autonomousEnv, userId, createdAt: { gt: new Date(Date.now() - 60_000) } } }) >= 10)
       return sendError(reply, 'Please wait before adding another comment.', 'RATE_LIMITED', 429)
     const row = existing ?? await prisma.communityComment.upsert({ where: { autonomousEnv_harnessId_userId_clientId: key }, create: { ...key, body: req.body.body, authorName: await authorName(userId), parentId: parent?.id, parentAuthorName: parent?.authorName }, update: {} })
-    sendSuccess(reply, { comment: { id: row.id, body: row.body, authorName: row.authorName, createdAt: row.createdAt, parentId: row.parentId, parentAuthorName: row.parentAuthorName, creator: row.userId === post.authorId, mine: true } })
+    sendSuccess(reply, { comment: commentView(row, post.authorId, userId) })
   })
 
   const commentParams = params.extend({ commentId: z.string().uuid() })

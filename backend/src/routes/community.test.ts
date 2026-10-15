@@ -76,6 +76,7 @@ const db = vi.hoisted(() => {
 })
 vi.mock('../lib/prisma.js', () => ({ prisma: db }))
 import { communityRoutes, publicationSchema } from './community.js'
+import { communityCommentRoutes } from './communityComments.js'
 import { communityEditRoutes, resetEditRateLimits } from './communityEdit.js'
 import { registerAuthMiddleware } from '../middlewares/authMiddleware.js'
 import { errorHandler } from '../middlewares/errorHandler.js'
@@ -100,7 +101,7 @@ beforeEach(async () => {
     if (!['alice', 'bob'].includes(token)) throw new Error('Invalid token')
     return { sub: token, email: `${token}@example.com`, role: 'user', autonomousEnv }
   })
-  await app.register(communityRoutes); await app.register(communityEditRoutes); await app.ready()
+  await app.register(communityRoutes); await app.register(communityEditRoutes); await app.register(communityCommentRoutes); await app.ready()
 })
 afterEach(async () => app.close())
 
@@ -190,7 +191,8 @@ describe('publications and access', () => {
     for (const [method, path, payload] of [['POST', 'harnesses', sample], ['PUT', `harnesses/${starter}/like`, { liked: true }], ['POST', `harnesses/${starter}/comments`, { body: 'Hi', clientId: crypto.randomUUID() }], ['PUT', 'creators/harness/follow', { following: true }], ['DELETE', `harnesses/${starter}`, undefined]] as const)
       expect((await call(method, path, undefined, payload)).statusCode).toBe(401)
     expect(isPublicCommunityRead('POST', '/api/community/harnesses')).toBe(false)
-    expect(isPublicCommunityRead('GET', '/api/community/harnesses/x/comments')).toBe(false)
+    expect(isPublicCommunityRead('POST', '/api/community/harnesses/x/comments')).toBe(false)
+    expect(isPublicCommunityRead('GET', '/api/community/harnesses/x/like')).toBe(false)
     expect((await call('GET', 'harnesses?following=true')).statusCode).toBe(401)
     expect((await call('GET', 'harnesses', 'forged')).statusCode).toBe(401)
     expect((await call('GET', 'harnesses', undefined, undefined, 'invalid')).statusCode).toBe(400)
@@ -434,6 +436,23 @@ describe('persistent social actions', () => {
     expect(updatedAt).toBe((await call('GET', `harnesses/${id}`)).json().data.harness.updatedAt)
     expect(updatedAt).toEqual(expect.any(String))
     expect((await call('GET', `harnesses/${starter}/social`)).json().data.social.updatedAt).toBeNull()
+  })
+  it('reads further back than the latest hundred comments, a page at a time, to anyone', async () => {
+    const id = await publish('alice')
+    for (let i = 0; i < 250; i++) db.communityComment.rows.push({ id: crypto.randomUUID(), createdAt: new Date(Date.now() + i * 1000), autonomousEnv: 'prod', harnessId: id, userId: i % 2 ? 'bob' : 'carol', authorName: 'Someone', body: `${i}`, clientId: crypto.randomUUID() })
+    const latest = (await call('GET', `harnesses/${id}/social`, 'bob')).json().data.social.comments
+    expect(latest.map((comment: { body: string }) => comment.body)).toEqual(Array.from({ length: 100 }, (_, i) => `${150 + i}`))
+    const earlier = (await call('GET', `harnesses/${id}/comments?before=${latest[0].id}`, 'bob')).json().data
+    expect(earlier.comments.map((comment: { body: string }) => comment.body)).toEqual(Array.from({ length: 100 }, (_, i) => `${50 + i}`))
+    expect(earlier.more).toBe(true)
+    expect(earlier.comments.find((comment: { body: string }) => comment.body === '51')).toMatchObject({ mine: true, creator: false })
+    expect(earlier.comments.find((comment: { body: string }) => comment.body === '50')).toMatchObject({ mine: false })
+    expect(isPublicCommunityRead('GET', `/api/community/harnesses/${id}/comments?before=${earlier.comments[0].id}`)).toBe(true)
+    const first = await call('GET', `harnesses/${id}/comments?before=${earlier.comments[0].id}`)
+    expect(first.json().data.comments).toHaveLength(50); expect(first.json().data.more).toBe(false)
+    expect(first.headers['cache-control']).toBe('no-store')
+    expect((await call('GET', `harnesses/${id}/comments?before=${crypto.randomUUID()}`)).json().data).toEqual({ comments: [], more: false })
+    expect((await call('GET', `harnesses/${id}/comments`)).statusCode).toBe(400)
   })
   it('sends a harness page only its output when asked', async () => {
     const payload = { ...sample, files: [...sample.files, { path: 'src/app.js', content: 'console.log(1)' }] }
