@@ -49,6 +49,8 @@ model CommunityLike {
 
   @@unique([autonomousEnv, harnessId, userId])
   @@index([autonomousEnv, harnessId])
+  // A trending feed reads only the last week's likes.
+  @@index([autonomousEnv, createdAt])
   @@map("community_likes")
 }
 
