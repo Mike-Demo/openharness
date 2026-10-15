@@ -3776,7 +3776,11 @@ class NewHarnessController extends ChangeNotifier {
       // goes into it rather than making a second one beside it.
       if (!checking && attempt.preparedFolder != null) {
         _recoveredWorktreePreference = launchedWorktree;
-        _project = NewHarnessProject.folder(attempt.preparedFolder!);
+        _project = NewHarnessProject.folder(
+          attempt.preparedFolder!,
+          // A picked worktree prepared in place is still the one picked.
+          exact: _project.exact && attempt.preparedFolder == _project.folder,
+        );
         _gitKey = (_machineId, _project.folder, isTerminal);
         _worktree = false;
         _branchRef = null;

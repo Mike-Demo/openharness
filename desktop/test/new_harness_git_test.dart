@@ -769,6 +769,41 @@ void main() {
     );
   });
 
+  test('a refused launch in a browsed worktree retries there', () async {
+    const folder = '/harnesses/worktrees/repo/feature';
+    final connection = _Connection()
+      ..answers[folder] = {
+        ...linked('feature'),
+        'branches': [
+          {'ref': 'refs/heads/main', 'name': 'main', 'worktree': '/repo'},
+          {'ref': 'refs/heads/feature', 'name': 'feature', 'worktree': folder},
+        ],
+      }
+      ..failure = {
+        'preparedFolder': folder,
+        'failure': {'code': 'TMUX_UNAVAILABLE'},
+      };
+    final app = createApp(
+      connectionForTest: (_) => connection,
+      connected: true,
+    );
+    final box = NewHarnessController(app, machineId: 'm', engine: 'codex')
+      ..useDesktopChoices(true);
+    addTearDown(app.dispose);
+    addTearDown(box.dispose);
+    await settle();
+    box.setFolder(folder);
+    await settle();
+    expect(await box.create(), NewHarnessOutcome.failed);
+    await settle();
+    expect(box.project.folder, folder);
+    expect(box.inWorktree, true);
+    expect(box.canUseWorktree, false);
+    connection.failure = null;
+    expect(await box.create(), NewHarnessOutcome.created);
+    expect(connection.starts.last, containsPair('gitSource', folder));
+  });
+
   test('a refused launch in a new worktree retries on its branch', () async {
     const prepared = '/harnesses/worktrees/repo/codex-0922-1136';
     final connection = _Connection()

@@ -278,6 +278,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
     _engine = draft.engine;
     _permissionMode = draft.permissionMode;
     _folder = draft.folder;
+    _exactFolder = draft.exactFolder;
     _project = draft.project;
     _projectLabel = draft.projectLabel;
     _worktree = draft.worktree ?? false;
@@ -309,6 +310,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
       engine: _engine,
       permissionMode: _permissionMode,
       folder: _folder,
+      exactFolder: _exactFolder,
       project: _project,
       projectLabel: _projectLabel,
       worktree: _worktree,
@@ -388,12 +390,14 @@ class _NewAgentPageState extends State<NewAgentPage> {
   /// something to interrupt a half-filled form about — the section simply does
   /// not appear, and everything else on the page still works. Start is where
   /// it matters, and Start waits for this answer: see [_gitSettled].
-  Future<void> _loadGit(String folder, {bool exact = false}) =>
-      _gitRead = _readGit(folder, exact: exact);
+  Future<void> _loadGit(String folder) => _gitRead = _readGit(folder);
 
-  /// [_loadGit]'s read, which it keeps in [_gitRead]. [exact]: the person browsed to this very
-  /// folder, so a worktree stays itself.
-  Future<void> _readGit(String folder, {bool exact = false}) async {
+  /// The folder the person browsed to: a worktree there stays itself, on every read of it.
+  String? _exactFolder;
+
+  /// [_loadGit]'s read, which it keeps in [_gitRead].
+  Future<void> _readGit(String folder) async {
+    final exact = folder == _exactFolder;
     final machineId = _machineId;
     setState(() {
       _gitLoading = true;
@@ -643,7 +647,8 @@ class _NewAgentPageState extends State<NewAgentPage> {
       _projectLabel = null;
       _error = null;
     });
-    unawaited(_loadGit(chosen, exact: true));
+    _exactFolder = chosen;
+    unawaited(_loadGit(chosen));
   }
 
   /// Waits for the Git answer about the folder Start is about to use, and says whether Start may go

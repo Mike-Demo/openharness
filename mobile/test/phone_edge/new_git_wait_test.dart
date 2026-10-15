@@ -232,6 +232,12 @@ void main() {
     await tester.tap(find.byType(FilledButton));
     await frames(tester);
     expect(conn.reads.last.path, worktree);
+    // The computer did not answer: Start reads the browsed folder again, still as itself.
+    conn.reads.last.answer.complete({'error': 'UNAVAILABLE'});
+    await frames(tester);
+    await tapInView(tester, find.text('Start'));
+    await frames(tester);
+    expect(conn.reads.last.path, worktree);
     conn.reads.last.answer.complete({
       ..._repository(worktree),
       'branch': 'silent-beacon',
@@ -251,10 +257,6 @@ void main() {
         },
       ],
     });
-    await frames(tester);
-    expect(find.text('silent-beacon', findRichText: true), findsWidgets);
-
-    await tapInView(tester, find.text('Start'));
     await frames(tester, count: 20);
     final payload = conn.created.single;
     expect(payload['gitSource'], worktree);
