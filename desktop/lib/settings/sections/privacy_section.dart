@@ -34,10 +34,13 @@ class PrivacySection extends StatelessWidget {
           : ProductUsagePreference(
               key: ObjectKey(notifier.api),
               request: ({bool? enabled}) async {
-                final value = await notifier.api.productUsageSettings(
+                final value = await notifier.productUsageSettings(
                   enabled: enabled,
                 );
-                notifier.productMeasurement.savedChoice(value);
+                notifier.productMeasurement.savedChoice(
+                  value,
+                  explicit: enabled != null,
+                );
                 await notifier.productMeasurement.setupChoiceSaved;
                 return value;
               },

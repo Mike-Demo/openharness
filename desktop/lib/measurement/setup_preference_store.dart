@@ -2,6 +2,7 @@ import 'dart:io';
 
 import '../core/harness_file_store.dart';
 import '../core/local_key_value_store.dart';
+import 'product_measurement.dart';
 
 /// One local preference, without identifiers or activity. Unlike a disposable
 /// cache, an unreadable file must throw so the collector can keep sharing off.
@@ -27,7 +28,9 @@ class SetupPreferenceStore implements LocalKeyValueStore {
 
   @override
   Future<void> write(String key, String value) async {
-    if (value != 'true' && value != 'false') {
+    if (value != 'true' &&
+        value != 'false' &&
+        value != ProductMeasurement.pendingSetupOptOut) {
       throw const FormatException('Invalid setup sharing preference');
     }
     await file.parent.create(recursive: true);

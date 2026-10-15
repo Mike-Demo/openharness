@@ -52,7 +52,7 @@ class _SetupUsageChoiceState extends State<SetupUsageChoice> {
         footer: _error == null
             ? const Text(
                 'Applies to this computer before sign-in and is remembered for future launches. '
-                'After sign-in, your account’s Privacy setting applies.',
+                'Turning this off also disables sharing for your account when you sign in.',
               )
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

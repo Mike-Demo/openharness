@@ -24,9 +24,11 @@ automatically proven improvement. Changes still need review, tests and a deliber
 
 Desktop setup and sign-in counts are enabled by default, with no onboarding checkbox. Users can
 turn them off in **Settings → Privacy → Share product usage data**, including before sign-in through
-the app menu. A single local boolean remembers the preference across launches; reporting waits for
+the app menu. Local booleans remember the preference and a pending opt-out across launches; reporting waits for
 that preference to load and stays off if it cannot be read. The confirmed account preference takes
-over after sign-in and is remembered for the next signed-out launch. Turning sharing off discards
+over after sign-in and is remembered for the next signed-out launch. An explicit Settings opt-out
+before sign-in is applied to the account before Desktop sharing can resume; failures keep it pending
+and reporting off. An account's default-on response cannot erase that pending choice. Turning sharing off discards
 queued counts and open observations. It does not retract a request already sent.
 The phone retains its separate, off-by-default **Share setup and sign-in counts** choice for each
 app session. Neither native setup transport sends credentials/cookies or replays earlier actions.
@@ -79,7 +81,7 @@ it cannot reliably detect an idle freeze. Error hooks pass only framework/async 
 Desktop RSS and gateway RSS/CPU sample once per minute; they describe those processes, not the
 whole machine or agents. Sampling adds no core timer, process enumeration, or subprocess.
 
-Desktop keeps one setup-sharing preference boolean, plus the last sharing-enabled run's version, clean-exit/update flags, choice
+Desktop keeps its setup-sharing preference and pending opt-out booleans, plus the last sharing-enabled run's version, clean-exit/update flags, choice
 revision and a local-only account-scope hash. One serialized asynchronous write plus one latest
 pending value bounds disk work. It is cleared on sign-out/off and never enters a report. An unclean
 run can mean a force quit or power loss, and only becomes observable if the app returns. Update

@@ -25,7 +25,7 @@ void main() {
   }
 
   test(
-    'a new installation defaults on and stores only an opt-out boolean',
+    'a new installation defaults on and stores only privacy flags',
     () async {
       final first = await open();
       expect(first.signedOutSharing, isTrue);
@@ -33,7 +33,7 @@ void main() {
       await first.setSignedOutSharing(false);
       expect(
         await SetupPreferenceStore(directory: directory).file.readAsString(),
-        'false',
+        ProductMeasurement.pendingSetupOptOut,
       );
       expect((await open()).signedOutSharing, isFalse);
       expect(await directory.list().length, 1);

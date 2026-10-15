@@ -90,11 +90,16 @@ class ProductMeasurement extends ChangeNotifier {
   final String Function() _receipt;
   bool signedOutSharing = false, choiceLoaded = false;
   static const setupPreferenceKey = 'product_setup_sharing';
+  static const pendingSetupOptOut =
+      '{"enabled":false,"accountOptOutPending":true}';
   final LocalKeyValueStore? _setupStorage;
   late final Future<void> setupChoiceReady;
   Future<void>? _setupSave;
   Future<void> get setupChoiceSaved => _setupSave ?? Future<void>.value();
-  bool? _persistedSetupChoice;
+  String? _persistedSetupChoice;
+  bool _accountOptOutPending = false;
+  bool get accountOptOutPending =>
+      surface == 'desktop' && _accountOptOutPending;
   int _setupChoiceGeneration = 0;
   bool _disposed = false;
   Object? _account;
@@ -111,7 +116,11 @@ class ProductMeasurement extends ChangeNotifier {
   final _setup = <ProductFlow, void Function(ProductOutcome)>{};
   final _setupFacts = <ProductFlow, String>{};
 
-  bool get sharing => _account != null && _enabled == true;
+  bool get sharing =>
+      _account != null &&
+      _enabled == true &&
+      (surface != 'desktop' || choiceLoaded) &&
+      !accountOptOutPending;
   bool get _setupAllowed =>
       surface != 'web' &&
       (!healthEnabled || context!.production) &&
@@ -128,18 +137,28 @@ class ProductMeasurement extends ChangeNotifier {
       value = await storage.read(setupPreferenceKey);
     } catch (_) {
       // An unreadable preference must not turn a saved opt-out back on.
-      value = 'false';
+      value = pendingSetupOptOut;
     }
     if (_disposed || generation != _setupChoiceGeneration) return;
-    _persistedSetupChoice = value == null ? null : value == 'true';
+    _persistedSetupChoice = value;
+    _accountOptOutPending =
+        value != null && value != 'true' && value != 'false';
     signedOutSharing = value == null ? surface == 'desktop' : value == 'true';
     choiceLoaded = true;
     _observeSetupFacts();
     notifyListeners();
   }
 
-  Future<void> setSignedOutSharing(bool enabled) async {
+  Future<void> setSignedOutSharing(
+    bool enabled, {
+    bool fromAccount = false,
+  }) async {
     _setupChoiceGeneration++;
+    _accountOptOutPending = surface == 'desktop' && !enabled && !fromAccount;
+    if (accountOptOutPending) {
+      _accountEpoch++;
+      _clear('ui');
+    }
     if (signedOutSharing != enabled || !choiceLoaded) {
       _guestEpoch++;
       signedOutSharing = enabled;
@@ -151,6 +170,9 @@ class ProductMeasurement extends ChangeNotifier {
     }
     final storage = _setupStorage;
     if (storage == null) return;
+    final value = accountOptOutPending
+        ? pendingSetupOptOut
+        : enabled.toString();
     // Serialize rapid changes so an older write cannot restore sharing after off.
     final previous = _setupSave;
     final saving = () async {
@@ -159,8 +181,8 @@ class ProductMeasurement extends ChangeNotifier {
           await previous;
         } catch (_) {}
       }
-      await storage.write(setupPreferenceKey, enabled.toString());
-      _persistedSetupChoice = enabled;
+      await storage.write(setupPreferenceKey, value);
+      _persistedSetupChoice = value;
     }();
     _setupSave = saving;
     await saving;
@@ -191,9 +213,13 @@ class ProductMeasurement extends ChangeNotifier {
   }
 
   /// A saved switch applies immediately in this app, even while a report is in flight.
-  void savedChoice(Map<String, dynamic> value) {
+  void savedChoice(Map<String, dynamic> value, {bool explicit = false}) {
     final enabled = value['enabled'], revision = value['revision'];
     if (enabled is! bool || revision is! int || revision < 0) {
+      _enabled = null;
+      return;
+    }
+    if (surface == 'desktop' && !choiceLoaded && enabled && !explicit) {
       _enabled = null;
       return;
     }
@@ -204,12 +230,20 @@ class ProductMeasurement extends ChangeNotifier {
     _revision = revision;
     _enabled = enabled;
     if (surface == 'desktop' &&
+        (!accountOptOutPending || !enabled || explicit) &&
         (signedOutSharing != enabled ||
             !choiceLoaded ||
-            (_setupStorage != null && _persistedSetupChoice != enabled))) {
+            accountOptOutPending ||
+            (_setupStorage != null &&
+                _persistedSetupChoice != enabled.toString()))) {
       // Remember the confirmed account choice for the next signed-out launch.
       // Persistence failure never restores the in-memory sharing it just stopped.
-      unawaited(setSignedOutSharing(enabled).catchError((Object _) {}));
+      unawaited(
+        setSignedOutSharing(
+          enabled,
+          fromAccount: true,
+        ).catchError((Object _) {}),
+      );
     }
     if (!enabled) {
       _guestEpoch++;
@@ -460,6 +494,7 @@ class ProductMeasurement extends ChangeNotifier {
   });
 
   Future<void> _flush() async {
+    if (!choiceLoaded) await setupChoiceReady;
     if (_disposed) return;
     _lastAttempt = _now();
     for (final ticket in _expires.keys.toList()) {

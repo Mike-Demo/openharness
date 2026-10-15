@@ -104,7 +104,10 @@ void main() {
       await first.flush();
       first.dispose();
       expect(setup, isEmpty);
-      expect(store.values, {ProductMeasurement.setupPreferenceKey: 'false'});
+      expect(store.values, {
+        ProductMeasurement.setupPreferenceKey:
+            ProductMeasurement.pendingSetupOptOut,
+      });
       final next = withStore(store);
       await next.setupChoiceReady;
       next.begin(ProductFlow.signIn)(ProductOutcome.ok);
@@ -155,6 +158,44 @@ void main() {
     local.dispose();
   });
 
+  test('default-on account lookup waits for the persisted opt-out', () async {
+    final store = _DelayedSetupStore();
+    final local = withStore(store);
+    var reads = 0;
+    local.account(
+      'PRIVATE_ACCOUNT',
+      choice: () async {
+        reads++;
+        return {'enabled': true, 'revision': 0};
+      },
+      send: (_) async => throw StateError('No account report expected'),
+    );
+    final flushing = local.flush();
+    expect(reads, 0);
+    local.savedChoice({'enabled': true, 'revision': 0});
+    expect(local.sharing, isFalse);
+    store.loaded.complete(ProductMeasurement.pendingSetupOptOut);
+    await flushing;
+    expect(local.accountOptOutPending, isTrue);
+    expect(local.sharing, isFalse);
+    expect(local.signedOutSharing, isFalse);
+    local.dispose();
+    expect(setup, isEmpty);
+  });
+
+  test(
+    'local opt-out clears account observations before any re-enable',
+    () async {
+      await account();
+      final finish = usage.begin(ProductFlow.remoteConnect);
+      await usage.setSignedOutSharing(false);
+      finish(ProductOutcome.ok);
+      await usage.setSignedOutSharing(true);
+      await usage.flush();
+      expect(reports, isEmpty);
+    },
+  );
+
   test(
     'unreadable and malformed local preferences do not enable sharing',
     () async {
@@ -186,7 +227,10 @@ void main() {
         local.setSignedOutSharing(false),
       ]);
       local.dispose();
-      expect(store.values, {ProductMeasurement.setupPreferenceKey: 'false'});
+      expect(store.values, {
+        ProductMeasurement.setupPreferenceKey:
+            ProductMeasurement.pendingSetupOptOut,
+      });
     },
   );
   test(

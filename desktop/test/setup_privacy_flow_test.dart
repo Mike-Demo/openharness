@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harness/app_shell.dart';
+import 'package:harness/api/api_client.dart';
 import 'package:harness/auth/auth_session.dart';
 import 'package:harness/core/config.dart';
 import 'package:harness/measurement/product_measurement.dart';
@@ -27,6 +28,23 @@ class _FailingWriteStore extends MemoryKeyValueStore {
   }
 }
 
+class _PreferenceApi extends ApiClient {
+  _PreferenceApi()
+    : super(
+        config: AppConfig.dev,
+        session: AuthSession(storage: MemoryKeyValueStore()),
+      );
+  final writes = <bool?>[];
+  bool fail = true, enabled = true;
+  @override
+  Future<Map<String, dynamic>> productUsageSettings({bool? enabled}) async {
+    writes.add(enabled);
+    if (fail) throw StateError('PRIVATE_CANARY');
+    if (enabled != null) this.enabled = enabled;
+    return {'enabled': this.enabled, 'revision': 1};
+  }
+}
+
 void main() {
   final capture = Platform.environment['HARNESS_SETUP_CHOICE_CAPTURE_DIR'];
   setUpAll(() async {
@@ -40,6 +58,84 @@ void main() {
     buildNumber: '80',
     buildSignature: '',
   );
+
+  test('pre-sign-in opt-out survives relaunch and applies to the account before reports', () async {
+    final store = MemoryKeyValueStore();
+    final first = ProductMeasurement(
+      surface: 'desktop',
+      automatic: false,
+      setupStorage: store,
+      sendSetup: (_) async => {},
+    );
+    await first.setupChoiceReady;
+    await first.setSignedOutSharing(false);
+    first.dispose();
+    final usage = ProductMeasurement(
+      surface: 'desktop',
+      automatic: false,
+      setupStorage: store,
+      sendSetup: (_) async => throw StateError('No setup report expected'),
+    );
+    final api = _PreferenceApi();
+    final app = AppNotifier(
+      config: AppConfig.dev,
+      authSession: AuthSession(storage: MemoryKeyValueStore()),
+      productMeasurement: usage,
+    )..api = api;
+    addTearDown(app.dispose);
+    usage.account(
+      'synthetic-account',
+      choice: () => app.productUsageSettings(),
+      send: (_) async => throw StateError('No account report expected'),
+    );
+    await usage.flush();
+    expect(api.writes, [false]);
+    expect(usage.accountOptOutPending, isTrue);
+    expect(usage.sharing, isFalse);
+    api.fail = false;
+    await usage.flush();
+    await usage.setupChoiceSaved;
+    expect(api.writes, [false, false]);
+    expect(usage.accountOptOutPending, isFalse);
+    expect(usage.sharing, isFalse);
+    expect(store.values, {ProductMeasurement.setupPreferenceKey: 'false'});
+    await usage.flush();
+    expect(
+      api.writes.last,
+      isNull,
+    ); // The confirmed opt-out is not posted on every poll.
+  });
+
+  test('an account default cannot erase pending opt-out; an explicit Settings opt-in can', () async {
+    final store = MemoryKeyValueStore();
+    final usage = ProductMeasurement(
+      surface: 'desktop',
+      automatic: false,
+      setupStorage: store,
+      sendSetup: (_) async => {},
+    );
+    addTearDown(usage.dispose);
+    await usage.setupChoiceReady;
+    await usage.setSignedOutSharing(false);
+    usage.account(
+      'synthetic-account',
+      choice: () async => {'enabled': true, 'revision': 0},
+      send: (_) async => {},
+    );
+    await usage.flush();
+    expect(usage.sharing, isFalse);
+    expect(usage.signedOutSharing, isFalse);
+    expect(usage.accountOptOutPending, isTrue);
+    expect(store.values, {
+      ProductMeasurement.setupPreferenceKey:
+          ProductMeasurement.pendingSetupOptOut,
+    });
+    usage.savedChoice({'enabled': true, 'revision': 0}, explicit: true);
+    await usage.setupChoiceSaved;
+    expect(usage.sharing, isTrue);
+    expect(usage.accountOptOutPending, isFalse);
+    expect(store.values, {ProductMeasurement.setupPreferenceKey: 'true'});
+  });
 
   for (final status in [
     AppStatus.unauthenticated,
@@ -97,7 +193,10 @@ void main() {
         await tester.tap(find.byType(Switch));
         await tester.pumpAndSettle();
         expect(usage.signedOutSharing, isFalse);
-        expect(store.values, {ProductMeasurement.setupPreferenceKey: 'false'});
+        expect(store.values, {
+          ProductMeasurement.setupPreferenceKey:
+              ProductMeasurement.pendingSetupOptOut,
+        });
         await captureWindow(tester, capture, 'privacy-${status.name}-off');
         await tester.tap(find.byKey(const Key('settings-back-button')));
         await tester.pump(const Duration(milliseconds: 100));
@@ -136,7 +235,10 @@ void main() {
     await tester.tap(find.text('Retry saving'));
     await tester.pumpAndSettle();
     expect(usage.signedOutSharing, isFalse);
-    expect(store.values, {ProductMeasurement.setupPreferenceKey: 'false'});
+    expect(store.values, {
+      ProductMeasurement.setupPreferenceKey:
+          ProductMeasurement.pendingSetupOptOut,
+    });
     expect(find.text('Retry saving'), findsNothing);
     await tester.pumpWidget(const SizedBox.shrink());
     usage.dispose();
