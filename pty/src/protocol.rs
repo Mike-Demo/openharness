@@ -84,6 +84,26 @@ pub struct Hello {
     pub role: Role,
     #[serde(rename = "clientId")]
     pub client_id: String,
+    /// 32 random bytes as 64 hex digits. The reply's `proof` answers it, so the client knows the
+    /// endpoint is the host whose token it read (and not a process squatting on the name).
+    #[serde(default)]
+    pub nonce: Option<String>,
+}
+
+/// The hello reply's `proof` for a client's `nonce`: hex SHA-256 of the token's bytes, a zero
+/// byte, and the nonce's (hex) characters.
+pub fn hello_proof(token: &str, nonce: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(token.as_bytes());
+    hash.update([0]);
+    hash.update(nonce.as_bytes());
+    hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Whether `nonce` is what a client must send: 64 hex digits.
+pub fn valid_nonce(nonce: &str) -> bool {
+    nonce.len() == 64 && nonce.bytes().all(|b| b.is_ascii_hexdigit())
 }
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -225,6 +245,20 @@ mod tests {
         assert_eq!(h.hello.protocol, PROTOCOL);
         assert_eq!(h.hello.role, Role::Stream);
         assert_eq!(h.hello.client_id, "c");
+    }
+    #[test]
+    fn the_hello_proof_is_sha256_of_token_zero_nonce() {
+        use sha2::{Digest, Sha256};
+        let nonce = "ab".repeat(32);
+        let want: String = Sha256::digest(format!("tok\0{nonce}").as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(hello_proof("tok", &nonce), want);
+        assert_ne!(hello_proof("tok2", &nonce), want);
+        assert!(valid_nonce(&nonce));
+        assert!(!valid_nonce("ab"));
+        assert!(!valid_nonce(&"zz".repeat(32)));
     }
     #[test]
     fn kill_defaults_grace() {

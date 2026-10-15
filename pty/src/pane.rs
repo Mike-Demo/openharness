@@ -292,13 +292,27 @@ pub struct Pane {
     sink: Sender<(String, PaneEvent)>,
 }
 
+/// The user's home directory, when the environment names one that exists.
+fn user_home() -> Option<PathBuf> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_dir())
+}
+
 impl Pane {
+    /// A new pane running `spec`. Without a `cwd` it starts in the user's home directory
+    /// (`%USERPROFILE%`, `$HOME`), as a new tmux pane does, not in the host's (whose directory
+    /// is only the fallback when there is no home).
     pub fn spawn(
         id: String,
-        spec: PaneSpec,
+        mut spec: PaneSpec,
         history_limit: usize,
         sink: Sender<(String, PaneEvent)>,
     ) -> io::Result<Pane> {
+        if spec.cwd.is_none() {
+            spec.cwd = user_home().or_else(|| std::env::current_dir().ok());
+        }
         let (cols, rows) = (spec.cols.max(1), spec.rows.max(1));
         let shared = Arc::new(Shared::default());
         let config = Config {

@@ -24,7 +24,7 @@ use serde_json::{Map, Value, json};
 
 use crate::pane::PaneEvent;
 use crate::panes::Panes;
-use crate::protocol::{Failure, HelloLine, PROTOCOL, Request, Role};
+use crate::protocol::{Failure, HelloLine, PROTOCOL, Request, Role, hello_proof, valid_nonce};
 use crate::transport::{Connection, Listener};
 
 /// How long a new connection has to say hello.
@@ -174,7 +174,8 @@ fn same_token(a: &str, b: &str) -> bool {
 }
 
 impl Ctx {
-    fn check_hello(&self, line: &str) -> Result<Role, String> {
+    /// The client's role, and the nonce its reply must prove the token against.
+    fn check_hello(&self, line: &str) -> Result<(Role, Option<String>), String> {
         let hello = serde_json::from_str::<HelloLine>(line)
             .map_err(|e| format!("bad hello: {e}"))?
             .hello;
@@ -187,17 +188,26 @@ impl Ctx {
                 hello.protocol
             ));
         }
-        Ok(hello.role)
+        if let Some(nonce) = &hello.nonce
+            && !valid_nonce(nonce)
+        {
+            return Err("the nonce is not 64 hex digits".into());
+        }
+        Ok((hello.role, hello.nonce))
     }
 
-    fn hello_ok(&self) -> String {
-        json!({"hello": {
+    /// The hello reply; with the client's nonce, the proof that this host knows the token.
+    fn hello_ok(&self, nonce: Option<&str>) -> String {
+        let mut reply = json!({"hello": {
             "ok": true,
             "instance": self.info.instance,
             "version": self.info.version,
             "pid": self.info.pid,
-        }})
-        .to_string()
+        }});
+        if let Some(nonce) = nonce {
+            reply["hello"]["proof"] = hello_proof(&self.info.token, nonce).into();
+        }
+        reply.to_string()
     }
 
     /// The reply line for one request line.
@@ -252,13 +262,13 @@ fn connection<C: Connection>(mut conn: C, ctx: &Ctx) -> io::Result<()> {
     };
     match ctx.check_hello(&line) {
         Err(reason) => refuse(&mut conn, "incompatible", &reason),
-        Ok(Role::Stream) => {
-            write_line(&mut conn, &ctx.hello_ok())?;
+        Ok((Role::Stream, nonce)) => {
+            write_line(&mut conn, &ctx.hello_ok(nonce.as_deref()))?;
             conn.set_read_timeout(None)?;
             crate::stream::serve(reader, conn, &ctx.panes)
         }
-        Ok(Role::Control) => {
-            write_line(&mut conn, &ctx.hello_ok())?;
+        Ok((Role::Control, nonce)) => {
+            write_line(&mut conn, &ctx.hello_ok(nonce.as_deref()))?;
             conn.set_read_timeout(None)?;
             control(reader, conn, ctx)
         }
@@ -342,7 +352,10 @@ mod tests {
                 r#"{{"hello":{{"token":"{token}","protocol":{protocol},"role":"control","clientId":"c"}}}}"#
             )
         };
-        assert_eq!(ctx.check_hello(&hello("tok", PROTOCOL)), Ok(Role::Control));
+        assert_eq!(
+            ctx.check_hello(&hello("tok", PROTOCOL)),
+            Ok((Role::Control, None))
+        );
         assert!(
             ctx.check_hello(&hello("bad", PROTOCOL))
                 .unwrap_err()
@@ -354,6 +367,25 @@ mod tests {
                 .contains("protocol")
         );
         assert!(ctx.check_hello("{}").is_err());
+    }
+
+    #[test]
+    fn a_nonce_is_answered_with_the_proof_of_the_token() {
+        let ctx = ctx();
+        let nonce = "0f".repeat(32);
+        let line = format!(
+            r#"{{"hello":{{"token":"tok","protocol":{PROTOCOL},"role":"stream","clientId":"c","nonce":"{nonce}"}}}}"#
+        );
+        let (role, got) = ctx.check_hello(&line).unwrap();
+        assert_eq!((role, got.as_deref()), (Role::Stream, Some(nonce.as_str())));
+        let reply: Value = serde_json::from_str(&ctx.hello_ok(Some(&nonce))).unwrap();
+        assert_eq!(reply["hello"]["proof"], hello_proof("tok", &nonce));
+        // Without a nonce, no proof.
+        let reply: Value = serde_json::from_str(&ctx.hello_ok(None)).unwrap();
+        assert!(reply["hello"].get("proof").is_none());
+        // A nonce that is not 64 hex digits is refused.
+        let bad = line.replace(&nonce, "xyz");
+        assert!(ctx.check_hello(&bad).unwrap_err().contains("nonce"));
     }
 
     #[test]

@@ -4,7 +4,7 @@
  * daemon gets one without it, in development and tests.
  */
 import { spawn } from 'node:child_process'
-import { accessSync, constants, readdirSync, readFileSync } from 'node:fs'
+import { accessSync, constants, mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -174,7 +174,8 @@ async function spawnAndWait(home: string, binary: string | null, waitMs: number)
     // Without the daemon's own tmux identity (`TMUX`, `TMUX_PANE`), which a daemon started from a tmux pane has:
     // every pane the host spawns inherits its environment, and would read as that tmux pane's to a hook or a shell.
     // In the home, not the daemon's directory: a running program's directory cannot be removed on Windows, and the
-    // daemon's may be an old install's.
+    // daemon's may be an old install's. On the first start of a home (a fresh HARNESS_PTY_DIR) it is made first.
+    mkdirSync(home, { recursive: true, mode: 0o700 })
     const child = spawn(binary, ['serve', '--home', home], {
       cwd: home, detached: true, windowsHide: true, stdio: 'ignore', env: scrubTerminalContext({ ...process.env }),
     })

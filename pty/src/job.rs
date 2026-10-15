@@ -1,10 +1,12 @@
 //! A Windows Job Object: one per pane child, so the child and everything it starts can be listed
 //! (`jobPids`) and ended together, as a Unix pane's process group is.
 //!
-//! The job has no kill-on-close limit: closing its handle (the host dying) leaves its processes
-//! running, as tmux's panes outlive a client. The vendored ConPTY spawn puts the child in the job
-//! while it is still suspended (`alacritty_terminal::tty::Options::job`), so nothing it starts
-//! escapes it.
+//! The job is kill-on-close, and only the host holds its handle (created not inheritable, so no
+//! child gets a copy): when the host dies, every pane's tree dies with it, as a tmux server's
+//! panes do when it crashes (spec §4). Without it, a shell still starting when the host died
+//! could outlive the host with its console, unreachable (Task 17). The vendored ConPTY spawn puts
+//! the child in the job while it is still suspended (`alacritty_terminal::tty::Options::job`),
+//! and the job does not allow breakaway, so nothing it starts escapes it.
 
 use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -12,8 +14,10 @@ use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, GetLastError};
 use windows_sys::Win32::System::JobObjects::{
-    CreateJobObjectW, JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList,
-    QueryInformationJobObject, TerminateJobObject,
+    CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_BASIC_PROCESS_ID_LIST,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicProcessIdList,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject,
 };
 
 /// How often `end` looks whether the job is empty.
@@ -22,13 +26,28 @@ const POLL: Duration = Duration::from_millis(50);
 pub struct Job(OwnedHandle);
 
 impl Job {
-    /// A new, unnamed job with no limits.
+    /// A new, unnamed job that ends its processes when its last handle closes. Its handle is not
+    /// inheritable (no security attributes), so only the host has one.
     pub fn new() -> io::Result<Job> {
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if handle.is_null() {
             return Err(io::Error::last_os_error());
         }
-        Ok(Job(unsafe { OwnedHandle::from_raw_handle(handle as _) }))
+        let job = Job(unsafe { OwnedHandle::from_raw_handle(handle as _) });
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let ok = unsafe {
+            SetInformationJobObject(
+                job.0.as_raw_handle() as _,
+                JobObjectExtendedLimitInformation,
+                (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(job)
     }
 
     /// The job's raw `HANDLE`, for `Options::job`; valid while the `Job` lives.
@@ -122,6 +141,35 @@ mod tests {
     }
 
     /// A child that cannot join its job never runs: the spawn fails.
+    #[test]
+    fn a_job_kills_on_close_and_its_handle_is_the_hosts_alone() {
+        use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
+        use windows_sys::Win32::System::JobObjects::QueryInformationJobObject;
+        let job = Job::new().unwrap();
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        let ok = unsafe {
+            QueryInformationJobObject(
+                job.handle() as _,
+                JobObjectExtendedLimitInformation,
+                (&mut limits as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_ne!(ok, 0, "{}", io::Error::last_os_error());
+        assert_eq!(
+            limits.BasicLimitInformation.LimitFlags,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        );
+        // Not inheritable: no child of the host gets a handle that would keep the job open.
+        let mut flags = 0u32;
+        assert_ne!(
+            unsafe { GetHandleInformation(job.handle() as _, &mut flags) },
+            0
+        );
+        assert_eq!(flags & HANDLE_FLAG_INHERIT, 0);
+    }
+
     #[test]
     fn a_child_that_cannot_join_the_job_never_runs() {
         use alacritty_terminal::tty::{self, Options, Shell};

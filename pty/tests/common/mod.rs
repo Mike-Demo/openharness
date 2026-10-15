@@ -100,9 +100,12 @@ pub fn start() -> (Host, serde_json::Value) {
     (Host { child, home, pid }, disc)
 }
 
+/// The nonce every test hello carries.
+pub const NONCE: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
 pub fn hello(token: &str, role: &str) -> String {
     format!(
-        r#"{{"hello":{{"token":"{token}","protocol":{PROTOCOL},"role":"{role}","clientId":"t"}}}}"#
+        r#"{{"hello":{{"token":"{token}","protocol":{PROTOCOL},"role":"{role}","clientId":"t","nonce":"{NONCE}"}}}}"#
     )
 }
 
@@ -120,6 +123,14 @@ pub fn connect(disc: &serde_json::Value) -> (Conn, BufReader<Conn>) {
     let mut line = String::new();
     r.read_line(&mut line).unwrap();
     assert!(line.contains(r#""ok":true"#), "{line}");
+    // The host proves it knows the token.
+    let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let token = disc["token"].as_str().unwrap();
+    assert_eq!(
+        reply["hello"]["proof"],
+        harness_pty::protocol::hello_proof(token, NONCE),
+        "{line}"
+    );
     (w, r)
 }
 

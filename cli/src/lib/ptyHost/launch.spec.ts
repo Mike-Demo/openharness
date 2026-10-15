@@ -1,5 +1,5 @@
 import { once } from 'node:events'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -100,6 +100,7 @@ describe('readDiscovery', () => {
 function fakeBinary(mode: 'serve' | 'fail' | 'quiet' | 'deaf'): string {
   const dir = tempDir('bin-')
   return executable(path.join(dir, exe), `#!${process.execPath}
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
@@ -130,7 +131,12 @@ const server = net.createServer(socket => {
     while ((at = pending.indexOf('\\n')) >= 0) {
       const value = JSON.parse(pending.slice(0, at))
       pending = pending.slice(at + 1)
-      if (!said) { said = true; socket.write(JSON.stringify({ hello: { ok: true, instance: 'p1', version: 'fake', pid: process.pid } }) + '\\n'); continue }
+      if (!said) {
+        said = true
+        const proof = crypto.createHash('sha256').update('fake-token').update('\\0').update(String(value.hello.nonce)).digest('hex')
+        socket.write(JSON.stringify({ hello: { ok: true, instance: 'p1', version: 'fake', pid: process.pid, proof } }) + '\\n')
+        continue
+      }
       socket.write(JSON.stringify(value.op === 'inventory' ? { id: value.id, ok: true, panes: [] } : { id: value.id, ok: true }) + '\\n')
     }
   })
@@ -196,6 +202,19 @@ describe.skipIf(process.platform === 'win32')('ensurePtyHost', () => {
     await clientOf(await ensurePtyHost(dir, { binary: fakeBinary('serve') }))
     expect(readFileSync(path.join(dir, 'cwd'), 'utf8')).toBe(realpathSync(dir))
     expect(realpathSync(process.cwd())).not.toBe(realpathSync(dir))
+  })
+
+  it('starts the host in a home that does not exist yet, making it', async () => {
+    const parent = home()
+    const dir = path.join(parent, 'not', 'yet')
+    const client = await clientOf(await ensurePtyHost(dir, { binary: fakeBinary('serve') }))
+    cleanup.push(() => {
+      const pid = readDiscovery(dir, PTY_PROTOCOL)?.pid
+      if (pid) try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+    })
+    expect(client.instance).toBe('p1')
+    expect(readFileSync(path.join(dir, 'cwd'), 'utf8')).toBe(realpathSync(dir))
+    expect(statSync(dir).mode & 0o777).toBe(0o700)
   })
 
   it('starts a host when there is no discovery file, and waits for it', async () => {

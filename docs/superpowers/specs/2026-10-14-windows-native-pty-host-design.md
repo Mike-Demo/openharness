@@ -57,9 +57,12 @@ A is first because every other piece needs a terminal backend that is not tmux.
   On Unix (tests only) it listens on a Unix socket in `HARNESS_HOME/run/`.
 - Per pane:
   - a ConPTY via `alacritty_terminal::tty`, using the bundled `conpty.dll`/`OpenConsole.exe`;
-  - the child process in its own Job Object (not kill-on-close);
+  - the child process in its own Job Object, kill-on-close. Only the host holds the job's handle
+    (it is not inheritable), so when the host dies, every pane's whole tree dies with it, as a tmux
+    server's panes do (section 4);
   - an `alacritty_terminal` grid with scrollback bounded like tmux `history-limit`;
-  - metadata: id `p<N>`, title (OSC 0/2), cwd (spawn cwd, then OSC 7), owner tag, and a held flag
+  - metadata: id `p<N>`, title (OSC 0/2), cwd (spawn cwd, the user's home directory when the create
+    gives none, as a new tmux pane; then OSC 7), owner tag, and a held flag
     (the `remain-on-exit` equivalent);
   - the env var `HARNESS_PANE=<instanceId>:<paneId>` in the child, so hooks can name their pane the
     way they read `TMUX_PANE` today.
@@ -69,8 +72,11 @@ A is first because every other piece needs a terminal backend that is not tmux.
 - Each client opens two connections, as in Orca:
   - `control`: NDJSON request/response with an `id` per request;
   - `stream`: length-prefixed binary frames, one subscription per pane.
-- Handshake: `hello{token, protocolVersion, clientId}`. The token is read from the discovery file
-  (section 4).
+- Handshake: `hello{token, protocolVersion, clientId, nonce}`. The token is read from the discovery
+  file (section 4). The reply carries `proof = hex(SHA-256(token || 0x00 || nonce))`, and the client
+  refuses an endpoint that cannot prove the token, so a process squatting on the pipe name cannot
+  pass for the host. A host that holds its home's lock but finds the pipe name taken exits with an
+  error ("pipe name held by another process") and sets the stale discovery file aside.
 - Control requests map one to one onto the backend:
   - pane lifecycle: `create`, `kill`, `respawn` (with `expectedHeldToken`), `holdOpen`, `releaseHold`;
   - reads: `inventory`, `titles`, `paneState`, `paneInfo`, `capture{mode, historyLines, ansi}`,
@@ -179,6 +185,9 @@ pid therefore cannot pass, even with a colliding start time. Orca documents this
   - The liveness probe (signal 0) is unchanged.
 - **Process groups** (pgid/tpgid, negative-pid kills) have no Windows equivalent. The pane's Job takes
   the "whole group" role.
+- **Host death**: each pane's Job is kill-on-close, so the host's death (crash, kill, logoff) ends
+  every pane's tree, including a shell that was still starting. Kill, respawn and the drop of a pane
+  end the old child's Job explicitly, as before.
 
 ### Unavailable on Windows in v1 (reported as unavailable, not emulated)
 
@@ -227,7 +236,8 @@ are kept.
 
 ### Host crash, logoff or reboot
 
-- Panes die, as when a tmux server dies. The daemon sees the pipe close and marks the runtimes `gone`.
+- Panes die, as when a tmux server dies: every pane's Job is kill-on-close and only the host holds
+  it. The daemon sees the pipe close and marks the runtimes `gone`.
 - The existing resume path (`resumeStoppedAgent`) relaunches engines with their resume session ids.
 - harnessd restarts the host with backoff.
 
@@ -307,7 +317,7 @@ remote machine, which tests the remote-machine use before sub-project C exists. 
 | `src/main/windows/windows-process-tree-kill.ts`, `windows-pty-root-identity.ts` | Fallback kill for processes outside a pane (A, section 3) |
 | `src/main/git-bash.ts`, `pwsh.ts`, `providers/windows-powershell-executable.ts`, `windows-shell-args.ts`, shell fallback chain | Shell detection; A needs a PowerShell default, B the rest |
 | `src/main/pty/windows-environment-path.ts` and the registry PATH reader/merge | Engine environment (B) |
-| Two-role connections, versioned hello, batched output with backpressure, Job per shell without kill-on-close, OSC 7 cwd, bundled `conpty.dll`/OpenConsole | Design ideas only, reimplemented |
+| Two-role connections, versioned hello, batched output with backpressure, Job per shell (Orca's is not kill-on-close; ours is, see section 3), OSC 7 cwd, bundled `conpty.dll`/OpenConsole | Design ideas only, reimplemented |
 
 Not reused: Orca's terminal daemon (Electron-bound), its patched `node-pty` build and its patched
 `@xterm/headless`.

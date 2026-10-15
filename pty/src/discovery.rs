@@ -1,6 +1,6 @@
 //! `<home>/run/pty-host-<protocol>.json`: how a client finds and proves itself to the host.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -28,9 +28,8 @@ pub fn instance() -> String {
 }
 
 /// Write the discovery file atomically: a reader sees the old file or the whole new one, never a
-/// part. Owner-only: mode 0600 on Unix; on Windows the pipe's DACL, `D:P(A;;GA;;;<user SID>)`,
-/// set on the temporary file before it is renamed into place (the token in it is the host's
-/// password).
+/// part. The owner's alone from its creation (the token in it is the host's password): mode 0600
+/// on Unix, on Windows the pipe's DACL `D:P(A;;GA;;;<user SID>)` (`files::replace_private`).
 pub fn write(run_dir: &Path, discovery: &Discovery) -> io::Result<PathBuf> {
     let path = file_path(run_dir);
     let tmp = run_dir.join(format!(
@@ -38,31 +37,8 @@ pub fn write(run_dir: &Path, discovery: &Discovery) -> io::Result<PathBuf> {
         std::process::id()
     ));
     let body = serde_json::to_vec(discovery).map_err(io::Error::other)?;
-    let written = (|| {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-        file.write_all(&body)?;
-        file.sync_all()?;
-        drop(file);
-        #[cfg(windows)]
-        crate::transport::windows::OwnerOnly::new()?.apply_to(&tmp)?;
-        crate::files::rename(&tmp, &path)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    written.map(|()| path)
+    crate::files::replace_private(&tmp, &path, &body)?;
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -98,21 +74,15 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_file_is_the_users_alone() {
+        use crate::transport::windows::file_dacl;
         let dir = tempfile::tempdir().unwrap();
         let path = write(dir.path(), &sample("a")).unwrap();
-        let sid = crate::transport::windows::user_sid().unwrap();
-        let dacl = crate::transport::windows::dacl_of(&path.to_string_lossy());
-        // Protected (no entry inherited from the directory), one entry: the user's.
-        assert!(
-            dacl == format!("D:P(A;;FA;;;{sid})") || dacl == format!("D:P(A;;GA;;;{sid})"),
-            "{dacl}"
-        );
+        // Protected (no entry inherited from the directory), one entry: the user's. Compared by
+        // SID: SDDL writes some users as an alias (the built-in Administrator as `LA`).
+        file_dacl(&path).assert_users_alone(false);
         // Replacing the file keeps it so.
         write(dir.path(), &sample("b")).unwrap();
-        assert_eq!(
-            crate::transport::windows::dacl_of(&path.to_string_lossy()),
-            dacl
-        );
+        file_dacl(&path).assert_users_alone(false);
     }
 
     #[cfg(unix)]

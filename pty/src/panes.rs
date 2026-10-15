@@ -420,12 +420,7 @@ impl Panes {
                 label,
                 hold,
             } => {
-                // A child given no directory starts in the host's; report that one.
-                let cwd = cwd.or_else(|| {
-                    std::env::current_dir()
-                        .ok()
-                        .map(|p| p.to_string_lossy().into_owned())
-                });
+                // A child given no directory starts in the user's home (`Pane::spawn`).
                 let number = lock(&self.ids)
                     .take()
                     .map_err(|e| OpError::new("spawn_failed", format!("pane ids: {e}")))?;
@@ -769,10 +764,8 @@ mod tests {
         assert_eq!(rows[1]["cwd"], "/");
         assert_eq!(rows[1]["dead"], false);
         assert!(rows[0]["rootPid"].as_u64().is_some());
-        assert_eq!(
-            rows[0]["cwd"],
-            std::env::current_dir().unwrap().to_string_lossy().as_ref()
-        );
+        // Given no directory: the user's home, as a new tmux pane.
+        assert_eq!(rows[0]["cwd"], std::env::var("HOME").unwrap().as_str());
         panes
             .handle(op(json!({"op": "setTitle", "pane": "%2", "title": "t2"})))
             .unwrap();

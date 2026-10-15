@@ -71,7 +71,7 @@ jobs:
         run: |
           $paths = @('src/lib/ptyHostBackend.contract.spec.ts', 'src/lib/ptyHost')
           if (Test-Path 'src/lib/windows') { $paths += 'src/lib/windows' }
-          npx vitest run @paths --maxWorkers=1 --passWithNoTests
+          npx vitest run @paths --maxWorkers=1
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}

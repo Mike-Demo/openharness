@@ -23,9 +23,10 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_INSUFFICIENT_BUFFER, ERROR_IO_PENDING,
-    ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED,
-    ERROR_PIPE_NOT_CONNECTED, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_TIMEOUT,
+    ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_BROKEN_PIPE, ERROR_INSUFFICIENT_BUFFER,
+    ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY,
+    ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, GENERIC_READ, GENERIC_WRITE, GetLastError,
+    HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -35,6 +36,7 @@ use windows_sys::Win32::Security::{
     SetFileSecurityW, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
+    CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL,
     FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
@@ -85,8 +87,8 @@ pub fn pipe_name_for(home: &Path) -> io::Result<String> {
     Ok(pipe_name(&user_sid()?, &home.to_string_lossy()))
 }
 
-/// The current user's SID, as a string (`S-1-5-21-…`).
-pub fn user_sid() -> io::Result<String> {
+/// This process's `TOKEN_USER`, in u64 words (so it is aligned): the user's SID is inside.
+fn token_user() -> io::Result<Vec<u64>> {
     unsafe {
         let mut token: HANDLE = std::ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
@@ -104,7 +106,6 @@ pub fn user_sid() -> io::Result<String> {
         if GetLastError() != ERROR_INSUFFICIENT_BUFFER {
             return Err(io::Error::last_os_error());
         }
-        // u64 words, so the TOKEN_USER is aligned.
         let mut buf = vec![0u64; (len as usize).div_ceil(8)];
         if GetTokenInformation(
             token.as_raw_handle() as _,
@@ -116,6 +117,14 @@ pub fn user_sid() -> io::Result<String> {
         {
             return Err(io::Error::last_os_error());
         }
+        Ok(buf)
+    }
+}
+
+/// The current user's SID, as a string (`S-1-5-21-…`).
+pub fn user_sid() -> io::Result<String> {
+    let buf = token_user()?;
+    unsafe {
         let user = &*buf.as_ptr().cast::<TOKEN_USER>();
         let mut text: *mut u16 = std::ptr::null_mut();
         if ConvertSidToStringSidW(user.User.Sid, &mut text) == 0 {
@@ -129,7 +138,7 @@ pub fn user_sid() -> io::Result<String> {
 }
 
 /// The security descriptor `D:P(A;;GA;;;<user SID>)`: a protected DACL that lets the user, and
-/// nobody else, do anything.
+/// nobody else, do anything. (`for_directory` adds `OICI`: what is made inside inherits it.)
 pub struct OwnerOnly(PSECURITY_DESCRIPTOR);
 
 // The descriptor is immutable once made, and freed only on drop.
@@ -138,7 +147,16 @@ unsafe impl Sync for OwnerOnly {}
 
 impl OwnerOnly {
     pub fn new() -> io::Result<OwnerOnly> {
-        let sddl = wide(&format!("D:P(A;;GA;;;{})", user_sid()?));
+        OwnerOnly::from_sddl(&format!("D:P(A;;GA;;;{})", user_sid()?))
+    }
+
+    /// For a directory: the same entry, inherited by the files and directories made in it.
+    pub fn for_directory() -> io::Result<OwnerOnly> {
+        OwnerOnly::from_sddl(&format!("D:P(A;OICI;GA;;;{})", user_sid()?))
+    }
+
+    fn from_sddl(sddl: &str) -> io::Result<OwnerOnly> {
+        let sddl = wide(sddl);
         let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
         let ok = unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -178,6 +196,51 @@ impl Drop for OwnerOnly {
     fn drop(&mut self) {
         unsafe { LocalFree(self.0) };
     }
+}
+
+/// Create the directory `path` the user's alone (`OwnerOnly::for_directory`), or, when it is
+/// there already, replace its DACL with that one. (Files already in it keep theirs.)
+pub fn secure_dir(path: &Path) -> io::Result<()> {
+    let security = OwnerOnly::for_directory()?;
+    let attributes = security.attributes();
+    let name = wide_path(path);
+    if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } != 0 {
+        return Ok(());
+    }
+    let err = io::Error::last_os_error();
+    if err.raw_os_error() != Some(ERROR_ALREADY_EXISTS as i32) {
+        return Err(err);
+    }
+    if !path.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} is not a directory", path.display()),
+        ));
+    }
+    security.apply_to(path)
+}
+
+/// Create the new file `path` (it must not exist) with the user-only DACL from the start, open
+/// for writing: what is written in it is never readable by anyone else, not even for a moment.
+pub fn create_private_file(path: &Path) -> io::Result<std::fs::File> {
+    let security = OwnerOnly::new()?;
+    let attributes = security.attributes();
+    let name = wide_path(path);
+    let handle = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            &attributes,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { std::fs::File::from_raw_handle(handle as _) })
 }
 
 fn create_instance(name: &[u16], first: bool, security: &OwnerOnly) -> io::Result<OwnedHandle> {
@@ -515,32 +578,101 @@ impl Connection for PipeConn {
     }
 }
 
-/// A security descriptor's DACL, as SDDL.
+/// What a test reads of a DACL: whether it is protected, and its entries.
 #[cfg(test)]
-fn sddl_of(sd: PSECURITY_DESCRIPTOR) -> String {
-    use windows_sys::Win32::Security::Authorization::ConvertSecurityDescriptorToStringSecurityDescriptorW;
-    let mut text: *mut u16 = std::ptr::null_mut();
-    let ok = unsafe {
-        ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            sd,
-            SDDL_REVISION_1,
-            DACL_SECURITY_INFORMATION,
-            &mut text,
-            std::ptr::null_mut(),
-        )
-    };
-    assert!(ok != 0, "{}", io::Error::last_os_error());
-    let n = (0..).take_while(|&i| unsafe { *text.add(i) } != 0).count();
-    let sddl = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(text, n) });
-    unsafe { LocalFree(text.cast()) };
-    sddl
+#[derive(Debug)]
+pub(crate) struct Dacl {
+    pub protected: bool,
+    pub aces: Vec<Ace>,
 }
 
-/// The DACL of the file at `path`, as SDDL.
 #[cfg(test)]
-pub(crate) fn dacl_of(path: &str) -> String {
+#[derive(Debug)]
+pub(crate) struct Ace {
+    pub allowed: bool,
+    pub flags: u8,
+    pub mask: u32,
+    /// Whether the entry's SID is this process's user (`EqualSid` with the token's).
+    pub is_user: bool,
+}
+
+#[cfg(test)]
+impl Dacl {
+    /// Protected, one entry, allowing the user everything; inherited by what is made inside
+    /// when `inheritable` (a directory's).
+    pub fn assert_users_alone(&self, inheritable: bool) {
+        use windows_sys::Win32::Security::{CONTAINER_INHERIT_ACE, OBJECT_INHERIT_ACE};
+        assert!(self.protected, "{self:?}");
+        assert_eq!(self.aces.len(), 1, "{self:?}");
+        let ace = &self.aces[0];
+        // GENERIC_ALL, or what it maps to on a file or a pipe (FILE_ALL_ACCESS).
+        assert!(ace.allowed && ace.is_user, "{self:?}");
+        assert!(ace.mask == 0x1F01FF || ace.mask == 0x1000_0000, "{self:?}");
+        let inherit = (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8;
+        assert_eq!(
+            ace.flags & inherit,
+            if inheritable { inherit } else { 0 },
+            "{self:?}"
+        );
+    }
+
+    /// Every entry allows the user, and nobody else has one.
+    pub fn assert_only_user_entries(&self) {
+        assert!(!self.aces.is_empty(), "{self:?}");
+        assert!(self.aces.iter().all(|a| a.allowed && a.is_user), "{self:?}");
+    }
+}
+
+#[cfg(test)]
+fn dacl_in(sd: PSECURITY_DESCRIPTOR) -> Dacl {
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACL, EqualSid, GetAce, GetSecurityDescriptorControl,
+        GetSecurityDescriptorDacl, SE_DACL_PROTECTED,
+    };
+    /// `ACCESS_ALLOWED_ACE_TYPE` (Win32_System_SystemServices, a feature this crate does not use).
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+    let user = token_user().unwrap();
+    let user_sid = unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let mut control = 0u16;
+    let mut revision = 0u32;
+    assert_ne!(
+        unsafe { GetSecurityDescriptorControl(sd, &mut control, &mut revision) },
+        0
+    );
+    let (mut present, mut defaulted) = (0, 0);
+    let mut acl: *mut ACL = std::ptr::null_mut();
+    assert_ne!(
+        unsafe { GetSecurityDescriptorDacl(sd, &mut present, &mut acl, &mut defaulted) },
+        0
+    );
+    assert!(present != 0 && !acl.is_null(), "no DACL");
+    let count = unsafe { (*acl).AceCount };
+    let aces = (0..count as u32)
+        .map(|i| {
+            let mut ace: *mut core::ffi::c_void = std::ptr::null_mut();
+            assert_ne!(unsafe { GetAce(acl, i, &mut ace) }, 0);
+            let ace = unsafe { &*ace.cast::<ACCESS_ALLOWED_ACE>() };
+            let allowed = ace.Header.AceType == ACCESS_ALLOWED_ACE_TYPE;
+            let sid = (&ace.SidStart as *const u32).cast_mut().cast();
+            Ace {
+                allowed,
+                flags: ace.Header.AceFlags,
+                mask: ace.Mask,
+                is_user: allowed && unsafe { EqualSid(sid, user_sid) } != 0,
+            }
+        })
+        .collect();
+    Dacl {
+        protected: control & SE_DACL_PROTECTED != 0,
+        aces,
+    }
+}
+
+/// The DACL of the file or directory at `path`.
+#[cfg(test)]
+pub(crate) fn file_dacl(path: &Path) -> Dacl {
     use windows_sys::Win32::Security::GetFileSecurityW;
-    let name = wide(path);
+    let name = wide_path(path);
     let mut len = 0u32;
     unsafe {
         GetFileSecurityW(
@@ -551,7 +683,12 @@ pub(crate) fn dacl_of(path: &str) -> String {
             &mut len,
         )
     };
-    assert!(len > 0, "{path}: {}", io::Error::last_os_error());
+    assert!(
+        len > 0,
+        "{}: {}",
+        path.display(),
+        io::Error::last_os_error()
+    );
     let mut buf = vec![0u64; (len as usize).div_ceil(8)];
     let ok = unsafe {
         GetFileSecurityW(
@@ -562,14 +699,19 @@ pub(crate) fn dacl_of(path: &str) -> String {
             &mut len,
         )
     };
-    assert!(ok != 0, "{path}: {}", io::Error::last_os_error());
-    sddl_of(buf.as_mut_ptr().cast())
+    assert!(
+        ok != 0,
+        "{}: {}",
+        path.display(),
+        io::Error::last_os_error()
+    );
+    dacl_in(buf.as_mut_ptr().cast())
 }
 
-/// The DACL of the pipe `conn` is connected to, as SDDL. (Opening a pipe by name connects to an
-/// instance, so a pipe's descriptor is read through a connection.)
+/// The DACL of the pipe `conn` is connected to. (Opening a pipe by name connects to an instance,
+/// so a pipe's descriptor is read through a connection.)
 #[cfg(test)]
-pub(crate) fn dacl_of_pipe(conn: &PipeConn) -> String {
+pub(crate) fn pipe_dacl(conn: &PipeConn) -> Dacl {
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT};
     let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
     let code = unsafe {
@@ -585,9 +727,9 @@ pub(crate) fn dacl_of_pipe(conn: &PipeConn) -> String {
         )
     };
     assert_eq!(code, 0, "{}", io::Error::from_raw_os_error(code as i32));
-    let sddl = sddl_of(sd);
+    let dacl = dacl_in(sd);
     unsafe { LocalFree(sd) };
-    sddl
+    dacl
 }
 
 #[cfg(test)]
@@ -638,12 +780,8 @@ mod tests {
         assert_eq!(listener.endpoint(), name);
         // Another host cannot take the name while this one has it.
         assert!(matches!(bind(&name).unwrap(), Bound::Taken));
-        let sid = user_sid().unwrap();
-        let dacl = dacl_of_pipe(&connect(&name).unwrap());
-        assert!(
-            dacl == format!("D:P(A;;FA;;;{sid})") || dacl == format!("D:P(A;;GA;;;{sid})"),
-            "{dacl}"
-        );
+        // (Compared by SID: SDDL writes some users as an alias, the built-in Administrator as `LA`.)
+        pipe_dacl(&connect(&name).unwrap()).assert_users_alone(false);
         drop(listener);
         // The name goes with its last instance.
         assert!(matches!(bind(&name).unwrap(), Bound::Listening(_)));

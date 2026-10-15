@@ -97,16 +97,24 @@ pub fn main() {
 }
 
 /// Create `<home>/run` (owner-only) if it is missing.
+/// Create `<home>/run` if it is missing, the owner's alone: mode 0700 on Unix; on Windows a
+/// protected DACL that lets only the user in (and that what is created inside inherits), set on
+/// a run directory that already exists as well, before anything is written in it.
 fn run_dir(home: &Path) -> std::io::Result<PathBuf> {
     let run = home.join("run");
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o700);
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&run)?;
     }
-    builder.create(&run)?;
+    #[cfg(windows)]
+    {
+        std::fs::create_dir_all(home)?;
+        crate::transport::windows::secure_dir(&run)?;
+    }
     Ok(run)
 }
 
@@ -141,10 +149,29 @@ pub fn serve(home: &Path, history_limit: usize, reexec: bool) -> std::io::Result
         crate::transport::Bound::Listening(listener) => {
             publish_and_serve(listener, &run, history_limit)
         }
+        // This host holds the home's lock, so no other host of this home has the endpoint:
+        // another process squats on the name. The discovery file (a dead host's) points at it;
+        // set it aside so no client follows it there.
         crate::transport::Bound::Taken => {
-            eprintln!("harness-pty: another host has this home's endpoint");
-            Ok(())
+            set_discovery_aside(&run);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                "pipe name held by another process",
+            ))
         }
+    }
+}
+
+/// Move `pty-host-<P>.json` to `pty-host-<P>.json.stale`, when there is one.
+fn set_discovery_aside(run: &Path) {
+    let file = crate::discovery::file_path(run);
+    let mut aside = file.clone().into_os_string();
+    aside.push(".stale");
+    match crate::files::rename(&file, Path::new(&aside)) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            eprintln!("harness-pty: cannot set the old discovery file aside: {err}")
+        }
+        _ => {}
     }
 }
 
@@ -256,6 +283,21 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let run = run_dir(&home.path().join("nested")).unwrap();
         assert!(run.is_dir());
+        #[cfg(windows)]
+        {
+            use crate::transport::windows::file_dacl;
+            // Only the user, inherited by what is made inside.
+            file_dacl(&run).assert_users_alone(true);
+            // A run directory that exists already is made the user's alone as well.
+            let open = home.path().join("open");
+            std::fs::create_dir_all(open.join("run")).unwrap();
+            assert!(!file_dacl(&open.join("run")).protected);
+            run_dir(&open).unwrap();
+            file_dacl(&open.join("run")).assert_users_alone(true);
+            // A file made in it has nobody else's entries either.
+            std::fs::write(open.join("run").join("x"), "x").unwrap();
+            file_dacl(&open.join("run").join("x")).assert_only_user_entries();
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

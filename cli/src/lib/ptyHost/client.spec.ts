@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { PtyHostClient, type PtyHostDiscovery } from './client.js'
-import { encodeFrame, FrameKind, FrameReader, PTY_PROTOCOL, type PtyEvent } from './protocol.js'
+import { encodeFrame, FrameKind, FrameReader, helloProof, PTY_PROTOCOL, type PtyEvent } from './protocol.js'
 
 type Request = { id: number; op: string } & Record<string, unknown>
 interface FakeHostOptions {
@@ -18,6 +18,8 @@ interface FakeHostOptions {
   streamGreeting?: Buffer
   /** Refuse stream-role hellos as incompatible. */
   refuseStreams?: boolean
+  /** The hello reply's proof: the token's (default), none, or one made with another token (a squatter). */
+  proof?: 'right' | 'none' | 'wrong'
 }
 interface FakeHost {
   discovery: PtyHostDiscovery
@@ -64,7 +66,9 @@ async function fakeHost(options: FakeHostOptions = {}): Promise<FakeHost> {
             return
           }
           role = value.hello.role
-          const ok = Buffer.from(`${JSON.stringify({ hello: { ok: true, instance: 'p1', version: 'test', pid: 1 } })}\n`)
+          const proof = options.proof === 'none' ? {}
+            : { proof: helloProof(options.proof === 'wrong' ? 'not-the-token' : token, String(value.hello.nonce)) }
+          const ok = Buffer.from(`${JSON.stringify({ hello: { ok: true, instance: 'p1', version: 'test', pid: 1, ...proof } })}\n`)
           socket.write(role === 'stream' && options.streamGreeting ? Buffer.concat([ok, options.streamGreeting]) : ok)
           continue
         }
@@ -125,6 +129,27 @@ describe('PtyHostClient.connect', () => {
     const fake = await fakeHost()
     await fake.close()
     expect(await PtyHostClient.connect(fake.discovery)).toBeNull()
+  })
+
+  it('sends a fresh 32-byte nonce with every hello', async () => {
+    const fake = await fakeHost()
+    cleanup.push(() => fake.close())
+    for (let i = 0; i < 2; i++) {
+      const client = await PtyHostClient.connect(fake.discovery)
+      if (!(client instanceof PtyHostClient)) throw new Error(JSON.stringify(client))
+      client.close()
+    }
+    const nonces = fake.hellos.map(h => h.hello.nonce)
+    expect(nonces).toHaveLength(2)
+    for (const nonce of nonces) expect(nonce).toMatch(/^[0-9a-f]{64}$/)
+    expect(nonces[0]).not.toBe(nonces[1])
+  })
+
+  it.each(['none', 'wrong'] as const)('reports an endpoint whose ok reply has %s proof of the token as incompatible', async (proof) => {
+    // A process squatting on the endpoint: it says ok, but cannot know the host's token.
+    const fake = await fakeHost({ proof })
+    cleanup.push(() => fake.close())
+    expect(await PtyHostClient.connect(fake.discovery)).toEqual({ incompatible: 'the endpoint does not know this host\'s token' })
   })
 
   it('reports a host that closes during the hello as incompatible', async () => {

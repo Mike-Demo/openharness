@@ -264,6 +264,181 @@ fn a_host_that_lost_its_socket_file_still_owns_its_home() {
     assert_eq!(wait_discovery(h.home.path()), disc);
 }
 
+#[test]
+fn a_squatter_on_the_endpoint_fails_the_start_and_the_discovery_file_is_set_aside() {
+    let home = tempfile::tempdir().unwrap();
+    let run = home.path().join("run");
+    std::fs::create_dir_all(&run).unwrap();
+    // A dead host's discovery file, naming the endpoint.
+    let file = run.join(format!("pty-host-{PROTOCOL}.json"));
+    std::fs::write(&file, r#"{"stale":true}"#).unwrap();
+    // Another process has the endpoint while no host holds the home's lock.
+    #[cfg(unix)]
+    let _squatter =
+        std::os::unix::net::UnixListener::bind(run.join(format!("pty-host-{PROTOCOL}.sock")))
+            .unwrap();
+    #[cfg(windows)]
+    let _squatter = {
+        use harness_pty::transport::{Bound, windows};
+        let name = windows::pipe_name_for(home.path()).unwrap();
+        let Ok(Bound::Listening(squatter)) = windows::bind(&name) else {
+            panic!("no squatter on {name}")
+        };
+        squatter
+    };
+    // `--no-reexec`: the status is this host's own, not that of a first host that started it.
+    let out = host_command(home.path())
+        .arg("--no-reexec")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(stderr.contains("held by another process"), "{stderr}");
+    assert!(!file.exists());
+    let mut aside = file.into_os_string();
+    aside.push(".stale");
+    assert_eq!(
+        std::fs::read_to_string(&aside).unwrap(),
+        r#"{"stale":true}"#
+    );
+}
+
+#[test]
+fn a_pane_without_a_cwd_starts_in_the_users_home() {
+    let (_h, disc) = start();
+    let (mut w, mut r) = connect(&disc);
+    let created = call(
+        &mut w,
+        &mut r,
+        &serde_json::json!({"id": 1, "op": "create",
+            "command": script(r#"echo "at=$(pwd -P)."; sleep 30"#, r#"echo "at=$((Get-Location).Path)."; Start-Sleep 30"#),
+            "cols": 200, "rows": 24, "owner": "t", "hold": false})
+        .to_string(),
+    );
+    let pane = created["pane"].as_str().unwrap().to_string();
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let home = std::fs::canonicalize(std::env::var_os(var).unwrap()).unwrap();
+    let end = Instant::now() + WAIT;
+    let at = loop {
+        let cap = call(
+            &mut w,
+            &mut r,
+            &format!(r#"{{"id":2,"op":"capture","pane":"{pane}","ansi":false,"visible":true}}"#),
+        );
+        let text = cap["text"].as_str().unwrap().to_owned();
+        if let Some(at) = text.lines().find_map(|l| {
+            l.trim()
+                .strip_prefix("at=")?
+                .strip_suffix('.')
+                .map(str::to_owned)
+        }) {
+            break at;
+        }
+        assert!(Instant::now() < end, "{cap}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(std::fs::canonicalize(&at).unwrap(), home, "{at}");
+    call(
+        &mut w,
+        &mut r,
+        &format!(r#"{{"id":3,"op":"kill","pane":"{pane}","graceMs":200}}"#),
+    );
+}
+
+/// Windows: the host's death ends every pane's whole tree (each pane's Job is kill-on-close, and
+/// only the host holds it), as a tmux server's crash takes its panes; a shell still starting goes
+/// too, which without it outlived the host with its console.
+#[cfg(windows)]
+#[test]
+fn the_hosts_death_ends_every_panes_tree() {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
+    };
+    let (h, disc) = start();
+    let (mut w, mut r) = connect(&disc);
+    let create = |w: &mut common::Conn,
+                  r: &mut BufReader<common::Conn>,
+                  id: u32,
+                  command: serde_json::Value| {
+        let created = call(
+            w,
+            r,
+            &serde_json::json!({"id": id, "op": "create", "command": command,
+            "cols": 80, "rows": 24, "owner": "t", "hold": false})
+            .to_string(),
+        );
+        created["pane"].as_str().unwrap().to_string()
+    };
+    // A shell with a descendant that has a console of its own, out of the pane's console's reach.
+    let pane = create(
+        &mut w,
+        &mut r,
+        1,
+        script(
+            "",
+            "$p = Start-Process -PassThru -WindowStyle Hidden powershell.exe -ArgumentList '-NoProfile','-Command','Start-Sleep 300'; echo \"child=$($p.Id).\"; Start-Sleep 300",
+        ),
+    );
+    let end = Instant::now() + WAIT;
+    let child: u32 = loop {
+        let cap = call(
+            &mut w,
+            &mut r,
+            &format!(r#"{{"id":2,"op":"capture","pane":"{pane}","ansi":false,"visible":true}}"#),
+        );
+        let text = cap["text"].as_str().unwrap().to_owned();
+        if let Some(pid) = text
+            .split("child=")
+            .nth(1)
+            .and_then(|t| t.split('.').next())
+            .and_then(|t| t.parse().ok())
+        {
+            break pid;
+        }
+        assert!(Instant::now() < end, "{cap}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // And a shell the host dies under while it is still starting.
+    let starting = create(
+        &mut w,
+        &mut r,
+        3,
+        serde_json::json!(["powershell.exe", "-NoLogo", "-NoProfile"]),
+    );
+    let inv = call(&mut w, &mut r, r#"{"id":4,"op":"inventory"}"#);
+    let root_of = |p: &str| {
+        inv["panes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["pane"] == p)
+            .unwrap()["rootPid"]
+            .as_u64()
+            .unwrap() as u32
+    };
+    let pids = [root_of(&pane), child, root_of(&starting)];
+    // Handles first, so a reused pid cannot pass for one still running.
+    let handles: Vec<_> = pids
+        .iter()
+        .map(|&pid| {
+            let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+            assert!(
+                !handle.is_null(),
+                "{pid}: {}",
+                std::io::Error::last_os_error()
+            );
+            handle
+        })
+        .collect();
+    common::kill_pid(h.pid);
+    for (handle, pid) in handles.into_iter().zip(pids) {
+        let waited = unsafe { WaitForSingleObject(handle, WAIT.as_millis() as u32) };
+        unsafe { CloseHandle(handle) };
+        assert_eq!(waited, WAIT_OBJECT_0, "{pid} outlived the host");
+    }
+}
+
 /// Kills `pid` when dropped.
 fn scopeguard(pid: u32) -> impl Drop {
     struct Kill(u32);

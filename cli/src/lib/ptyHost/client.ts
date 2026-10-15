@@ -6,10 +6,11 @@
  * was never written is `not_started`, one written without a reply is `possibly_executed`
  * (docs/superpowers/specs/2026-10-14-windows-native-pty-host-design.md, error semantics).
  */
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import net from 'node:net'
 import type { Duplex } from 'node:stream'
 import {
+  helloProof,
   PTY_PROTOCOL,
   type HelloLine,
   type HelloReply,
@@ -78,6 +79,14 @@ type HelloOutcome =
   | { state: 'incompatible'; reason: string }
   | { state: 'unreachable' }
 
+/** Whether [proof] is the hello proof of [token] for [nonce]. */
+function provesToken(proof: unknown, token: string, nonce: string): boolean {
+  if (typeof proof !== 'string') return false
+  const want = Buffer.from(helloProof(token, nonce), 'utf8')
+  const got = Buffer.from(proof, 'utf8')
+  return got.length === want.length && timingSafeEqual(got, want)
+}
+
 /**
  * Connect to `endpoint` and say hello. Unreachable is only "nothing accepted the connection";
  * anything that accepted it and would not finish the hello is incompatible, because starting
@@ -105,10 +114,12 @@ function hello(discovery: PtyHostDiscovery, role: HelloRole, timeoutMs: number):
     const timer = setTimeout(() => finish(connected
       ? { state: 'incompatible', reason: `no hello reply within ${timeoutMs} ms` }
       : { state: 'unreachable' }), timeoutMs)
+    // Answered by the reply's proof: only the host that wrote the token can give it.
+    const nonce = randomBytes(32).toString('hex')
     const onConnect = () => {
       connected = true
       const line: HelloLine = {
-        hello: { token: discovery.token, protocol: PTY_PROTOCOL, role, clientId: `harnessd-${process.pid}-${randomUUID()}` },
+        hello: { token: discovery.token, protocol: PTY_PROTOCOL, role, clientId: `harnessd-${process.pid}-${randomUUID()}`, nonce },
       }
       socket.write(`${JSON.stringify(line)}\n`)
     }
@@ -126,6 +137,8 @@ function hello(discovery: PtyHostDiscovery, role: HelloRole, timeoutMs: number):
       }
       if (!reply || typeof reply !== 'object') {
         finish({ state: 'incompatible', reason: 'the host sent an unreadable hello reply' })
+      } else if (reply.ok === true && !provesToken(reply.proof, discovery.token, nonce)) {
+        finish({ state: 'incompatible', reason: 'the endpoint does not know this host\'s token' })
       } else if (reply.ok === true) {
         // The lines after the hello's are not split here: they belong to whoever reads next.
         const after = chunk.subarray(chunk.indexOf(0x0a) + 1)

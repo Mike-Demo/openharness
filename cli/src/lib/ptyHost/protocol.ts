@@ -1,4 +1,5 @@
 /** TypeScript mirror of the harness-pty wire protocol (pty/src/protocol.rs). */
+import { createHash } from 'node:crypto'
 
 export const PTY_PROTOCOL = 1
 export const MAX_FRAME = 8 * 1024 * 1024
@@ -108,11 +109,21 @@ export class FrameReader {
 
 export type HelloRole = 'control' | 'stream'
 export interface HelloLine {
-  hello: { token: string; protocol: number; role: HelloRole; clientId: string }
+  /** `nonce`: 32 random bytes as 64 hex digits, which the reply's `proof` answers. */
+  hello: { token: string; protocol: number; role: HelloRole; clientId: string; nonce: string }
 }
 export type HelloReply =
-  | { hello: { ok: true; instance: string; version: string; pid: number } }
+  | { hello: { ok: true; instance: string; version: string; pid: number; proof: string } }
   | { hello: { ok: false; code: string; reason: string } }
+
+/**
+ * The `proof` a host's hello reply carries for [nonce] (pty/src/protocol.rs `hello_proof`): hex SHA-256 of the
+ * token's bytes, a zero byte, and the nonce's hex characters. Only a host that knows the token can give it, so a
+ * process squatting on the endpoint cannot pass for the host.
+ */
+export function helloProof(token: string, nonce: string): string {
+  return createHash('sha256').update(token).update('\0').update(nonce).digest('hex')
+}
 
 export interface PaneInventoryRow {
   pane: string

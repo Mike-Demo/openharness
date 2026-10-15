@@ -11,7 +11,7 @@
 //! point leaves a ceiling at or above every id already used. A new boot starts after it. A
 //! missing or unreadable file starts at 1.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::protocol::PROTOCOL;
@@ -83,29 +83,7 @@ impl PaneIds {
 
 fn write_ceiling(path: &Path, ceiling: u64) -> io::Result<()> {
     let tmp = path.with_extension(format!("panes.{}.tmp", std::process::id()));
-    let written = (|| {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
-        file.write_all(format!("{ceiling}\n").as_bytes())?;
-        file.sync_all()?;
-        drop(file);
-        crate::files::rename(&tmp, path)
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    written
+    crate::files::replace_private(&tmp, path, format!("{ceiling}\n").as_bytes())
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ import { PtyHostBackend } from './ptyHostBackend.js'
 import { readDiscovery } from './ptyHost/launch.js'
 import { PTY_PROTOCOL } from './ptyHost/protocol.js'
 import { removeTree, runTerminalBackendContract, SHELL } from './terminalBackend.contract.js'
-import type { PtyRuntimeRef, TerminalInventoryResult } from './terminalTypes.js'
+import type { TerminalInventoryResult } from './terminalTypes.js'
 
 const enabled = process.env.RUN_TERMINAL_CONTRACT === '1' && !!process.env.HARNESS_PTY_BIN
 const CASE_TIMEOUT_MS = process.platform === 'win32' ? 40_000 : 15_000
@@ -33,18 +33,6 @@ async function until<T>(read: () => Promise<T>, ok: (value: T) => boolean, ms = 
     if (ok(value) || Date.now() > end) return value
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
-}
-
-/**
- * Wait until the shell in [runtime] has drawn something. On Windows a shell that is still starting when its host dies
- * outlives the host (its console does not end), and would keep the home open.
- */
-async function started(backend: PtyHostBackend, runtime: PtyRuntimeRef): Promise<void> {
-  const shown = await until(async () => {
-    const read = await backend.capture(runtime, { mode: 'visible', ansi: false })
-    return read.state === 'succeeded' ? read.value : ''
-  }, (text) => text.trim().length > 0)
-  if (!shown.trim()) throw new Error('the shell drew nothing')
 }
 
 /** A backend on a host of its own in [home], ready; one that is not fails saying why, and leaves no host. */
@@ -78,7 +66,6 @@ async function readyBackend(home: string): Promise<PtyHostBackend> {
       backend.onHostReplaced = () => replaced.push(Date.now())
       const created = await backend.create({ command: SHELL })
       if (created.state !== 'succeeded') throw new Error(`create failed: ${JSON.stringify(created)}`)
-      await started(backend, created.runtime)
       const before = readDiscovery(home, PTY_PROTOCOL)!
       process.kill(before.pid, 'SIGKILL')
       await new Promise((resolve) => setTimeout(resolve, 300))
@@ -110,7 +97,6 @@ async function readyBackend(home: string): Promise<PtyHostBackend> {
     try {
       const created = await first.create({ command: SHELL })
       if (created.state !== 'succeeded') throw new Error(`create failed: ${JSON.stringify(created)}`)
-      await started(first, created.runtime)
       first.dispose() // the daemon exiting: the host and its pane stay
       second = await readyBackend(home) // the restarted daemon
       const inventory = await second.inventory()
