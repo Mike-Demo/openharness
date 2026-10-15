@@ -4,6 +4,7 @@ import {
   encodeFrame,
   FrameKind,
   FrameReader,
+  helloAuth,
   helloProof,
   MAX_FRAME,
   PTY_PROTOCOL,
@@ -101,15 +102,16 @@ describe('ptyHost protocol framing', () => {
 describe('ptyHost protocol messages', () => {
   it('exposes a positive protocol number for the hello line', () => {
     const hello: HelloLine = {
-      hello: { token: 't', protocol: PTY_PROTOCOL, role: 'control', clientId: 'c', nonce: 'ab'.repeat(32) },
+      hello: { auth: helloAuth('t', 'ab'.repeat(32)), nonce: 'ab'.repeat(32), protocol: PTY_PROTOCOL, role: 'control', clientId: 'c' },
     }
     expect(JSON.parse(JSON.stringify(hello)).hello.protocol).toBe(PTY_PROTOCOL)
     expect(PTY_PROTOCOL).toBeGreaterThan(0)
   })
 
-  it('proves the token as the host does: hex SHA-256 of token, a zero byte, nonce (pty/src/protocol.rs)', () => {
-    // The same vector as protocol.rs `the_hello_proof_is_sha256_of_token_zero_nonce`.
+  it('proves the token as the host does: hex SHA-256 of token, a separator byte, nonce (pty/src/protocol.rs)', () => {
+    // The same vectors as protocol.rs `the_hello_auth_and_proof_are_sha256_of_token_separator_nonce`.
     expect(helloProof('tok', 'ab'.repeat(32))).toBe('b981c336c08b0e9e5d9798d723e2a76ad73ae2162afc266c976d28689a8a4d5d')
+    expect(helloAuth('tok', 'ab'.repeat(32))).toBe('a495f777a3d1a2e8fc2c5db3af651dfa5ea3b5d1813fd62f83934c1571f5628d')
     expect(helloProof('tok2', 'ab'.repeat(32))).not.toBe(helloProof('tok', 'ab'.repeat(32)))
   })
 

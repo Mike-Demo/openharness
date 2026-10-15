@@ -10,6 +10,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import net from 'node:net'
 import type { Duplex } from 'node:stream'
 import {
+  helloAuth,
   helloProof,
   PTY_PROTOCOL,
   type HelloLine,
@@ -114,12 +115,16 @@ function hello(discovery: PtyHostDiscovery, role: HelloRole, timeoutMs: number):
     const timer = setTimeout(() => finish(connected
       ? { state: 'incompatible', reason: `no hello reply within ${timeoutMs} ms` }
       : { state: 'unreachable' }), timeoutMs)
-    // Answered by the reply's proof: only the host that wrote the token can give it.
+    // Both sides prove the token over it: this client with `auth`, the host with its reply's proof.
     const nonce = randomBytes(32).toString('hex')
     const onConnect = () => {
       connected = true
       const line: HelloLine = {
-        hello: { token: discovery.token, protocol: PTY_PROTOCOL, role, clientId: `harnessd-${process.pid}-${randomUUID()}`, nonce },
+        // Never the token itself: what listens here may not be the host.
+        hello: {
+          auth: helloAuth(discovery.token, nonce), nonce, protocol: PTY_PROTOCOL, role,
+          clientId: `harnessd-${process.pid}-${randomUUID()}`,
+        },
       }
       socket.write(`${JSON.stringify(line)}\n`)
     }

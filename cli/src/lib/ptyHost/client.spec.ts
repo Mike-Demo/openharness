@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { PtyHostClient, type PtyHostDiscovery } from './client.js'
-import { encodeFrame, FrameKind, FrameReader, helloProof, PTY_PROTOCOL, type PtyEvent } from './protocol.js'
+import { encodeFrame, FrameKind, FrameReader, helloAuth, helloProof, PTY_PROTOCOL, type PtyEvent } from './protocol.js'
 
 type Request = { id: number; op: string } & Record<string, unknown>
 interface FakeHostOptions {
@@ -18,8 +18,12 @@ interface FakeHostOptions {
   streamGreeting?: Buffer
   /** Refuse stream-role hellos as incompatible. */
   refuseStreams?: boolean
-  /** The hello reply's proof: the token's (default), none, or one made with another token (a squatter). */
-  proof?: 'right' | 'none' | 'wrong'
+  /**
+   * The hello reply's proof: the token's (default, a host that knows it), or a squatter's, which has only what the
+   * client sent: none at all, the client's `auth` sent back, a proof made from the `auth` as if it were the token, or
+   * one made with a guessed token.
+   */
+  proof?: 'right' | 'none' | 'reflect' | 'fromAuth' | 'guess'
 }
 interface FakeHost {
   discovery: PtyHostDiscovery
@@ -60,14 +64,21 @@ async function fakeHost(options: FakeHostOptions = {}): Promise<FakeHost> {
           hellos.push(value)
           if (options.hello === 'close') { socket.destroy(); return }
           if (options.hello === 'silent') return
-          if (value.hello.token !== token || (options.refuseStreams && value.hello.role === 'stream')) {
+          const knows = options.proof === undefined || options.proof === 'right'
+          if ((knows && value.hello.auth !== helloAuth(token, String(value.hello.nonce)))
+            || (options.refuseStreams && value.hello.role === 'stream')) {
             line(socket, { hello: { ok: false, code: 'incompatible', reason: 'wrong token' } })
             socket.end()
             return
           }
           role = value.hello.role
+          const nonce = String(value.hello.nonce)
+          const sent = String(value.hello.auth)
           const proof = options.proof === 'none' ? {}
-            : { proof: helloProof(options.proof === 'wrong' ? 'not-the-token' : token, String(value.hello.nonce)) }
+            : options.proof === 'reflect' ? { proof: sent }
+            : options.proof === 'fromAuth' ? { proof: helloProof(sent, nonce) }
+            : options.proof === 'guess' ? { proof: helloProof('tok-guess', nonce) }
+            : { proof: helloProof(token, nonce) }
           const ok = Buffer.from(`${JSON.stringify({ hello: { ok: true, instance: 'p1', version: 'test', pid: 1, ...proof } })}\n`)
           socket.write(role === 'stream' && options.streamGreeting ? Buffer.concat([ok, options.streamGreeting]) : ok)
           continue
@@ -114,7 +125,7 @@ describe('PtyHostClient.connect', () => {
     const { fake, client } = await connected()
     expect(client.instance).toBe('p1')
     expect(fake.hellos).toHaveLength(1)
-    expect(fake.hellos[0].hello).toMatchObject({ token: 'tok', protocol: PTY_PROTOCOL, role: 'control' })
+    expect(fake.hellos[0].hello).toMatchObject({ protocol: PTY_PROTOCOL, role: 'control' })
     expect(typeof fake.hellos[0].hello.clientId).toBe('string')
   })
 
@@ -131,8 +142,8 @@ describe('PtyHostClient.connect', () => {
     expect(await PtyHostClient.connect(fake.discovery)).toBeNull()
   })
 
-  it('sends a fresh 32-byte nonce with every hello', async () => {
-    const fake = await fakeHost()
+  it('never sends the token: the hello proves it with an auth over a fresh 32-byte nonce', async () => {
+    const fake = await fakeHost({ token: 'sekrit-T0KEN-value' })
     cleanup.push(() => fake.close())
     for (let i = 0; i < 2; i++) {
       const client = await PtyHostClient.connect(fake.discovery)
@@ -143,10 +154,16 @@ describe('PtyHostClient.connect', () => {
     expect(nonces).toHaveLength(2)
     for (const nonce of nonces) expect(nonce).toMatch(/^[0-9a-f]{64}$/)
     expect(nonces[0]).not.toBe(nonces[1])
+    for (const { hello } of fake.hellos) {
+      expect(hello).not.toHaveProperty('token')
+      expect(JSON.stringify(hello)).not.toContain('sekrit-T0KEN-value')
+      expect(hello.auth).toBe(helloAuth('sekrit-T0KEN-value', String(hello.nonce)))
+    }
   })
 
-  it.each(['none', 'wrong'] as const)('reports an endpoint whose ok reply has %s proof of the token as incompatible', async (proof) => {
-    // A process squatting on the endpoint: it says ok, but cannot know the host's token.
+  it.each(['none', 'reflect', 'fromAuth', 'guess'] as const)('reports a squatter that says ok (proof: %s) as incompatible', async (proof) => {
+    // A process squatting on the endpoint: it says ok, and builds its proof from what the client sent; it never sees
+    // the token.
     const fake = await fakeHost({ proof })
     cleanup.push(() => fake.close())
     expect(await PtyHostClient.connect(fake.discovery)).toEqual({ incompatible: 'the endpoint does not know this host\'s token' })

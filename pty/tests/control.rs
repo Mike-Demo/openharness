@@ -26,12 +26,8 @@ fn rejects_other_protocol() {
     let mut s = dial(&disc);
     s.set_read_timeout(Some(WAIT)).unwrap();
     let token = disc["token"].as_str().unwrap();
-    writeln!(
-        s,
-        r#"{{"hello":{{"token":"{token}","protocol":{},"role":"control","clientId":"t"}}}}"#,
-        PROTOCOL + 1
-    )
-    .unwrap();
+    let auth = harness_pty::protocol::hello_auth(token, common::NONCE);
+    writeln!(s, "{}", common::hello_with(&auth, "control", PROTOCOL + 1)).unwrap();
     let mut r = BufReader::new(s);
     let mut line = String::new();
     r.read_line(&mut line).unwrap();
@@ -39,6 +35,37 @@ fn rejects_other_protocol() {
     // …and the host closes the connection.
     line.clear();
     assert_eq!(r.read_line(&mut line).unwrap(), 0, "{line}");
+}
+
+#[test]
+fn a_hello_needs_the_auth_not_the_token_and_a_reflected_proof_is_refused() {
+    let (_h, disc) = start();
+    let token = disc["token"].as_str().unwrap();
+    let refused = |hello: String| {
+        let mut s = dial(&disc);
+        s.set_read_timeout(Some(WAIT)).unwrap();
+        writeln!(s, "{hello}").unwrap();
+        let mut r = BufReader::new(s);
+        let mut line = String::new();
+        r.read_line(&mut line).unwrap();
+        assert!(line.contains(r#""code":"incompatible""#), "{line}");
+        line.clear();
+        assert_eq!(r.read_line(&mut line).unwrap(), 0, "{line}");
+    };
+    // The token itself, as an auth or as the old hello's field.
+    refused(common::hello_with(token, "control", PROTOCOL));
+    refused(format!(
+        r#"{{"hello":{{"token":"{token}","protocol":{PROTOCOL},"role":"control","clientId":"t"}}}}"#
+    ));
+    // The host's own proof for this nonce, sent back as the auth.
+    let proof = harness_pty::protocol::hello_proof(token, common::NONCE);
+    refused(common::hello_with(&proof, "control", PROTOCOL));
+    // The real auth still works.
+    let (mut w, mut r) = connect(&disc);
+    assert_eq!(
+        call(&mut w, &mut r, r#"{"id":1,"op":"titles"}"#)["ok"],
+        true
+    );
 }
 
 #[test]

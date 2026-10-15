@@ -103,9 +103,19 @@ pub fn start() -> (Host, serde_json::Value) {
 /// The nonce every test hello carries.
 pub const NONCE: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
+/// A hello proving `token` (it never carries the token itself).
 pub fn hello(token: &str, role: &str) -> String {
+    hello_with(
+        &harness_pty::protocol::hello_auth(token, NONCE),
+        role,
+        PROTOCOL,
+    )
+}
+
+/// A hello carrying `auth` as it is.
+pub fn hello_with(auth: &str, role: &str, protocol: u32) -> String {
     format!(
-        r#"{{"hello":{{"token":"{token}","protocol":{PROTOCOL},"role":"{role}","clientId":"t","nonce":"{NONCE}"}}}}"#
+        r#"{{"hello":{{"auth":"{auth}","nonce":"{NONCE}","protocol":{protocol},"role":"{role}","clientId":"t"}}}}"#
     )
 }
 

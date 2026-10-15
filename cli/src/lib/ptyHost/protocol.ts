@@ -108,21 +108,33 @@ export class FrameReader {
 }
 
 export type HelloRole = 'control' | 'stream'
+/**
+ * A client's hello (pty/src/protocol.rs `Hello`). It never carries the token: whatever listens on the endpoint reads
+ * it, and that may be a process squatting on the name. `nonce` is 32 random bytes as 64 hex digits; `auth` is
+ * `helloAuth(token, nonce)`, and the reply's `proof` is `helloProof(token, nonce)`.
+ */
 export interface HelloLine {
-  /** `nonce`: 32 random bytes as 64 hex digits, which the reply's `proof` answers. */
-  hello: { token: string; protocol: number; role: HelloRole; clientId: string; nonce: string }
+  hello: { auth: string; nonce: string; protocol: number; role: HelloRole; clientId: string }
 }
 export type HelloReply =
   | { hello: { ok: true; instance: string; version: string; pid: number; proof: string } }
   | { hello: { ok: false; code: string; reason: string } }
 
+const tokenDigest = (token: string, separator: string, nonce: string) =>
+  createHash('sha256').update(token).update(separator).update(nonce).digest('hex')
+
+/** The client's `auth` for [nonce] (protocol.rs `hello_auth`): hex SHA-256(token || 0x01 || nonce). */
+export function helloAuth(token: string, nonce: string): string {
+  return tokenDigest(token, '\u0001', nonce)
+}
+
 /**
- * The `proof` a host's hello reply carries for [nonce] (pty/src/protocol.rs `hello_proof`): hex SHA-256 of the
- * token's bytes, a zero byte, and the nonce's hex characters. Only a host that knows the token can give it, so a
- * process squatting on the endpoint cannot pass for the host.
+ * The `proof` a host's hello reply carries for [nonce] (protocol.rs `hello_proof`): hex SHA-256(token || 0x00 ||
+ * nonce). Only a host that knows the token can give it, so a process squatting on the endpoint cannot pass for the
+ * host; the separators differ from `helloAuth`'s, so neither can be passed off as the other.
  */
 export function helloProof(token: string, nonce: string): string {
-  return createHash('sha256').update(token).update('\0').update(nonce).digest('hex')
+  return tokenDigest(token, '\0', nonce)
 }
 
 export interface PaneInventoryRow {

@@ -77,28 +77,41 @@ pub fn read_frame(r: &mut impl Read) -> io::Result<Option<(Kind, Vec<u8>)>> {
     Ok(Some((kind, payload)))
 }
 
+/// A client's hello. It never carries the token: whatever listens on the endpoint reads it, and
+/// that may be a process squatting on the name. Each side proves the token instead, over the
+/// client's fresh `nonce`: the client with `auth` (`hello_auth`), the host with its reply's
+/// `proof` (`hello_proof`). The two use different separators, so a host's proof sent back as
+/// an `auth` proves nothing.
 #[derive(Debug, Deserialize)]
 pub struct Hello {
-    pub token: String,
+    /// `hello_auth(token, nonce)`.
+    pub auth: String,
+    /// 32 random bytes as 64 hex digits.
+    pub nonce: String,
     pub protocol: u32,
     pub role: Role,
     #[serde(rename = "clientId")]
     pub client_id: String,
-    /// 32 random bytes as 64 hex digits. The reply's `proof` answers it, so the client knows the
-    /// endpoint is the host whose token it read (and not a process squatting on the name).
-    #[serde(default)]
-    pub nonce: Option<String>,
 }
 
-/// The hello reply's `proof` for a client's `nonce`: hex SHA-256 of the token's bytes, a zero
-/// byte, and the nonce's (hex) characters.
-pub fn hello_proof(token: &str, nonce: &str) -> String {
+/// hex SHA-256 of the token's bytes, the separator byte, and the nonce's (hex) characters.
+fn token_digest(token: &str, separator: u8, nonce: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     hash.update(token.as_bytes());
-    hash.update([0]);
+    hash.update([separator]);
     hash.update(nonce.as_bytes());
     hash.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The client's `auth` for its `nonce`: SHA-256(token || 0x01 || nonce), as hex.
+pub fn hello_auth(token: &str, nonce: &str) -> String {
+    token_digest(token, 1, nonce)
+}
+
+/// The host's reply `proof` for a client's `nonce`: SHA-256(token || 0x00 || nonce), as hex.
+pub fn hello_proof(token: &str, nonce: &str) -> String {
+    token_digest(token, 0, nonce)
 }
 
 /// Whether `nonce` is what a client must send: 64 hex digits.
@@ -239,23 +252,39 @@ mod tests {
     #[test]
     fn parses_hello_with_current_protocol() {
         let line = format!(
-            r#"{{"hello":{{"token":"t","protocol":{PROTOCOL},"role":"stream","clientId":"c"}}}}"#
+            r#"{{"hello":{{"auth":"a","nonce":"n","protocol":{PROTOCOL},"role":"stream","clientId":"c"}}}}"#
         );
         let h: HelloLine = serde_json::from_str(&line).unwrap();
+        assert_eq!((h.hello.auth.as_str(), h.hello.nonce.as_str()), ("a", "n"));
+        // A hello with the token in it and no auth is not one.
+        let old = format!(
+            r#"{{"hello":{{"token":"t","protocol":{PROTOCOL},"role":"stream","clientId":"c"}}}}"#
+        );
+        assert!(serde_json::from_str::<HelloLine>(&old).is_err());
         assert_eq!(h.hello.protocol, PROTOCOL);
         assert_eq!(h.hello.role, Role::Stream);
         assert_eq!(h.hello.client_id, "c");
     }
     #[test]
-    fn the_hello_proof_is_sha256_of_token_zero_nonce() {
+    fn the_hello_auth_and_proof_are_sha256_of_token_separator_nonce() {
         use sha2::{Digest, Sha256};
         let nonce = "ab".repeat(32);
-        let want: String = Sha256::digest(format!("tok\0{nonce}").as_bytes())
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        assert_eq!(hello_proof("tok", &nonce), want);
-        assert_ne!(hello_proof("tok2", &nonce), want);
+        let hex = |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
+        let proof = hex(&Sha256::digest(format!("tok\0{nonce}").as_bytes()));
+        let auth = hex(&Sha256::digest(format!("tok\u{1}{nonce}").as_bytes()));
+        assert_eq!(hello_proof("tok", &nonce), proof);
+        assert_eq!(hello_auth("tok", &nonce), auth);
+        assert_ne!(proof, auth);
+        assert_ne!(hello_proof("tok2", &nonce), proof);
+        // The vectors protocol.spec.ts checks too.
+        assert_eq!(
+            proof,
+            "b981c336c08b0e9e5d9798d723e2a76ad73ae2162afc266c976d28689a8a4d5d"
+        );
+        assert_eq!(
+            auth,
+            "a495f777a3d1a2e8fc2c5db3af651dfa5ea3b5d1813fd62f83934c1571f5628d"
+        );
         assert!(valid_nonce(&nonce));
         assert!(!valid_nonce("ab"));
         assert!(!valid_nonce(&"zz".repeat(32)));

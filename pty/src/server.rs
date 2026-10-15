@@ -24,7 +24,9 @@ use serde_json::{Map, Value, json};
 
 use crate::pane::PaneEvent;
 use crate::panes::Panes;
-use crate::protocol::{Failure, HelloLine, PROTOCOL, Request, Role, hello_proof, valid_nonce};
+use crate::protocol::{
+    Failure, HelloLine, PROTOCOL, Request, Role, hello_auth, hello_proof, valid_nonce,
+};
 use crate::transport::{Connection, Listener};
 
 /// How long a new connection has to say hello.
@@ -165,7 +167,7 @@ fn read_line(reader: &mut impl BufRead, max: usize) -> io::Result<Option<String>
 }
 
 /// Compare without stopping at the first difference.
-fn same_token(a: &str, b: &str) -> bool {
+fn same_secret(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())
@@ -174,13 +176,17 @@ fn same_token(a: &str, b: &str) -> bool {
 }
 
 impl Ctx {
-    /// The client's role, and the nonce its reply must prove the token against.
-    fn check_hello(&self, line: &str) -> Result<(Role, Option<String>), String> {
+    /// The client's role, and the nonce the reply proves the token over. The client proves it
+    /// knows the token with `auth` (it never sends the token itself).
+    fn check_hello(&self, line: &str) -> Result<(Role, String), String> {
         let hello = serde_json::from_str::<HelloLine>(line)
             .map_err(|e| format!("bad hello: {e}"))?
             .hello;
-        if !same_token(&hello.token, &self.info.token) {
-            return Err("wrong token".into());
+        if !valid_nonce(&hello.nonce) {
+            return Err("the nonce is not 64 hex digits".into());
+        }
+        if !same_secret(&hello.auth, &hello_auth(&self.info.token, &hello.nonce)) {
+            return Err("wrong token: the auth does not prove this host's token".into());
         }
         if hello.protocol != PROTOCOL {
             return Err(format!(
@@ -188,26 +194,19 @@ impl Ctx {
                 hello.protocol
             ));
         }
-        if let Some(nonce) = &hello.nonce
-            && !valid_nonce(nonce)
-        {
-            return Err("the nonce is not 64 hex digits".into());
-        }
         Ok((hello.role, hello.nonce))
     }
 
-    /// The hello reply; with the client's nonce, the proof that this host knows the token.
-    fn hello_ok(&self, nonce: Option<&str>) -> String {
-        let mut reply = json!({"hello": {
+    /// The hello reply, with the proof that this host knows the token.
+    fn hello_ok(&self, nonce: &str) -> String {
+        json!({"hello": {
             "ok": true,
             "instance": self.info.instance,
             "version": self.info.version,
             "pid": self.info.pid,
-        }});
-        if let Some(nonce) = nonce {
-            reply["hello"]["proof"] = hello_proof(&self.info.token, nonce).into();
-        }
-        reply.to_string()
+            "proof": hello_proof(&self.info.token, nonce),
+        }})
+        .to_string()
     }
 
     /// The reply line for one request line.
@@ -263,12 +262,12 @@ fn connection<C: Connection>(mut conn: C, ctx: &Ctx) -> io::Result<()> {
     match ctx.check_hello(&line) {
         Err(reason) => refuse(&mut conn, "incompatible", &reason),
         Ok((Role::Stream, nonce)) => {
-            write_line(&mut conn, &ctx.hello_ok(nonce.as_deref()))?;
+            write_line(&mut conn, &ctx.hello_ok(&nonce))?;
             conn.set_read_timeout(None)?;
             crate::stream::serve(reader, conn, &ctx.panes)
         }
         Ok((Role::Control, nonce)) => {
-            write_line(&mut conn, &ctx.hello_ok(nonce.as_deref()))?;
+            write_line(&mut conn, &ctx.hello_ok(&nonce))?;
             conn.set_read_timeout(None)?;
             control(reader, conn, ctx)
         }
@@ -325,9 +324,9 @@ mod tests {
 
     #[test]
     fn tokens_compare_whole() {
-        assert!(same_token("abc", "abc"));
-        assert!(!same_token("abc", "abd"));
-        assert!(!same_token("abc", "ab"));
+        assert!(same_secret("abc", "abc"));
+        assert!(!same_secret("abc", "abd"));
+        assert!(!same_secret("abc", "ab"));
     }
 
     fn ctx() -> Ctx {
@@ -344,48 +343,67 @@ mod tests {
         }
     }
 
+    const NONCE: &str = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f";
+
+    fn hello_line(auth: &str, nonce: &str, protocol: u32) -> String {
+        format!(
+            r#"{{"hello":{{"auth":"{auth}","nonce":"{nonce}","protocol":{protocol},"role":"control","clientId":"c"}}}}"#
+        )
+    }
+
     #[test]
-    fn hello_needs_the_token_and_the_protocol() {
+    fn hello_needs_the_proof_of_the_token_and_the_protocol() {
         let ctx = ctx();
-        let hello = |token: &str, protocol: u32| {
-            format!(
-                r#"{{"hello":{{"token":"{token}","protocol":{protocol},"role":"control","clientId":"c"}}}}"#
-            )
-        };
+        let auth = hello_auth("tok", NONCE);
         assert_eq!(
-            ctx.check_hello(&hello("tok", PROTOCOL)),
-            Ok((Role::Control, None))
+            ctx.check_hello(&hello_line(&auth, NONCE, PROTOCOL)),
+            Ok((Role::Control, NONCE.to_owned()))
         );
+        // An auth made with another token.
+        let other = hello_auth("bad", NONCE);
         assert!(
-            ctx.check_hello(&hello("bad", PROTOCOL))
+            ctx.check_hello(&hello_line(&other, NONCE, PROTOCOL))
                 .unwrap_err()
                 .contains("token")
         );
+        // An auth for another nonce (one replayed from another connection).
+        let replayed = hello_auth("tok", &"1e".repeat(32));
         assert!(
-            ctx.check_hello(&hello("tok", PROTOCOL + 1))
+            ctx.check_hello(&hello_line(&replayed, NONCE, PROTOCOL))
+                .is_err()
+        );
+        assert!(
+            ctx.check_hello(&hello_line(&auth, NONCE, PROTOCOL + 1))
                 .unwrap_err()
                 .contains("protocol")
         );
+        // A nonce that is not 64 hex digits.
+        assert!(
+            ctx.check_hello(&hello_line(&hello_auth("tok", "xyz"), "xyz", PROTOCOL))
+                .unwrap_err()
+                .contains("nonce")
+        );
+        // The token itself, as the old hello carried it, is not a hello.
+        let old = format!(
+            r#"{{"hello":{{"token":"tok","protocol":{PROTOCOL},"role":"control","clientId":"c"}}}}"#
+        );
+        assert!(ctx.check_hello(&old).is_err());
         assert!(ctx.check_hello("{}").is_err());
     }
 
     #[test]
-    fn a_nonce_is_answered_with_the_proof_of_the_token() {
+    fn the_reply_proves_the_token_and_cannot_be_reflected_as_an_auth() {
         let ctx = ctx();
-        let nonce = "0f".repeat(32);
-        let line = format!(
-            r#"{{"hello":{{"token":"tok","protocol":{PROTOCOL},"role":"stream","clientId":"c","nonce":"{nonce}"}}}}"#
+        let reply: Value = serde_json::from_str(&ctx.hello_ok(NONCE)).unwrap();
+        let proof = reply["hello"]["proof"].as_str().unwrap().to_owned();
+        assert_eq!(proof, hello_proof("tok", NONCE));
+        // A squatter that relays a client's nonce to the host and sends the host's proof back
+        // as its own auth gets nothing.
+        assert!(
+            ctx.check_hello(&hello_line(&proof, NONCE, PROTOCOL))
+                .unwrap_err()
+                .contains("token")
         );
-        let (role, got) = ctx.check_hello(&line).unwrap();
-        assert_eq!((role, got.as_deref()), (Role::Stream, Some(nonce.as_str())));
-        let reply: Value = serde_json::from_str(&ctx.hello_ok(Some(&nonce))).unwrap();
-        assert_eq!(reply["hello"]["proof"], hello_proof("tok", &nonce));
-        // Without a nonce, no proof.
-        let reply: Value = serde_json::from_str(&ctx.hello_ok(None)).unwrap();
-        assert!(reply["hello"].get("proof").is_none());
-        // A nonce that is not 64 hex digits is refused.
-        let bad = line.replace(&nonce, "xyz");
-        assert!(ctx.check_hello(&bad).unwrap_err().contains("nonce"));
     }
 
     #[test]

@@ -72,10 +72,14 @@ A is first because every other piece needs a terminal backend that is not tmux.
 - Each client opens two connections, as in Orca:
   - `control`: NDJSON request/response with an `id` per request;
   - `stream`: length-prefixed binary frames, one subscription per pane.
-- Handshake: `hello{token, protocolVersion, clientId, nonce}`. The token is read from the discovery
-  file (section 4). The reply carries `proof = hex(SHA-256(token || 0x00 || nonce))`, and the client
-  refuses an endpoint that cannot prove the token, so a process squatting on the pipe name cannot
-  pass for the host. A host that holds its home's lock but finds the pipe name taken exits with an
+- Handshake: `hello{auth, nonce, protocolVersion, clientId}`. The client reads the token from the
+  discovery file (section 4) but never sends it: whatever listens on the endpoint reads the hello,
+  and that may be a process squatting on the pipe name. `nonce` is 32 random bytes (64 hex digits)
+  and `auth = hex(SHA-256(token || 0x01 || nonce))`; the host compares it with its own (in constant
+  time) and refuses a mismatch as incompatible. The reply carries
+  `proof = hex(SHA-256(token || 0x00 || nonce))`, and the client refuses an endpoint without a valid
+  proof, so a squatter cannot pass for the host. The separators differ, so a host's proof sent back
+  as an `auth` proves nothing. A host that holds its home's lock but finds the pipe name taken exits with an
   error ("pipe name held by another process") and sets the stale discovery file aside.
 - Control requests map one to one onto the backend:
   - pane lifecycle: `create`, `kill`, `respawn` (with `expectedHeldToken`), `holdOpen`, `releaseHold`;
