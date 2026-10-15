@@ -86,6 +86,15 @@ it('the complete vocabulary fits bounded chunks, including the longest metric ke
   }
 })
 
+it('takes a phone build context: its release and iOS or Android, nothing finer', async () => {
+  for (const platform of ['ios', 'android']) {
+    const response = await submit({ ...good, context: { surface: 'phone', release: '1.0.3', platform, channel: 'production' } })
+    expect(response.statusCode).toBe(200)
+  }
+  const model = await submit({ ...good, context: { surface: 'phone', release: '1.0.3', platform: 'iPhone15,2', channel: 'production' } })
+  expect(model.statusCode).toBe(400)
+})
+
 it('rejects extra context, custom versions and device fingerprints without echoing them', async () => {
   const context = { surface: 'desktop', release: '1.2.73', platform: 'macos', channel: 'production' }
   for (const c of [{ ...context, path: 'PRIVATE_CANARY' }, { ...context, release: 'PRIVATE_CANARY' },

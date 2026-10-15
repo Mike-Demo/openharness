@@ -105,3 +105,19 @@ it('reads Store and model-list reach only from the requests a person opened', ()
   expect(r.features.find(f => f.action === 'model_list')).toMatchObject({ userRequests: 0, installationDays: null })
   expect(r.features.find(f => f.action === 'history')).toMatchObject({ userRequests: null, installationDays: null })
 })
+
+it("splits the phone onboarding's long waits past a minute and shows what happened on the way", () => {
+  const r = dailyProductReview([
+    row('2026-10-12', 'ui_phone_computer_wait_started', 4), row('2026-10-12', 'ui_phone_computer_wait_ok', 2),
+    row('2026-10-12', 'ui_phone_computer_wait_over_1m', 2), row('2026-10-12', 'ui_phone_computer_wait_15m_to_1h', 2),
+    row('2026-10-12', 'ui_phone_computer_wait_resumed', 1), row('2026-10-12', 'ui_phone_computer_wait_not_you', 1),
+    row('2026-10-12', 'ui_phone_session_open_blocked_password', 1),
+  ], new Date('2026-10-13'))
+  const wait = r.flows.find(f => f.channel === 'ui' && f.surface === 'phone' && f.flow === 'computer_wait')
+  expect(wait).toMatchObject({ started: 4, unmatchedStarts: 2,
+    over1mBuckets: { '1m_to_5m': 0, '15m_to_1h': 2 }, marks: { resumed: 1, not_you: 1, link_shared: 0 } })
+  expect(r.flows.find(f => f.channel === 'ui' && f.surface === 'phone' && f.flow === 'session_open'))
+    .toMatchObject({ marks: { blocked_password: 1, blocked_offline: 0 } })
+  expect(r.flows.find(f => f.channel === 'ui' && f.surface === 'phone' && f.flow === 'session_open')).not.toHaveProperty('over1mBuckets')
+  expect(r.flows.find(f => f.channel === 'ui' && f.surface === 'desktop' && f.flow === 'computer_wait')).not.toHaveProperty('marks')
+})

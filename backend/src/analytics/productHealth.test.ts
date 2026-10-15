@@ -27,6 +27,22 @@ it('creates two independent margins with no joint dimensions or arbitrary labels
   expect(cleanUsageContext({ ...context, release: 'PRIVATE/custom-build', private: 'PRIVATE' })).toEqual({ ...context, release: 'unknown' })
   expect(cleanUsageContext({ ...context, platform: 'PRIVATE' })).toBeUndefined()
 })
+it('splits phone onboarding counts by release and platform, and drops a development build', () => {
+  const phone = { surface: 'phone', release: '1.0.3', platform: 'android', channel: 'production' } as const
+  expect(healthBreakdowns(phone, 'ui_phone_computer_wait_started')).toEqual([
+    'breakdown:release:phone:1.0.3:ui_phone_computer_wait_started', 'breakdown:platform:phone:android:ui_phone_computer_wait_started'])
+  expect(healthBreakdowns({ ...phone, channel: 'development' }, 'ui_phone_computer_wait_started')).toEqual([])
+  const row = (metric: string, value: number) => ({ dayUtc: new Date('2026-10-01'), metric, value })
+  const data = dailyProductHealth([
+    row('health_phone_collector_days', 25),
+    row('breakdown:platform:phone:android:health_phone_collector_days', 25),
+    row('breakdown:platform:phone:android:ui_phone_computer_wait_started', 12),
+  ], new Date('2026-10-04'))
+  expect(data.daily[0].coverage.phoneSessions).toBe(25)
+  expect(data.breakdowns).toEqual([expect.objectContaining({ dimension: 'platform', surface: 'phone', bucket: 'android',
+    counters: expect.objectContaining({ ui_phone_computer_wait_started: 12 }) })])
+})
+
 it('suppresses sparse labels, distinguishes missing from zero, and matures first-work cohorts', () => {
   const row = (day: string, metric: string, value: number) => ({ dayUtc: new Date(day), metric, value })
   const data = dailyProductHealth([

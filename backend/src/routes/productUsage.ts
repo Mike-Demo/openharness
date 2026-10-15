@@ -6,9 +6,9 @@ import { releaseBucket } from '../types/productHealthContract.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 
 const contextSchema = z.strictObject({
-  surface: z.enum(['cli', 'desktop']),
+  surface: z.enum(['cli', 'desktop', 'phone']),
   release: z.string().max(11).refine(v => v === 'unknown' || releaseBucket(v) === v),
-  platform: z.enum(['macos', 'linux', 'windows', 'other']),
+  platform: z.enum(['macos', 'linux', 'windows', 'ios', 'android', 'other']),
   channel: z.enum(['production', 'development']),
 })
 
