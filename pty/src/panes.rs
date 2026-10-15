@@ -648,10 +648,15 @@ impl Panes {
             }
             #[cfg(not(windows))]
             Op::JobPids { .. } => Err(OpError::new("unsupported", "no job objects here")),
-            Op::Processes => Err(OpError::new(
-                "unsupported",
-                "not available on this platform yet",
-            )),
+            // The machine's process table (Windows): what the daemon reads `ps` for elsewhere.
+            #[cfg(windows)]
+            Op::Processes => {
+                let rows = crate::ps::snapshot()
+                    .map_err(|e| OpError::new("internal", format!("process table: {e}")))?;
+                reply(json!({ "rows": rows }))
+            }
+            #[cfg(not(windows))]
+            Op::Processes => Err(OpError::new("unsupported", "the daemon reads ps here")),
         }
     }
 }
@@ -1403,7 +1408,24 @@ mod windows_tests {
         });
         assert!(pids.contains(&root), "{pids:?} without {root}");
         assert_eq!(job_pids(&panes, "%99").unwrap_err().code, "no_pane");
-        assert_eq!(panes.handle(Op::Processes).unwrap_err().code, "unsupported");
+        // The process table lists the pane's child, started by this process.
+        let rows = panes.handle(Op::Processes).unwrap()["rows"].clone();
+        let child = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["pid"].as_u64() == Some(root))
+            .expect("the child's row")
+            .clone();
+        assert_eq!(
+            child["parentPid"].as_u64(),
+            Some(u64::from(std::process::id()))
+        );
+        assert!(child["startMarker"].as_str().unwrap().starts_with("w:"));
+        assert!(
+            child["args"].as_str().unwrap().contains("Start-Sleep 60"),
+            "{child}"
+        );
         panes
             .handle(op(json!({"op": "kill", "pane": pane, "graceMs": 300})))
             .unwrap();

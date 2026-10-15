@@ -9,6 +9,7 @@ pub mod pane;
 pub mod pane_ids;
 pub mod panes;
 pub mod protocol;
+pub mod ps;
 pub mod server;
 pub mod stream;
 pub mod transport;

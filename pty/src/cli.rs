@@ -74,11 +74,7 @@ pub fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match parse(&args) {
         Ok(Command::Version) => println!("{}", version_line()),
-        Ok(Command::Ps) => {
-            // The process table is Windows-only (Task 18).
-            println!("{{\"unsupported\":true}}");
-            std::process::exit(3);
-        }
+        Ok(Command::Ps) => ps(),
         Ok(Command::Serve {
             home,
             history_limit,
@@ -96,7 +92,24 @@ pub fn main() {
     }
 }
 
-/// Create `<home>/run` (owner-only) if it is missing.
+/// `ps --json`: `{"rows":[…]}` on Windows; elsewhere `{"unsupported":true}`, exit 3 (the daemon
+/// reads `ps` there).
+fn ps() {
+    #[cfg(windows)]
+    match crate::ps::snapshot() {
+        Ok(rows) => println!("{}", serde_json::json!({ "rows": rows })),
+        Err(err) => {
+            eprintln!("harness-pty: process table: {err}");
+            std::process::exit(1);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        println!("{{\"unsupported\":true}}");
+        std::process::exit(3);
+    }
+}
+
 /// Create `<home>/run` if it is missing, the owner's alone: mode 0700 on Unix; on Windows a
 /// protected DACL that lets only the user in (and that what is created inside inherits), set on
 /// a run directory that already exists as well, before anything is written in it.
