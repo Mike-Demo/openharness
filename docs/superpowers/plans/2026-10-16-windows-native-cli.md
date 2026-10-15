@@ -2721,7 +2721,7 @@ CORE="$(printf '%s' "$VERSION" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')"
 ssh admin@192.168.65.3 "(if not exist C:\work\b1\dist mkdir C:\work\b1\dist) & (if not exist C:\work\b1\payload mkdir C:\work\b1\payload)"
 tar -cf - -C cli/dist cli.js notify.mjs | ssh admin@192.168.65.3 "tar -xf - -C C:/work/b1/dist"
 # On the VM: build both binaries stamped with the version core, and gather the payload.
-ssh admin@192.168.65.3 "cd /d C:\work\oh\pty && set HARNESS_PTY_VERSION=$CORE&& cargo build --locked --release && copy /y target\release\harness-pty.exe C:\work\b1\payload && copy /y target\release\harness-launch.exe C:\work\b1\payload && copy /y vendor\conpty\arm64\conpty.dll C:\work\b1\payload && copy /y vendor\conpty\arm64\OpenConsole.exe C:\work\b1\payload"
+ssh admin@192.168.65.3 "cd /d C:\work\oh\pty && set HARNESS_PTY_VERSION=$CORE&& cargo build --locked --release && copy /y target\release\harness-pty.exe C:\work\b1\payload && copy /y target\release\harness-launch.exe C:\work\b1\payload && copy /y target\release\harness.exe C:\work\b1\payload && copy /y vendor\conpty\arm64\conpty.dll C:\work\b1\payload && copy /y vendor\conpty\arm64\OpenConsole.exe C:\work\b1\payload"
 # Fetch Node's official zip and check it against nodejs.org's SHASUMS256.txt for v22.23.2.
 ssh admin@192.168.65.3 "curl.exe -fsSLo C:\work\b1\node-v22.23.2-win-arm64.zip https://nodejs.org/dist/v22.23.2/node-v22.23.2-win-arm64.zip && certutil -hashfile C:\work\b1\node-v22.23.2-win-arm64.zip SHA256"
 # expect: fec025a6da31757e3b6af84c5a1628e9d38442ca99a2161091d78f2fcfa35ef3
