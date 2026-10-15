@@ -1,9 +1,14 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { hookCredentialMatches, hookCredentialPath, loadOrCreateHookCredential, readHookCredential } from './hookAuth.js'
+import { asWindows } from '../testing/windowsOpen.js'
+
+// Windows' open has no O_NOFOLLOW: asWindows says when to open as Windows does (src/testing/windowsOpen.ts).
+vi.mock('node:fs', async (importOriginal) =>
+  (await import('../testing/windowsOpen.js')).windowsOpenFs(await importOriginal<typeof import('node:fs')>()))
 
 const dirs: string[] = []
 afterEach(() => dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })))
@@ -65,6 +70,20 @@ describe('hook channel credential', () => {
   // start (node and tsx, compiling hookAuth.ts) is not what is measured: a 1.5 s limit on the whole child
   // timed it out under load (the full unit suite at load 100) while the read itself returned at once. A
   // blocked read never returns, so any answer is the proof; the limit only ends a child that blocked.
+  it('on Windows, refuses a credential that is a link, which Windows would open through', () => {
+    const dir = mkdtempSync('/tmp/hook-auth-')
+    const elsewhere = mkdtempSync('/tmp/hook-elsewhere-')
+    dirs.push(dir, elsewhere)
+    const planted = join(elsewhere, 'hook-credential')
+    writeFileSync(planted, `${'A'.repeat(43)}\n`, { mode: 0o600 })
+    symlinkSync(planted, hookCredentialPath(dir))
+    asWindows(dir, () => {
+      expect(readHookCredential(dir)).toBeNull()
+      // Never replaced either: the link is not this daemon's to remove.
+      expect(() => loadOrCreateHookCredential(dir)).toThrow(/EEXIST/)
+    })
+  })
+
   it('rejects a credential FIFO without blocking', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hook-auth-'))
     dirs.push(dir)

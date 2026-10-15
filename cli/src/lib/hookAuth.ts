@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, openSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { secureStateDirectory, syncStateDirectory } from './secureState.js'
+import { requireWindowsStateFile, secureStateDirectory, syncStateDirectory } from './secureState.js'
 
 const FILE_NAME = 'hook-credential'
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/
@@ -24,6 +24,8 @@ export function readHookCredential(dataDir: string): string | null {
   try {
     if (!secureDataDirectory(dataDir)) return null
     const file = hookCredentialPath(dataDir)
+    // Windows: the file itself must be a real file in the profile (secureState.ts); its open follows links.
+    if (process.platform === 'win32') requireWindowsStateFile(file)
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
     const stat = fstatSync(fd)
     const uid = typeof process.getuid === 'function' ? process.getuid() : null

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { directorySyncSupported, hardenPrivateStateFileIfPresent, insideWindowsRoots, readPrivateStateFile, secureStateDirectory, syncStateDirectory, windowsStateRoots } from './secureState.js'
+import { directorySyncSupported, hardenPrivateStateFileIfPresent, insideWindowsRoots, readPrivateStateFile, requireWindowsStateFile, secureStateDirectory, syncStateDirectory, windowsStateRoots } from './secureState.js'
 
 const WINDOWS = process.platform === 'win32'
 
@@ -157,6 +157,33 @@ describe('syncStateDirectory', () => {
       expect(directorySyncSupported()).toBe(true)
     } finally {
       Object.defineProperty(process, 'platform', platform)
+    }
+  })
+})
+
+// Windows' open has no O_NOFOLLOW: a credential file is checked by itself before it is read (hookAuth.ts, the daemon
+// token). The rule needs no Windows API, so it runs here too.
+describe('requireWindowsStateFile', () => {
+  it('takes a real file inside the state roots, and refuses a link or a file outside them', () => {
+    const dir = mkdtempSync('/tmp/secure-file-')
+    const outside = mkdtempSync('/tmp/secure-outside-')
+    dirs.push(dir, outside)
+    const configured = process.env.ADAPTER_DATA_DIR
+    process.env.ADAPTER_DATA_DIR = dir
+    try {
+      const file = join(dir, 'daemon-token')
+      writeFileSync(file, 'x')
+      expect(() => requireWindowsStateFile(file)).not.toThrow()
+      const link = join(dir, 'hook-credential')
+      symlinkSync(file, link)
+      expect(() => requireWindowsStateFile(link)).toThrow(/link or junction/)
+      const far = join(outside, 'daemon-token')
+      writeFileSync(far, 'x')
+      expect(() => requireWindowsStateFile(far)).toThrow(/outside your user profile/)
+      expect(() => requireWindowsStateFile(join(dir, 'missing'))).toThrow(/ENOENT/)
+    } finally {
+      if (configured === undefined) delete process.env.ADAPTER_DATA_DIR
+      else process.env.ADAPTER_DATA_DIR = configured
     }
   })
 })

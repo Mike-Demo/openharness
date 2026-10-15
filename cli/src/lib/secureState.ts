@@ -4,6 +4,7 @@ import {
   fchmodSync,
   fstatSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -58,6 +59,19 @@ function requireInsideWindowsRoots(path: string, kind: 'directory' | 'file'): vo
     throw new Error(`state ${kind} ${path} is outside your user profile (${homedir()}), so its contents cannot be`
       + ' trusted. Keep Harness state in your profile, or set ADAPTER_DATA_DIR to the folder you want it in.')
   }
+}
+
+/**
+ * Windows: a state file a credential is read from (the hook credential, the daemon token, lib/windows/pipeAuth.ts).
+ * The file must not be a link or junction itself (Node's lstat reports both as symbolic links), and resolved, it
+ * must be inside the state roots. Windows' open has no O_NOFOLLOW (the constant is undefined there). So this check
+ * is what keeps a link planted in the data folder from handing the daemon another file. Throws otherwise.
+ */
+export function requireWindowsStateFile(file: string): void {
+  if (lstatSync(file).isSymbolicLink()) {
+    throw new Error(`state file ${file} is a link or junction; a credential is never read through one`)
+  }
+  requireInsideWindowsRoots(file, 'file')
 }
 
 /**
