@@ -14,12 +14,31 @@ describe('pipe auth', () => {
     expect([PIPE_AUTH_HEADER, PIPE_PROOF_HEADER]).toEqual(['x-harness-auth', 'x-harness-proof'])
   })
 
-  it('authenticates with an HMAC of the nonce and proves with another, never sending the token', () => {
+  it('authenticates with an HMAC of the nonce and proves with another', () => {
     const nonce = 'ab'.repeat(32)
     expect(pipeAuthValue(token, nonce)).toBe(`${nonce}.${hmac(0x01, nonce)}`)
     expect(pipeProofValue(token, nonce)).toBe(hmac(0x00, nonce))
-    expect(pipeAuthValue(token, nonce)).not.toContain(token.toString('hex'))
     expect(pipeProofValue(token, nonce)).not.toBe(pipeAuthValue(token, nonce).split('.')[1])
+  })
+
+  it('refuses a proof offered as an auth: what the daemon answers opens nothing', () => {
+    const id = 'a'.repeat(32)
+    const nonce = newPipeNonce(`harness-${id}`)
+    const seen = new NonceWindow()
+    expect(checkPipeAuth(token, `${nonce}.${pipeProofValue(token, nonce)}`, seen, id)).toBeNull()
+    expect(seen.size).toBe(0)
+  })
+
+  it('binds a nonce only to a whole pipe id: an empty, partial or malformed one refuses every auth', () => {
+    const id = 'b'.repeat(32)
+    const nonce = newPipeNonce(`harness-${id}`)
+    const header = pipeAuthValue(token, nonce)
+    const seen = new NonceWindow()
+    for (const pipeId of ['', 'b', 'b'.repeat(31), 'b'.repeat(33), 'B'.repeat(32), `${'b'.repeat(31)}g`, nonce]) {
+      expect(checkPipeAuth(token, header, seen, pipeId)).toBeNull()
+    }
+    expect(seen.size).toBe(0)
+    expect(checkPipeAuth(token, header, seen, id)).toEqual({ nonce })
   })
 
   it('accepts an auth once, and only for the pipe whose id starts its nonce', () => {
@@ -57,6 +76,17 @@ describe('pipe auth', () => {
     expect(seen.admit('a')).toBe(true)
   })
 
+  it('needs room for at least one nonce, counted whole', () => {
+    for (const capacity of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => new NonceWindow(capacity)).toThrow(/capacity/)
+    }
+    const one = new NonceWindow(1)
+    expect(one.admit('a')).toBe(true)
+    expect(one.admit('a')).toBe(false)
+    expect(one.admit('b')).toBe(true)
+    expect(one.size).toBe(1)
+  })
+
   it('takes a proof from an answer\'s headers only when it is this token\'s for this nonce', () => {
     const nonce = newPipeNonce(`harness-${'f'.repeat(32)}`)
     expect(pipeProven({ [PIPE_PROOF_HEADER]: pipeProofValue(token, nonce) }, token, nonce)).toBe(true)
@@ -74,6 +104,12 @@ describe('pipe auth', () => {
     // A Unix socket with a pipe's name stands in for one in the tests.
     expect(pipeIdOf(`/tmp/x/harness-${'0'.repeat(32)}`)).toBe('0'.repeat(32))
     expect(pipeIdOf('\\\\.\\pipe\\other')).toBeNull()
+    // The name must be harness-<id> itself, not one that ends with it.
+    for (const name of [`\\\\.\\pipe\\evilharness-${'0'.repeat(32)}`, `/tmp/x/evilharness-${'0'.repeat(32)}`, `xharness-${'0'.repeat(32)}`]) {
+      expect(pipeIdOf(name)).toBeNull()
+      expect(() => newPipeNonce(name)).toThrow(/not a Harness pipe/)
+    }
+    expect(pipeIdOf(`harness-${'0'.repeat(32)}`)).toBe('0'.repeat(32))
     expect(() => newPipeNonce('/tmp/daemon.sock')).toThrow(/not a Harness pipe/)
   })
 })

@@ -26,7 +26,9 @@ export const PIPE_PROOF_HEADER = 'x-harness-proof'
 
 const HEX64 = /^[0-9a-f]{64}$/
 const AUTH_RE = /^([0-9a-f]{64})\.([0-9a-f]{64})$/
-const PIPE_ID_RE = /harness-([0-9a-f]{32})$/
+const PIPE_ID = /^[0-9a-f]{32}$/
+/** `harness-<id>` as the whole last part of the name: `\\.\pipe\harness-<id>`, or a test socket's `/…/harness-<id>`. */
+const PIPE_ID_RE = /(?:^|[\\/])harness-([0-9a-f]{32})$/
 
 function mac(token: Buffer, separator: number, nonce: string): string {
   return createHmac('sha256', token).update(Buffer.of(separator)).update(nonce, 'utf8').digest('hex')
@@ -50,7 +52,9 @@ export function pipeProofValue(token: Buffer, nonce: string): string {
 /** The nonces a daemon took most recently: an auth is accepted once. Bounded; the oldest is forgotten first. */
 export class NonceWindow {
   private readonly seen = new Set<string>()
-  constructor(readonly capacity = 4_096) {}
+  constructor(readonly capacity = 4_096) {
+    if (!Number.isInteger(capacity) || capacity < 1) throw new RangeError(`A nonce window's capacity must be a whole number of at least 1, not ${capacity}`)
+  }
 
   /** Whether [nonce] is new here; it is remembered either way. */
   admit(nonce: string): boolean {
@@ -68,14 +72,15 @@ export class NonceWindow {
 /**
  * The nonce of a valid `x-harness-auth` [header], or null. Valid: well formed, this token's HMAC, a nonce that begins
  * with [pipeId] when one is given, and not seen before. The HMAC is checked before the window, so refused headers
- * never fill it.
+ * never fill it. A [pipeId] that is not a whole id (32 lowercase hex digits; pipeIdOf) refuses every header: an empty
+ * or partial one would bind nothing. A server always passes its own pipe's id.
  */
 export function checkPipeAuth(token: Buffer, header: string | undefined, seen: NonceWindow, pipeId?: string): { nonce: string } | null {
   if (typeof header !== 'string') return null
   const match = AUTH_RE.exec(header)
   if (!match) return null
   const nonce = match[1]!
-  if (pipeId !== undefined && !nonce.startsWith(pipeId)) return null
+  if (pipeId !== undefined && !(PIPE_ID.test(pipeId) && nonce.slice(0, 32) === pipeId)) return null
   if (!sameHex(match[2]!, mac(token, 0x01, nonce))) return null
   return seen.admit(nonce) ? { nonce } : null
 }
