@@ -2,18 +2,6 @@ name: Windows PTY
 
 on:
   workflow_dispatch:
-  # TEMPORARY: remove before merging (workflow_dispatch needs the file on main)
-  push:
-    branches: [feat/windows-native-pty]
-    paths:
-      - 'pty/**'
-      - 'term/**'
-      - 'tui/vendor/**'
-      - 'cli/src/lib/ptyHost/**'
-      - 'cli/src/lib/ptyHostBackend*.ts'
-      - 'cli/src/lib/windows/**'
-      - 'cli/scripts/lib/ptyPayload.mjs'
-      - '.github/workflows/windows-pty.yml'
 
 concurrency:
   group: windows-pty-${{ github.ref }}
