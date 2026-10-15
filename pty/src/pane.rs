@@ -59,7 +59,7 @@ pub struct PaneSpec {
     pub env: HashMap<String, String>,
     pub cols: u16,
     pub rows: u16,
-    /// Names the child does not get from the host's own environment (`clearEnv`).
+    /// Names the child does not get from the host's own environment (`clearInherited`).
     pub clear_env: Vec<String>,
 }
 

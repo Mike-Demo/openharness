@@ -15,9 +15,10 @@
  * - `harness_after`, the engine's exit turning the pane into the person's shell with its status recorded where the
  *   daemon reads it: the pty host does it, given `afterExit` (pty/src/panes.rs `hand_off`), with
  *   `defaultWindowsShell()`. PowerShell says what happened, as the script does; cmd.exe says nothing.
- * - Not done: an install before the engine and a take-over's wait (no script to run them in), the variables a grid
- *   launch clears (the host can add variables, not take inherited ones away), Harness's Node at the end of PATH, the
- *   open-files raise and the stop handling, which Windows has no counterpart of.
+ * - The variables a grid launch clears (`unset`): the pty host leaves them out of what the engine inherits from the
+ *   host's own environment (`clearInherited`, `windowsPaneLaunch`).
+ * - Not done: an install before the engine and a take-over's wait (no script to run them in), Harness's Node at the
+ *   end of PATH, the open-files raise and the stop handling, which Windows has no counterpart of.
  *
  * Every value the shells are given travels in their environment, never in their command text.
  */

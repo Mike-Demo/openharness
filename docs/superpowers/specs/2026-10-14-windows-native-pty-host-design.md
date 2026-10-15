@@ -1,7 +1,7 @@
 # Windows native: PTY host and terminal backend (sub-project A)
 
 Date: 2026-10-14
-Status: design, awaiting review
+Status: implemented (branch `feat/windows-native-pty`; Windows E2E in `docs/testing/windows-pty-e2e.md`)
 
 ## Goal
 
@@ -66,7 +66,7 @@ A is first because every other piece needs a terminal backend that is not tmux.
     (it is not inheritable), so when the host dies, every pane's whole tree dies with it, as a tmux
     server's panes do (section 4);
   - an `alacritty_terminal` grid with scrollback bounded like tmux `history-limit`;
-  - metadata: id `p<N>`, title (OSC 0/2), cwd (spawn cwd, the user's home directory when the create
+  - metadata: id `%<N>` (tmux-shaped, see "Decisions made while planning"), title (OSC 0/2), cwd (spawn cwd, the user's home directory when the create
     gives none, as a new tmux pane; then OSC 7), owner tag, and a held flag
     (the `remain-on-exit` equivalent);
   - the env var `HARNESS_PANE=<instanceId>:<paneId>` in the child, so hooks can name their pane the
@@ -100,7 +100,7 @@ A is first because every other piece needs a terminal backend that is not tmux.
 ### Daemon (TypeScript)
 
 - `TerminalBackendName = 'tmux' | 'ptyhost'`.
-- `PtyRuntimeRef { backend: 'ptyhost'; paneId: string }`, and
+- `PtyRuntimeRef { backend: 'ptyhost'; paneId: string; instance: string }` (the host instance, `p<protocol>`), and
   `TerminalRuntimeRef = TmuxRuntimeRef | PtyRuntimeRef`.
 - `cli/src/lib/ptyHostBackend.ts` implements the whole `TerminalBackend`, including `holdOpen`,
   `respawn` and `openStream`, so restart, fork and swap work.
@@ -185,12 +185,16 @@ pid therefore cannot pass, even with a colliding start time. Orca documents this
   1. `ClosePseudoConsole`, which delivers `CTRL_CLOSE_EVENT`;
   2. wait the same grace period tmux uses;
   3. `TerminateJobObject`, which kills the whole tree.
-- **Process signals**: agent-process kills (`process.kill(pid, SIG…)` in `stopAgentService`,
-  `swap`, `tmux.ts` and session search) go through a new `cli/src/lib/processSignals.ts` with
-  `terminateProcess(identity, { graceful })`. Daemon and service kills are sub-project B.
+- **Process signals**: agent-process kills (`process.kill(pid, SIG…)` in `stopAgentService` and
+  `swap`, through `terminateDeletedAgent`) go through one seam, `signalAgentProcess(pid, signal)` in
+  `cli/src/lib/processSignals.ts`. Callers check the process's identity first, as before. Daemon and
+  service kills are sub-project B.
   - Unix keeps `process.kill`.
-  - Windows asks the host to end the process when it belongs to a pane. Otherwise it runs
-    `taskkill /T /F`, guarded by a root-identity check adapted from Orca.
+  - Windows (the ptyhost backend installs the signaller) runs `taskkill /PID <pid> /T /F` for both
+    SIGTERM and SIGKILL: a console engine has no window for a graceful `taskkill` to close. It never
+    closes a pane, even when the pid is the pane's root: a restart or swap holds the pane open, ends
+    its engine through the seam and respawns in the same pane (`windows/taskkill.ts`, adapted from
+    Orca's tree kill).
   - The liveness probe (signal 0) is unchanged.
 - **Process groups** (pgid/tpgid, negative-pid kills) have no Windows equivalent. The pane's Job takes
   the "whole group" role.
@@ -217,12 +221,16 @@ and capture.
 - **Production**: the host is a harnessd sub-service (harnessd for Windows is sub-project B and runs
   under Task Scheduler at logon, outside any kill-on-close job). It runs beside the daemon and does
   not restart with it.
-- **Development/tests**: without harnessd, `PtyHostBackend.prepare()` spawns
-  `harness-pty.exe serve` with `DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB`.
-- **Single instance**: the pipe is created with `FILE_FLAG_FIRST_PIPE_INSTANCE`, and a second host
-  exits. No lock file is needed.
-- **Discovery**: `HARNESS_HOME/run/pty-host-<protocol>.json` holds pipe, pid, creation time, version
-  and token. The host writes it with an owner-only DACL.
+- **Development/tests**: without harnessd, `PtyHostBackend.prepare()` spawns `harness-pty serve`
+  detached. A Windows host that finds itself in a job (the daemon's, a terminal's) starts a copy of
+  itself with `CREATE_BREAKAWAY_FROM_JOB | DETACHED_PROCESS` and exits (`pty/src/breakaway.rs`).
+- **Single instance**: the home's lock, `run/pty-host-<protocol>.lock` (`flock` on Unix, the file
+  open with no sharing on Windows), taken before the endpoint is bound or pane ids are reserved. A
+  host that cannot take it exits with success. The Windows pipe name is random per start, so it is
+  no lock; its first instance is still created with `FILE_FLAG_FIRST_PIPE_INSTANCE`.
+- **Discovery**: `HARNESS_HOME/run/pty-host-<protocol>.json` holds protocol, instance, endpoint (the
+  socket path or pipe name), pid, version and token. The host writes it atomically, owner-only (0600;
+  on Windows a user-only DACL from its creation). Clients connect only to the endpoint it names.
 
 ### Daemon restart or upgrade
 
@@ -290,7 +298,10 @@ are kept.
 ### Resources
 
 - Scrollback is bounded per pane.
-- The host logs to `HARNESS_HOME/logs/pty-host.log`, with rotation.
+- The host logs to `HARNESS_HOME/logs/pty-host.log` (`pty/src/logfile.rs`): owner-only (0600 in a
+  0700 directory; the user-only DACL on Windows), and each line goes to stderr too, for a host run
+  by hand. Past 5 MB it is moved to `pty-host.log.1` (one older file is kept). `HARNESS_PTY_LOG`
+  sets the level (default `info`).
 
 ## 5. Testing
 
@@ -322,9 +333,10 @@ PR.
 
 ### Windows workflow
 
-A new manual workflow, "Windows PTY", runs on `windows-latest`: `cargo test` and then the contract
-suite against a real host. It is not part of PR CI. Build targets are `x86_64-pc-windows-msvc` and
-`aarch64-pc-windows-msvc`.
+A new manual workflow, "Windows PTY" (`.github/workflows/windows-pty.yml`), runs `cargo test` and
+then the contract suite and the Windows specs against a real host, with the pinned ConPTY payload
+beside it. It is not part of PR CI. Each target builds on its own runner: `x86_64-pc-windows-msvc`
+on `windows-latest`, `aarch64-pc-windows-msvc` on `windows-11-arm`.
 
 ### End to end
 
