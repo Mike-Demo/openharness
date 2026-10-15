@@ -15,5 +15,6 @@
   {"id": 14, "op": "respawn", "pane": "%1", "command": ["sh"], "cwd": "/var", "env": {"B": "2"}, "expectedHeldToken": "u", "clearEnv": ["C"], "clearInherited": ["OPENAI_API_KEY"], "afterExit": {"command": ["cmd.exe"], "env": {"M": "claude"}}},
   {"id": 15, "op": "jobPids", "pane": "%1"},
   {"id": 16, "op": "processes"},
-  {"id": 17, "op": "setEngineExit", "pane": "%1", "status": -1}
+  {"id": 17, "op": "setEngineExit", "pane": "%1", "status": -1},
+  {"id": 18, "op": "shutdown"}
 ]

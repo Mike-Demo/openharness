@@ -10,6 +10,12 @@
  * says so, and never lists nothing) and reconnects, through `ensurePtyHost`, after 1 s, then 2 s, 4 s … at most 30 s
  * apart; the delays start again from 1 s only for a connection that had stayed up 30 s. A host with another pid is another host: its predecessor's panes are gone, and `onHostReplaced` says so,
  * so the reconciler sees them absent and the resume path takes over. `dispose` drops the connection alone.
+ *
+ * One backend per host instance (`p<protocol>`, ptyHost/drain.ts). The one for this daemon's protocol makes new panes,
+ * and starts its host when there is none. One for the protocol before is a drain backend: it reaches the host still
+ * running from before an update and never starts one, lists, streams and controls its panes, refuses `create`, and
+ * shuts the host down once it has none (`shutdownHost`). A drain host that exits is gone for good (`hostGone`): its
+ * inventory is then authoritative and empty, so its panes' runtimes go gone through the reconciler's normal misses.
  */
 import { env } from '../config/env.js'
 import type { AgentEngine } from '../engines/types.js'
@@ -19,8 +25,8 @@ import { lookupPaneEngineProcess } from './paneEngineProcess.js'
 import { comparableStartMarker, setProcessTableSource } from './processTable.js'
 import { setAgentSignaller, type AgentSignal } from './processSignals.js'
 import type { PtyHostCallResult, PtyHostClient } from './ptyHost/client.js'
-import { ensurePtyHost, type EnsurePtyHostResult } from './ptyHost/launch.js'
-import type { PtyEvent } from './ptyHost/protocol.js'
+import { ensurePtyHost, forgetExitedHost, pidAlive, reachPtyHost, type ReachPtyHostResult } from './ptyHost/launch.js'
+import { PTY_PROTOCOL, SHUTDOWN_PROTOCOL, type PtyEvent } from './ptyHost/protocol.js'
 import { PtyHostStream } from './ptyHost/stream.js'
 import { submitContent, submitSettleMs } from './submitTiming.js'
 import type { TerminalBackend, TerminalBackendPrepared } from './terminalBackend.js'
@@ -67,12 +73,26 @@ const RECONNECT_MAX_MS = 30_000
  * dies soon after each start keeps the growing delay, rather than being restarted every second.
  */
 const RECONNECT_STABLE_MS = 30_000
+/**
+ * How many reconnects in a row a drain backend makes to a host whose process is there but never answers before it
+ * counts the host gone: a pid the system gave to another process since the host exited looks alive for good.
+ */
+const DRAIN_UNREACHABLE_LIMIT = 5
+/** How long a drained host is given to exit after its `shutdown` (or, protocol 1, its termination). */
+const HOST_EXIT_WAIT_MS = 3_000
 
 export interface PtyHostBackendOptions {
   /** The host's `--home` (`HARNESS_PTY_DIR`): its discovery file and logs live there. */
   home: string
-  /** Reach or start the host (`ensurePtyHost`); a seam for tests. */
-  launch?: (home: string) => Promise<EnsurePtyHostResult>
+  /**
+   * The host's protocol (`PTY_PROTOCOL` by default): this daemon's own makes new panes; an older one's is a drain
+   * backend (the module comment).
+   */
+  protocol?: number
+  /** Reach or start the host (`ensurePtyHost`; a drain backend's only reaches it, `reachPtyHost`); a seam for tests. */
+  launch?: (home: string) => Promise<ReachPtyHostResult>
+  /** Whether a pid runs, and its termination (a protocol 1 host has no `shutdown`); a seam for tests. */
+  hostProcess?: { alive: (pid: number) => boolean; terminate: (pid: number) => void }
   /** The tag this daemon's panes carry, read at every create and inventory, as `TmuxBackend` reads it. */
   owner?: () => string
   /** The platform it runs on (`process.platform`); a seam for the Windows wiring's tests. */
@@ -114,12 +134,27 @@ function commandName(argv: readonly string[]): string {
 }
 
 const UNAVAILABLE = 'pty host is unavailable'
+const HOST_GONE = 'the pty host has exited'
+
+/** `shutdownHost`'s outcome: the host has gone; it still has panes and stays; or it could not be asked. */
+export type PtyHostShutdown = 'exited' | 'refused' | 'failed'
+/** `drainState`: the host has gone; it has no pane at all (any owner's); it has some; or it could not be asked. */
+export type PtyHostDrainState = 'gone' | 'empty' | 'busy' | 'unknown'
 
 export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   readonly name = 'ptyhost' as const
+  /** The protocol of the host this backend reaches. */
+  readonly protocol: number
+  /** A backend for a host of an older protocol: never made new panes on, shut down once it has none. */
+  readonly draining: boolean
 
   private readonly home: string
-  private readonly launch: (home: string) => Promise<EnsurePtyHostResult>
+  private readonly launch: (home: string) => Promise<ReachPtyHostResult>
+  private readonly hostProcess: { alive: (pid: number) => boolean; terminate: (pid: number) => void }
+  /** A drain backend's host has exited, and why: its panes are gone and nothing starts it again. */
+  private gone: string | null = null
+  /** A drain backend's reconnects in a row that found the host's process but nothing answering. */
+  private unreachable = 0
   private readonly owner: () => string
   private readonly platform: NodeJS.Platform
   private readonly taskkill: (pid: number, force: boolean) => Promise<TreeKillOutcome>
@@ -143,7 +178,17 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
 
   constructor(options: PtyHostBackendOptions) {
     this.home = options.home
-    this.launch = options.launch ?? ((home) => ensurePtyHost(home))
+    this.protocol = options.protocol ?? PTY_PROTOCOL
+    this.draining = this.protocol < PTY_PROTOCOL
+    // A drain backend's instance is known before its host is reached: when it has gone, the rows still name it.
+    if (this.draining) this.instance = `p${this.protocol}`
+    const protocol = this.protocol
+    this.launch = options.launch ?? (this.draining ? ((home) => reachPtyHost(home, protocol)) : ((home) => ensurePtyHost(home)))
+    this.hostProcess = options.hostProcess ?? {
+      alive: pidAlive,
+      // On Windows `process.kill` is TerminateProcess, whatever the signal.
+      terminate: (pid) => { process.kill(pid, 'SIGTERM') },
+    }
     this.owner = options.owner ?? (() => harnessPaneOwner(env.ADAPTER_DATA_DIR))
     this.platform = options.platform ?? process.platform
     this.taskkill = options.taskkill ?? ((pid, force) => taskkillTree(pid, force))
@@ -158,8 +203,21 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
     void context
     this.disposed = false
     this.cancelReconnect()
-    if (this.platform === 'win32') this.installWindowsSeams()
+    // The process table and the signaller are the machine's, not a host's: the create backend's alone.
+    if (this.platform === 'win32' && !this.draining) this.installWindowsSeams()
+    if (this.gone) return { state: 'ready' }
     const reached = await this.launch(this.home)
+    if ('gone' in reached) {
+      this.markGone(reached.gone)
+      return { state: 'ready' }
+    }
+    // A drain host that does not answer yet is still the one its panes are on: ready, reconnecting, its inventory
+    // unavailable (so its panes are kept) until it answers or has gone.
+    if (this.draining && !('client' in reached)) {
+      console.error(`[terminal] ptyhost: draining ${this.instance} unavailable (${'incompatible' in reached ? reached.incompatible : reached.unavailable}); reconnecting`)
+      this.scheduleReconnect()
+      return { state: 'ready' }
+    }
     if ('incompatible' in reached) {
       console.error(`[terminal] ptyhost: unavailable (${reached.incompatible})`)
       return { state: 'unavailable', code: 'PTY_HOST_UNAVAILABLE', reason: reached.incompatible }
@@ -169,8 +227,83 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
       return { state: 'unavailable', code: reached.code, reason: reached.unavailable }
     }
     this.attach(reached.client)
-    console.log(`[terminal] ptyhost: available (${this.instance})`)
+    console.log(`[terminal] ptyhost: available (${this.instance}${this.draining ? ', draining' : ''})`)
     return { state: 'ready' }
+  }
+
+  /** A drain backend's host has exited, and why (null while it runs). */
+  get hostGone(): string | null {
+    return this.gone
+  }
+
+  /**
+   * The drain host has exited for good: its panes are gone with it, and nothing starts it again. Its inventory is
+   * from now on authoritative and empty, so the reconciler counts its panes' rows missing as it does any pane's.
+   */
+  private markGone(reason: string): void {
+    if (this.gone) return
+    this.gone = reason
+    this.cancelReconnect()
+    const client = this.client
+    this.detach()
+    client?.close()
+    this.panes.clear()
+    console.log(`[terminal] ptyhost: draining ${this.instance} has gone (${reason})`)
+    this.onHostReplaced?.()
+  }
+
+  /** Whether [runtime] is a pane of this backend's host that has gone. */
+  private goneFor(runtime: PtyRuntimeRef): boolean {
+    return this.gone !== null && runtime.instance === this.instance
+  }
+
+  /**
+   * For the drain (ptyHost/drain.ts): whether the host has any pane at all, of any owner. A host another daemon
+   * also makes panes on is not empty for this one's sake.
+   */
+  async drainState(): Promise<PtyHostDrainState> {
+    if (this.gone) return 'gone'
+    if (!this.client) return 'unknown'
+    const result = await this.client.call({ op: 'inventory' })
+    if (result.state !== 'ok') return 'unknown'
+    return result.value.panes.length === 0 ? 'empty' : 'busy'
+  }
+
+  /**
+   * End a drained host that has no pane: the `shutdown` op from protocol 2 on, which the host refuses while it has
+   * one and which stops it making any once granted. A protocol 1 host has no such op: once a fresh inventory lists
+   * nothing it is terminated by its pid, which is the host's for sure while this backend's connection to it is up.
+   * Either way the backend is then gone (`hostGone`), and what the host left published taken down.
+   */
+  async shutdownHost(): Promise<PtyHostShutdown> {
+    if (this.gone) return 'exited'
+    const client = this.client
+    if (!client) return 'failed'
+    const pid = client.pid
+    if (client.protocol >= SHUTDOWN_PROTOCOL) {
+      const result = await client.call({ op: 'shutdown' })
+      if (result.state === 'failed' && result.code === 'bad_request') return 'refused'
+      if (result.state !== 'ok') return 'failed'
+    } else {
+      const listed = await client.call({ op: 'inventory' })
+      if (listed.state !== 'ok') return 'failed'
+      if (listed.value.panes.length > 0) return 'refused'
+      try {
+        this.hostProcess.terminate(pid)
+      } catch (error) {
+        console.error(`[terminal] ptyhost: could not end the protocol ${client.protocol} host (pid ${pid}): ${(error as Error).message}`)
+        return 'failed'
+      }
+    }
+    const deadline = Date.now() + HOST_EXIT_WAIT_MS
+    while (this.hostProcess.alive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25))
+    if (this.hostProcess.alive(pid)) {
+      console.error(`[terminal] ptyhost: the drained ${this.instance} host (pid ${pid}) has not exited`)
+      return 'failed'
+    }
+    forgetExitedHost(this.home, this.protocol, pid)
+    this.markGone(`shut down with no panes left (pid ${pid})`)
+    return 'exited'
   }
 
   /**
@@ -273,11 +406,23 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
 
   /** One attempt: the host this home has, started again if it is not running (`ensurePtyHost`). */
   private async reconnect(): Promise<void> {
-    let reached: EnsurePtyHostResult
+    let reached: ReachPtyHostResult
     try {
       reached = await this.launch(this.home)
     } catch (error) {
       reached = { unavailable: (error as Error).message, code: 'PTY_HOST_UNAVAILABLE' }
+    }
+    if (this.disposed) {
+      if ('client' in reached) reached.client.close()
+      return
+    }
+    if ('gone' in reached) {
+      this.markGone(reached.gone)
+      return
+    }
+    if (this.draining && 'unavailable' in reached && ++this.unreachable >= DRAIN_UNREACHABLE_LIMIT) {
+      this.markGone(`nothing has answered in ${this.unreachable} attempts (${reached.unavailable})`)
+      return
     }
     if (!('client' in reached)) {
       console.error(`[terminal] ptyhost: reconnect failed (${'incompatible' in reached ? reached.incompatible : reached.unavailable})`)
@@ -289,6 +434,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
       reached.client.close()
       return
     }
+    this.unreachable = 0
     const replaced = this.attach(reached.client)
     console.log(`[terminal] ptyhost: reconnected (${this.instance}${replaced ? ', a new host: its panes are gone' : ''})`)
     if (replaced) this.onHostReplaced?.()
@@ -318,6 +464,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   }
 
   async create(request: TerminalCreateRequest): Promise<TerminalCreateResult<PtyRuntimeRef>> {
+    if (this.draining) return terminalActionNotStarted(`the protocol ${this.protocol} pty host is draining: new panes go to the newest host`)
     const client = this.client
     if (!client) return terminalActionNotStarted(UNAVAILABLE)
     if (request.current?.() === false) return terminalActionNotStarted('The harness changed before pane dispatch')
@@ -347,6 +494,8 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   }
 
   async kill(runtime: PtyRuntimeRef, current?: () => boolean): Promise<TerminalActionResult> {
+    // Its host has gone: the pane is closed already.
+    if (this.goneFor(runtime)) return TERMINAL_ACTION_SUCCEEDED
     const client = this.clientFor(runtime)
     if (!client) return terminalActionNotStarted(UNAVAILABLE)
     if (current && !current()) return terminalActionNotStarted('The harness changed before pane close')
@@ -360,6 +509,8 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   }
 
   async inventory(): Promise<TerminalInventoryResult> {
+    // A drain host that has gone has no pane, for certain: an answer, not an outage.
+    if (this.gone) return { state: 'available', roots: [] }
     if (!this.client) return { state: 'unavailable', reason: UNAVAILABLE }
     const instance = this.client.instance
     const result = await this.client.call({ op: 'inventory' })
@@ -382,6 +533,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   }
 
   async titles(): Promise<TerminalReadResult<Map<string, string>>> {
+    if (this.gone) return { state: 'succeeded', value: new Map() }
     if (!this.client) return { state: 'failed', reason: UNAVAILABLE }
     const instance = this.client.instance
     const result = await this.client.call({ op: 'titles' })
@@ -432,7 +584,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
    */
   async capture(runtime: PtyRuntimeRef, options: TerminalCaptureOptions = {}): Promise<TerminalReadResult<string>> {
     const client = this.clientFor(runtime)
-    if (!client) return { state: 'failed', reason: UNAVAILABLE }
+    if (!client) return { state: 'failed', reason: this.goneFor(runtime) ? HOST_GONE : UNAVAILABLE }
     const visible = options.mode === 'visible'
     const result = await client.call({
       op: 'capture',
@@ -547,6 +699,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
    */
   async isHeld(runtime: PtyRuntimeRef, token: string): Promise<boolean | 'unknown'> {
     if (!/^%\d+$/.test(runtime.paneId) || !/^[a-f0-9-]{36}$/.test(token)) return 'unknown'
+    if (this.goneFor(runtime)) return false
     const client = this.clientFor(runtime)
     if (!client) return 'unknown'
     const result = await client.call({ op: 'paneState', pane: runtime.paneId })
@@ -564,6 +717,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
    */
   async killHeld(runtime: PtyRuntimeRef, token: string, current: () => boolean): Promise<TerminalActionResult> {
     if (!/^%\d+$/.test(runtime.paneId) || !/^[a-f0-9-]{36}$/.test(token)) return terminalActionNotStarted('invalid waiting pane identity')
+    if (this.goneFor(runtime)) return TERMINAL_ACTION_SUCCEEDED
     const client = this.clientFor(runtime)
     if (!client) return terminalActionNotStarted(UNAVAILABLE)
     const result = await client.call({ op: 'paneState', pane: runtime.paneId })
@@ -588,6 +742,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
   }
 
   async paneState(runtime: PtyRuntimeRef): Promise<TerminalPaneRead> {
+    if (this.goneFor(runtime)) return 'gone'
     const client = this.clientFor(runtime)
     if (!client) return 'unknown'
     const result = await client.call({ op: 'paneState', pane: runtime.paneId })
@@ -609,6 +764,8 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
    * ended: nothing runs there, which every caller reads as tmux's dead pane reads (no engine under it).
    */
   async rootProcess(runtime: PtyRuntimeRef): Promise<number | 'missing' | null> {
+    // Its host has gone, and the pane with it: `validate` reads `gone`, as for a pane the host does not have.
+    if (this.goneFor(runtime)) return 'missing'
     const client = this.clientFor(runtime)
     if (!client) return null
     const result = await client.call({ op: 'paneInfo', pane: runtime.paneId })

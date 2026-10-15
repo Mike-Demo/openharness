@@ -1,13 +1,14 @@
 import { once } from 'node:events'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { removeTree } from '../terminalBackend.contract.js'
 import { PtyHostClient } from './client.js'
-import { ensurePtyHost, ptyHostBinary, reachable, readDiscovery } from './launch.js'
-import { PTY_PROTOCOL } from './protocol.js'
+import { currentPtyVersion, discoverHosts, ensurePtyHost, forgetExitedHost, ptyHostBinary, reachable, reachPtyHost, readDiscovery, removeUnusedPtyVersions } from './launch.js'
+import { helloProof, PTY_PROTOCOL, SUPPORTED_PTY_PROTOCOLS } from './protocol.js'
 
 const exe = process.platform === 'win32' ? 'harness-pty.exe' : 'harness-pty'
 const cleanup: Array<() => unknown> = []
@@ -40,22 +41,45 @@ describe('ptyHostBinary', () => {
       .toBe('/opt/x/harness-pty')
   })
 
-  it('takes the newest version under <runtime>/pty that has the binary', () => {
+  it('takes the version <runtime>/pty/current-pty names, not the newest there', () => {
     const runtime = tempDir('rt-')
     executable(path.join(runtime, 'pty', '0.9.0', exe))
     executable(path.join(runtime, 'pty', '0.10.0', exe))
-    executable(path.join(runtime, 'pty', '0.10', exe))
-    // Newer, but without the binary (an install that did not finish), and not a version at all.
-    mkdirSync(path.join(runtime, 'pty', '0.11.0'), { recursive: true })
-    executable(path.join(runtime, 'pty', 'latest', exe))
+    // Newer, perhaps another install's of another protocol: not the pinned one.
+    executable(path.join(runtime, 'pty', '0.11.0', exe))
+    writeFileSync(path.join(runtime, 'pty', 'current-pty'), '0.10.0\n')
     const besideDir = tempDir('dist-')
     executable(path.join(besideDir, 'pty', exe))
+    expect(currentPtyVersion(runtime)).toBe('0.10.0')
     expect(ptyHostBinary({ env: {}, runtimeDir: runtime, besideDir })).toBe(path.join(runtime, 'pty', '0.10.0', exe))
+    // HARNESS_PTY_BIN still comes first.
+    expect(ptyHostBinary({ env: { HARNESS_PTY_BIN: '/o/harness-pty' }, runtimeDir: runtime, besideDir })).toBe('/o/harness-pty')
+  })
+
+  it('falls back to the bundle\'s binary when current-pty is missing, not a version, or names no binary', () => {
+    const runtime = tempDir('rt-')
+    executable(path.join(runtime, 'pty', '0.9.0', exe))
+    const besideDir = tempDir('dist-')
+    const beside = executable(path.join(besideDir, 'pty', exe))
+    // No pointer: the newest directory is not guessed at.
+    expect(currentPtyVersion(runtime)).toBeNull()
+    expect(ptyHostBinary({ env: {}, runtimeDir: runtime, besideDir })).toBe(beside)
+    // A pointer names only a version directory: never a path out of <runtime>/pty.
+    for (const pointer of ['../../bin', '/usr/bin', 'latest', '']) {
+      writeFileSync(path.join(runtime, 'pty', 'current-pty'), pointer)
+      expect(currentPtyVersion(runtime)).toBeNull()
+      expect(ptyHostBinary({ env: {}, runtimeDir: runtime, besideDir })).toBe(beside)
+    }
+    // A version whose install did not finish.
+    mkdirSync(path.join(runtime, 'pty', '0.10.0'))
+    writeFileSync(path.join(runtime, 'pty', 'current-pty'), '0.10.0')
+    expect(ptyHostBinary({ env: {}, runtimeDir: runtime, besideDir })).toBe(beside)
   })
 
   it.skipIf(process.platform === 'win32')('skips a managed binary that is not executable', () => {
     const runtime = tempDir('rt-')
     const file = executable(path.join(runtime, 'pty', '1.0.0', exe))
+    writeFileSync(path.join(runtime, 'pty', 'current-pty'), '1.0.0')
     chmodSync(file, 0o644)
     expect(ptyHostBinary({ env: {}, runtimeDir: runtime, besideDir: '/nowhere' })).toBeNull()
   })
@@ -310,6 +334,124 @@ describe.skipIf(process.platform === 'win32')('ensurePtyHost', () => {
     writeDiscovery(dir, { ...live, endpoint, token: 'old', pid: 1 })
     const client = await clientOf(await ensurePtyHost(dir, { binary: null }))
     expect(await client.call({ op: 'inventory' })).toMatchObject({ state: 'ok' })
+  })
+})
+
+/** An endpoint for a test server: a named pipe on Windows, a socket file in [dir] elsewhere. */
+const endpointIn = (dir: string, name: string) => process.platform === 'win32'
+  ? `\\\\.\\pipe\\pty-launch-${path.basename(dir)}-${name}`
+  : path.join(dir, `${name}.sock`)
+
+/** A host stand-in in this process that proves [token] and answers every request `ok`; the protocols said hello in. */
+async function answeringHost(endpoint: string, token: string): Promise<number[]> {
+  const protocols: number[] = []
+  const server = net.createServer(socket => {
+    socket.on('error', () => {})
+    let pending = ''
+    let said = false
+    socket.on('data', chunk => {
+      pending += chunk
+      let at
+      while ((at = pending.indexOf('\n')) >= 0) {
+        const value = JSON.parse(pending.slice(0, at))
+        pending = pending.slice(at + 1)
+        if (said) { socket.write(`${JSON.stringify({ id: value.id, ok: true })}\n`); continue }
+        said = true
+        protocols.push(value.hello.protocol)
+        socket.write(`${JSON.stringify({ hello: { ok: true, instance: `p${value.hello.protocol}`, version: 'v', pid: 1, proof: helloProof(token, value.hello.nonce) } })}\n`)
+      }
+    })
+  })
+  server.listen(endpoint)
+  await once(server, 'listening')
+  cleanup.push(() => new Promise(resolve => server.close(resolve)))
+  return protocols
+}
+
+const writeDiscoveryOf = (home: string, protocol: number, value: Record<string, unknown>) => {
+  mkdirSync(path.join(home, 'run'), { recursive: true })
+  writeFileSync(path.join(home, 'run', `pty-host-${protocol}.json`), JSON.stringify({ protocol, instance: `p${protocol}`, version: '0.1.0', token: 't', ...value }))
+}
+/** A pid no process has: a child that has exited. */
+function deadPid(): number {
+  const child = spawnSync(process.execPath, ['-e', ''])
+  return child.pid!
+}
+
+describe('discoverHosts', () => {
+  it('reads every supported protocol\'s discovery file, oldest first, and nothing else', () => {
+    const dir = tempDir('h-')
+    expect(discoverHosts(dir)).toEqual([])
+    for (const protocol of [...SUPPORTED_PTY_PROTOCOLS, PTY_PROTOCOL + 1]) writeDiscoveryOf(dir, protocol, { endpoint: `/e${protocol}`, pid: protocol })
+    expect(discoverHosts(dir).map(host => host.protocol)).toEqual([...SUPPORTED_PTY_PROTOCOLS])
+    expect(SUPPORTED_PTY_PROTOCOLS).toEqual([PTY_PROTOCOL - 1, PTY_PROTOCOL].filter(p => p >= 1))
+  })
+})
+
+describe('reachPtyHost', () => {
+  it('connects to the host of the protocol asked, in its own protocol, and never starts one', async () => {
+    const dir = tempDir('h-')
+    const protocol = SUPPORTED_PTY_PROTOCOLS[0]
+    const endpoint = endpointIn(dir, 'old')
+    const protocols = await answeringHost(endpoint, 't')
+    writeDiscoveryOf(dir, protocol, { endpoint, pid: process.pid })
+    const result = await reachPtyHost(dir, protocol)
+    const client = await clientOf(result as Awaited<ReturnType<typeof ensurePtyHost>>)
+    expect(client.protocol).toBe(protocol)
+    expect(protocols).toEqual([protocol])
+  })
+
+  it('is gone with no discovery file, or once its process has exited; unavailable while it runs unanswering', async () => {
+    const dir = tempDir('h-')
+    expect(await reachPtyHost(dir, 1)).toEqual({ gone: 'there is no pty-host-1.json' })
+    const nowhere = endpointIn(dir, 'none')
+    writeDiscoveryOf(dir, 1, { endpoint: nowhere, pid: deadPid() })
+    expect(await reachPtyHost(dir, 1)).toEqual({ gone: expect.stringContaining('has exited') })
+    writeDiscoveryOf(dir, 1, { endpoint: nowhere, pid: process.pid })
+    expect(await reachPtyHost(dir, 1)).toEqual({ unavailable: expect.stringContaining(`pid ${process.pid}`), code: 'PTY_HOST_UNAVAILABLE' })
+  })
+})
+
+describe('forgetExitedHost', () => {
+  it('takes down the discovery file (and Unix socket) of a host that has exited, and only that one', () => {
+    const dir = tempDir('h-')
+    const file = path.join(dir, 'run', 'pty-host-1.json')
+    const socket = path.join(dir, 'run', 'pty-host-1.sock')
+    const dead = deadPid()
+    writeDiscoveryOf(dir, 1, { endpoint: socket, pid: dead })
+    writeFileSync(socket, '')
+    // Another pid's file (a host that took its place), or a live one: kept.
+    forgetExitedHost(dir, 1, dead + 1)
+    expect(existsSync(file)).toBe(true)
+    writeDiscoveryOf(dir, 1, { endpoint: socket, pid: process.pid })
+    forgetExitedHost(dir, 1, process.pid)
+    expect(existsSync(file)).toBe(true)
+    writeDiscoveryOf(dir, 1, { endpoint: socket, pid: dead })
+    forgetExitedHost(dir, 1, dead)
+    expect(existsSync(file)).toBe(false)
+    expect(existsSync(socket)).toBe(process.platform === 'win32')
+    // Nothing there: nothing to do.
+    forgetExitedHost(dir, 1, dead)
+  })
+})
+
+describe('removeUnusedPtyVersions', () => {
+  it('deletes the versions older than current-pty that no running host of the home has', () => {
+    const runtime = tempDir('rt-')
+    const dir = tempDir('h-')
+    for (const version of ['0.8.0', '0.9.0', '0.9.5', '0.10.0', '0.11.0']) executable(path.join(runtime, 'pty', version, exe))
+    executable(path.join(runtime, 'pty', 'tools', exe))
+    writeFileSync(path.join(runtime, 'pty', '0.7.0'), 'a file, not a directory')
+    // Without the installed CLI's pointer nothing is known to be old.
+    expect(removeUnusedPtyVersions(dir, runtime)).toEqual([])
+    writeFileSync(path.join(runtime, 'pty', 'current-pty'), '0.10.0')
+    // 0.9.5 runs a host still draining here; 0.9.0's host has exited.
+    writeDiscoveryOf(dir, SUPPORTED_PTY_PROTOCOLS[0], { endpoint: '/x', pid: process.pid, version: '0.9.5' })
+    if (SUPPORTED_PTY_PROTOCOLS.length > 1) writeDiscoveryOf(dir, PTY_PROTOCOL, { endpoint: '/y', pid: deadPid(), version: '0.9.0' })
+    expect(removeUnusedPtyVersions(dir, runtime).sort()).toEqual(['0.8.0', '0.9.0'])
+    expect(readdirSync(path.join(runtime, 'pty')).sort()).toEqual(['0.10.0', '0.11.0', '0.7.0', '0.9.5', 'current-pty', 'tools'])
+    // No runtime directory at all.
+    expect(removeUnusedPtyVersions(dir, path.join(runtime, 'none'))).toEqual([])
   })
 })
 

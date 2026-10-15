@@ -187,6 +187,60 @@ fn create_capture_kill() {
     }
 }
 
+/// A drained host (cli/src/lib/ptyHost/drain.ts): `shutdown` is refused while the host has a pane,
+/// and once it has none the host replies, takes its discovery file down and exits.
+#[test]
+fn shutdown_exits_a_host_with_no_panes_and_takes_its_discovery_file_down() {
+    let (mut h, disc) = start();
+    let (mut w, mut r) = connect(&disc);
+    let created = call(
+        &mut w,
+        &mut r,
+        &serde_json::json!({"id": 1, "op": "create", "command": shell(), "cols": 80, "rows": 24, "owner": "t", "hold": true}).to_string(),
+    );
+    let pane = created["pane"].as_str().unwrap().to_string();
+    let refused = call(&mut w, &mut r, r#"{"id":2,"op":"shutdown"}"#);
+    assert_eq!(refused["code"], "bad_request", "{refused}");
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap()
+            .contains("host still has panes"),
+        "{refused}"
+    );
+    call(
+        &mut w,
+        &mut r,
+        &format!(r#"{{"id":3,"op":"kill","pane":"{pane}","graceMs":0}}"#),
+    );
+    let granted = call(&mut w, &mut r, r#"{"id":4,"op":"shutdown"}"#);
+    assert_eq!(granted, serde_json::json!({"id": 4, "ok": true}));
+    // The host ends the connection, and the endpoint, as it exits.
+    let mut line = String::new();
+    let end = Instant::now() + WAIT;
+    loop {
+        line.clear();
+        match r.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            // An exit notice for the killed pane may come first.
+            Ok(_) => assert!(Instant::now() < end, "still open: {line}"),
+        }
+    }
+    assert!(!common::discovery_file(h.home.path()).exists());
+    let end = Instant::now() + WAIT;
+    while common::open(disc["endpoint"].as_str().unwrap()).is_ok() {
+        assert!(Instant::now() < end, "the endpoint still answers");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    #[cfg(unix)]
+    {
+        assert!(h.child.wait().unwrap().success());
+        assert!(!std::path::Path::new(disc["endpoint"].as_str().unwrap()).exists());
+    }
+    #[cfg(windows)]
+    let _ = &mut h;
+}
+
 #[test]
 fn second_host_exits_cleanly() {
     let (h, disc) = start();

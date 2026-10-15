@@ -236,6 +236,27 @@ are kept.
 
   `TerminalBackendCoordinator` already holds several backend instances (`instanceId`, `byInstance`),
   so each host is one instance. A version directory is removed once no host runs from it.
+
+  As built (Task 21, `cli/src/lib/ptyHost/drain.ts`):
+  - `SUPPORTED_PTY_PROTOCOLS = [PTY_PROTOCOL − 1, PTY_PROTOCOL]`. The newest protocol's backend is the
+    create backend and starts its host when there is none. An older protocol with a discovery file (or
+    registry rows on its instance) gets a drain backend: it only reaches its host, never starts one,
+    refuses `create`, and lists, streams and controls its panes. Rows keep their `ptyhost:p<old>`
+    runtimes; route keys name the instance, so both hosts are reached at once.
+  - **The rule for a bump**: the daemon keeps a client for N−1. The client speaks the host's own
+    protocol (the discovery file's, the hello included); an op added at N is gated on the host's
+    protocol, and an op N changes keeps its N−1 form.
+  - Protocol 2 adds `shutdown`: the host replies and exits only with no pane at all (any owner's),
+    else `bad_request` "host still has panes"; once granted it makes no pane, and removes its
+    discovery file (and socket) as it exits. A drain host with no pane on two reconcile passes in a
+    row is shut down (a protocol 1 host, which has no `shutdown`, is terminated by its pid once a
+    fresh inventory lists nothing). A drain host that exits is gone: its inventory is then empty for
+    certain, so its rows go gone through the reconciler's misses, and its backend leaves
+    (`replaceBackends`) once no row names it. Then `<runtime>/pty/<version>/` directories older than
+    `current-pty` and run by no live host of the home are deleted.
+  - `<runtime>/pty/current-pty` names the version directory the installed CLI ships (as
+    `current-grid` pins grid); `ptyHostBinary()` reads it after `HARNESS_PTY_BIN` and before the
+    bundle's `dist/pty/`. The installer writes it (sub-project B).
 - **An upgrade never kills an agent.**
 
 ### Host crash, logoff or reboot

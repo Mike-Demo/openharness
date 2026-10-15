@@ -154,6 +154,7 @@ const OP_FIELDS: OpFields = {
   jobPids: { pane: 'string' },
   processes: {},
   setEngineExit: { pane: 'string', status: 'number' },
+  shutdown: {},
 }
 
 function typeOf(value: unknown): FieldType | 'other' {

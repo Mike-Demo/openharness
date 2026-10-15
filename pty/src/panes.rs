@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -154,6 +155,9 @@ pub struct Panes {
     instance: String,
     /// Every pane's stream subscribers.
     pub(crate) streams: Registry,
+    /// Set by a `shutdown` that found no pane, under the table's lock: from then on no pane is
+    /// made, so none can be lost with the host as it exits.
+    closing: AtomicBool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -250,6 +254,7 @@ impl Panes {
             sink,
             instance: instance.into(),
             streams: Registry::default(),
+            closing: AtomicBool::new(false),
         };
         (panes, events)
     }
@@ -520,6 +525,9 @@ impl Panes {
                     .map_err(|e| OpError::new("spawn_failed", format!("pane ids: {e}")))?;
                 let id = format!("%{number}");
                 let mut table = lock(&self.table);
+                if self.closing.load(Ordering::SeqCst) {
+                    return Err(OpError::new("bad_request", "the host is shutting down"));
+                }
                 let pane = Pane::spawn(
                     id.clone(),
                     spec(
@@ -765,6 +773,18 @@ impl Panes {
             }
             #[cfg(not(windows))]
             Op::Processes => Err(OpError::new("unsupported", "the daemon reads ps here")),
+            // The caller (server.rs) exits the host once the reply is written.
+            Op::Shutdown => {
+                let table = lock(&self.table);
+                if !table.is_empty() {
+                    return Err(OpError::new(
+                        "bad_request",
+                        format!("host still has panes ({})", table.len()),
+                    ));
+                }
+                self.closing.store(true, Ordering::SeqCst);
+                Ok(Reply::new())
+            }
         }
     }
 }
@@ -821,6 +841,36 @@ mod tests {
         let (second, _events) = Panes::persistent(1000, "p9", dir.path()).unwrap();
         let new = pane_number(&create(&second, "sleep 30", false));
         assert!(old.iter().all(|&id| id < new), "{new} after {old:?}");
+    }
+
+    #[test]
+    fn shutdown_needs_an_empty_table_and_then_makes_no_pane() {
+        let (panes, _n) = table();
+        let a = create(&panes, "sleep 30", true);
+        let refused = panes.handle(Op::Shutdown).unwrap_err();
+        assert_eq!(refused.code, "bad_request");
+        assert!(
+            refused.reason.contains("host still has panes"),
+            "{}",
+            refused.reason
+        );
+        // Still serving: panes are made as before.
+        let b = create(&panes, "sleep 30", false);
+        for pane in [a, b] {
+            panes
+                .handle(op(json!({"op": "kill", "pane": pane, "graceMs": 0})))
+                .unwrap();
+        }
+        assert!(panes.handle(Op::Shutdown).unwrap().is_empty());
+        let late = panes
+            .handle(op(
+                json!({"op": "create", "command": ["/bin/sh", "-c", "sleep 30"],
+                "cols": 40, "rows": 10, "owner": "o", "hold": false}),
+            ))
+            .unwrap_err();
+        assert_eq!(late.code, "bad_request");
+        assert!(late.reason.contains("shutting down"), "{}", late.reason);
+        assert_eq!(panes.handle(Op::Inventory).unwrap()["panes"], json!([]));
     }
 
     fn state(panes: &Panes, pane: &str) -> Value {

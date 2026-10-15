@@ -4,14 +4,14 @@
  * daemon gets one without it, in development and tests.
  */
 import { spawn } from 'node:child_process'
-import { accessSync, constants, mkdirSync, readdirSync, readFileSync } from 'node:fs'
+import { accessSync, constants, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import net from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { env } from '../../config/env.js'
 import { scrubTerminalContext } from '../terminalEnvironment.js'
 import { PtyHostClient, type PtyHostDiscovery } from './client.js'
-import { PTY_PROTOCOL } from './protocol.js'
+import { PTY_PROTOCOL, SUPPORTED_PTY_PROTOCOLS } from './protocol.js'
 
 const BINARY = process.platform === 'win32' ? 'harness-pty.exe' : 'harness-pty'
 /** How long a host we started has to publish its discovery file. */
@@ -29,7 +29,9 @@ function runnable(file: string): boolean {
   }
 }
 
-function compareVersions(a: string, b: string): number {
+const VERSION_DIR = /^\d+(\.\d+)*$/
+
+export function compareVersions(a: string, b: string): number {
   const pa = a.split('.').map(Number)
   const pb = b.split('.').map(Number)
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
@@ -48,26 +50,36 @@ export interface PtyHostBinaryOptions {
 }
 
 /**
+ * `<runtime>/pty/current-pty`: the name of the `<runtime>/pty/<version>/` directory whose host the installed CLI
+ * ships, as `current-grid` pins grid (gridBinary.ts). The installer writes it (sub-project B); this reads it. Only a
+ * version name is taken, so the pointer can never name a file outside `<runtime>/pty/`.
+ */
+export function currentPtyVersion(runtimeDir: string = env.ADAPTER_RUNTIME_DIR): string | null {
+  try {
+    const recorded = readFileSync(path.join(runtimeDir, 'pty', 'current-pty'), 'utf8').trim()
+    return VERSION_DIR.test(recorded) ? recorded : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * The `harness-pty` to start, or null when there is none:
  * 1. `HARNESS_PTY_BIN`, as it is (a wrong override should fail loudly, not fall back);
- * 2. the newest `<runtime>/pty/<version>/harness-pty[.exe]`. Binaries install per version because
- *    Windows cannot overwrite a running .exe (spec §4, host upgrade), and the newest is the one a
- *    new host should run; older ones stay for the hosts still draining on them;
+ * 2. `<runtime>/pty/<version>/harness-pty[.exe]` for the version `current-pty` names. Binaries install per version
+ *    because Windows cannot overwrite a running .exe (spec §4, host upgrade); older ones stay for the hosts still
+ *    draining on them. Pinned, not the newest directory there: a newer one may be another install's, of another
+ *    protocol, or one that has not finished (Task 12's review);
  * 3. in `pty/` beside the bundle, where `build-bundle.mjs` puts it with its ConPTY payload for local Windows testing
  *    (scripts/lib/ptyPayload.mjs).
  */
 export function ptyHostBinary(options: PtyHostBinaryOptions = {}): string | null {
   const override = (options.env ?? process.env).HARNESS_PTY_BIN?.trim()
   if (override) return override
-  const root = path.join(options.runtimeDir ?? env.ADAPTER_RUNTIME_DIR, 'pty')
-  let versions: string[] = []
-  try {
-    versions = readdirSync(root).filter(name => /^\d+(\.\d+)*$/.test(name)).sort(compareVersions).reverse()
-  } catch {
-    // No managed host installed.
-  }
-  for (const version of versions) {
-    const file = path.join(root, version, BINARY)
+  const runtimeDir = options.runtimeDir ?? env.ADAPTER_RUNTIME_DIR
+  const version = currentPtyVersion(runtimeDir)
+  if (version) {
+    const file = path.join(runtimeDir, 'pty', version, BINARY)
     if (runnable(file)) return file
   }
   const beside = path.join(options.besideDir ?? path.dirname(fileURLToPath(import.meta.url)), 'pty', BINARY)
@@ -96,6 +108,21 @@ export function readDiscovery(home: string, protocol: number): PtyHostDiscovery 
   return null
 }
 
+/** Every supported protocol's discovery file in [home], oldest protocol first (SUPPORTED_PTY_PROTOCOLS). */
+export function discoverHosts(home: string): PtyHostDiscovery[] {
+  return SUPPORTED_PTY_PROTOCOLS.flatMap((protocol) => readDiscovery(home, protocol) ?? [])
+}
+
+/** Whether process [pid] exists (EPERM is one that does, another user's). */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
 export type PtyHostUnavailable = { unavailable: string; code: 'PTY_HOST_UNAVAILABLE' }
 export type EnsurePtyHostResult = { client: PtyHostClient } | PtyHostUnavailable | { incompatible: string }
 
@@ -112,14 +139,14 @@ const unavailable = (reason: string): PtyHostUnavailable => ({ unavailable: reas
  * The host the discovery file names: a client, `{ incompatible }` when it answers but refuses this
  * daemon, or null when nothing answers there (or there is no file).
  */
-async function connectExisting(home: string): Promise<{ client: PtyHostClient } | { incompatible: string } | null> {
-  const discovery = readDiscovery(home, PTY_PROTOCOL)
+async function connectExisting(home: string, protocol = PTY_PROTOCOL): Promise<{ client: PtyHostClient } | { incompatible: string } | null> {
+  const discovery = readDiscovery(home, protocol)
   if (!discovery) return null
   const result = await PtyHostClient.connect(discovery)
   if (result instanceof PtyHostClient) return { client: result }
   if (result === null) return null
   // A host that restarted between our read and our hello has a new token: read the file again.
-  const again = readDiscovery(home, PTY_PROTOCOL)
+  const again = readDiscovery(home, protocol)
   if (again && (again.token !== discovery.token || again.endpoint !== discovery.endpoint)) {
     const retried = await PtyHostClient.connect(again)
     if (retried instanceof PtyHostClient) return { client: retried }
@@ -214,4 +241,69 @@ export async function ensurePtyHost(home: string, options: EnsurePtyHostOptions 
   if (failed) return failed
   // The host this start found or made published a discovery file, but nothing answers where it says.
   return (await connectExisting(home)) ?? unavailable('no harness-pty answers at the endpoint its discovery file names')
+}
+
+/** `reachPtyHost`'s: a host that is not there and never will be again (no discovery file, or its process exited). */
+export type PtyHostGone = { gone: string }
+export type ReachPtyHostResult = EnsurePtyHostResult | PtyHostGone
+
+/**
+ * A client of the [protocol] host serving `home`, never starting one: how a drain backend reaches a host of the
+ * protocol before this daemon's (ptyHost/drain.ts), which nothing starts again once it has gone. `gone` when there
+ * is no such host any more; `unavailable` while its process runs but nothing answers.
+ */
+export async function reachPtyHost(home: string, protocol: number): Promise<ReachPtyHostResult> {
+  const discovery = readDiscovery(home, protocol)
+  if (!discovery) return { gone: `there is no pty-host-${protocol}.json` }
+  const existing = await connectExisting(home, protocol)
+  if (existing) return existing
+  if (!pidAlive(discovery.pid)) return { gone: `the protocol ${protocol} host (pid ${discovery.pid}) has exited` }
+  return unavailable(`nothing answers for the protocol ${protocol} host (pid ${discovery.pid})`)
+}
+
+/**
+ * Take down what a host of [protocol] that has exited left published: its discovery file, and its socket file on
+ * Unix. Only while the file still names [pid] and that process is gone: a host that took its place keeps its own.
+ * A host that shut down (protocol 2 on) has removed them itself; a protocol 1 host ended by its pid leaves them.
+ */
+export function forgetExitedHost(home: string, protocol: number, pid: number): void {
+  const discovery = readDiscovery(home, protocol)
+  if (!discovery || discovery.pid !== pid || pidAlive(pid)) return
+  rmSync(path.join(home, 'run', `pty-host-${protocol}.json`), { force: true })
+  if (process.platform !== 'win32' && path.isAbsolute(discovery.endpoint)
+    && path.dirname(discovery.endpoint) === path.join(home, 'run')) rmSync(discovery.endpoint, { force: true })
+}
+
+/**
+ * Delete the `<runtime>/pty/<version>/` directories no host runs from any more, after a drained host has gone: every
+ * version older than the one `current-pty` names (the installed CLI's) whose version no running host of [home] has
+ * (its discovery file's `version`, its pid alive). The current one, newer ones (another install's, perhaps not
+ * finished), and anything that is not a version directory stay. Nothing goes without a `current-pty`: with no
+ * installed CLI's word, no version is known to be old. A directory that cannot be removed (a running .exe on
+ * Windows, of some other home's host) stays for the next time. Returns the versions removed.
+ */
+export function removeUnusedPtyVersions(home: string, runtimeDir: string = env.ADAPTER_RUNTIME_DIR): string[] {
+  const current = currentPtyVersion(runtimeDir)
+  if (!current) return []
+  const root = path.join(runtimeDir, 'pty')
+  const running = new Set(discoverHosts(home).filter((host) => pidAlive(host.pid)).map((host) => host.version))
+  let names: string[]
+  try {
+    names = readdirSync(root)
+  } catch {
+    return []
+  }
+  const removed: string[] = []
+  for (const name of names) {
+    if (!VERSION_DIR.test(name) || compareVersions(name, current) >= 0 || running.has(name)) continue
+    const dir = path.join(root, name)
+    try {
+      if (!statSync(dir).isDirectory()) continue
+      rmSync(dir, { recursive: true, force: true })
+      removed.push(name)
+    } catch (error) {
+      console.error(`[terminal] ptyhost: could not remove ${dir}: ${(error as Error).message}`)
+    }
+  }
+  return removed
 }

@@ -2,7 +2,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 
-pub const PROTOCOL: u32 = 1;
+/// The wire protocol this host speaks, fixed at build time. Each value is its own host instance
+/// (`p<PROTOCOL>`: its discovery file, endpoint, lock and pane ids), so a host of the next protocol
+/// starts beside a running one and the old one drains: the daemon lists, streams and controls its
+/// panes, makes new ones on the new host, and shuts the old one down once it has none
+/// (cli/src/lib/ptyHost/drain.ts).
+///
+/// - 2: the `shutdown` op.
+/// - 1: the first.
+pub const PROTOCOL: u32 = 2;
 pub const MAX_FRAME: u32 = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +223,10 @@ pub enum Op {
     JobPids { pane: String },
     Processes,
     SetEngineExit { pane: String, status: i32 },
+    /// Protocol 2. The host replies, then exits, but only while it has no pane at all (any
+    /// owner's): with panes it answers `bad_request` and stays. From the reply on it makes no
+    /// pane, so a create racing the shutdown is refused rather than lost with the host.
+    Shutdown,
 }
 fn default_grace() -> u64 {
     2_000
@@ -341,6 +353,7 @@ mod tests {
             r#"{"op":"respawn","pane":"%1","command":["sh"],"afterExit":{"command":["pwsh.exe"],"env":{"A":"b"}}}"#,
             r#"{"op":"jobPids","pane":"%1"}"#,
             r#"{"op":"setEngineExit","pane":"%1","status":-1}"#,
+            r#"{"op":"shutdown"}"#,
         ];
         for (i, o) in ops.iter().enumerate() {
             let json = format!(r#"{{"id":{i},{}"#, &o[1..]);

@@ -1,7 +1,23 @@
 /** TypeScript mirror of the harness-pty wire protocol (pty/src/protocol.rs). */
 import { createHash } from 'node:crypto'
 
-export const PTY_PROTOCOL = 1
+/**
+ * The protocol this daemon's host speaks (protocol.rs `PROTOCOL`), and the instance its panes are made on
+ * (`p<protocol>`).
+ *
+ * - 2: the `shutdown` op, for draining a host of the protocol before.
+ * - 1: the first.
+ *
+ * The rule for a bump: this daemon must keep a client for the protocol before it (`SUPPORTED_PTY_PROTOCOLS`). A host
+ * of that protocol may still hold the person's panes after an update; it is a drain backend (ptyHost/drain.ts) until
+ * they close, and this client speaks its protocol to it, the hello included. An op added at N is gated on the host's
+ * protocol (`PtyHostClient.protocol`, as `shutdown` is), and an op N changes must keep its N−1 form here.
+ */
+export const PTY_PROTOCOL = 2
+/** The protocols whose hosts this daemon reaches: its own, which new panes go to, and the one before, drained. */
+export const SUPPORTED_PTY_PROTOCOLS: readonly number[] = [PTY_PROTOCOL - 1, PTY_PROTOCOL].filter((p) => p >= 1)
+/** The first protocol with the `shutdown` op. */
+export const SHUTDOWN_PROTOCOL = 2
 export const MAX_FRAME = 8 * 1024 * 1024
 
 export enum FrameKind {
@@ -191,6 +207,8 @@ export type PtyOp =
   | { op: 'jobPids'; pane: string }
   | { op: 'processes' }
   | { op: 'setEngineExit'; pane: string; status: number }
+  /** Protocol 2 (`SHUTDOWN_PROTOCOL`): the host replies, then exits, but only with no pane at all; else `bad_request`. */
+  | { op: 'shutdown' }
 
 export type PtyOpName = PtyOp['op']
 export type PtyOpOf<K extends PtyOpName> = Extract<PtyOp, { op: K }>
@@ -215,6 +233,7 @@ export interface PtyOpReplies {
   jobPids: { pids: number[] }
   processes: { rows: unknown[] }
   setEngineExit: Record<string, never>
+  shutdown: Record<string, never>
 }
 
 /** The reply line to a request for op `K`. */

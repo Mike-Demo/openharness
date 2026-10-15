@@ -797,30 +797,21 @@ function processMatchScore(row, engine, ownership, allowAgentHint = false) {
 }
 
 /** Mirrors compareVersions in src/lib/ptyHost/launch.ts. */
-function comparePtyVersions(a, b) {
-  const pa = a.split('.').map(Number)
-  const pb = b.split('.').map(Number)
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
-    if (d !== 0) return d
-  }
-  return a.length - b.length
-}
-
 /**
- * Mirrors ptyHostBinary in src/lib/ptyHost/launch.ts: `HARNESS_PTY_BIN` as it is, else the newest managed
- * `<runtime>/pty/<version>/harness-pty.exe`, else the one in `pty/` beside this script (the bundle's).
+ * Mirrors ptyHostBinary in src/lib/ptyHost/launch.ts: `HARNESS_PTY_BIN` as it is, else
+ * `<runtime>/pty/<version>/harness-pty.exe` for the version `<runtime>/pty/current-pty` names (the installed CLI's;
+ * a version name alone), else the one in `pty/` beside this script (the bundle's).
  */
 function ptyHostBinary() {
   const override = process.env.HARNESS_PTY_BIN?.trim()
   if (override) return override
   const binary = 'harness-pty.exe'
   const root = join(process.env.ADAPTER_RUNTIME_DIR || join(homedir(), '.harness', 'runtime'), 'pty')
-  let versions = []
-  try { versions = readdirSync(root).filter((name) => /^\d+(\.\d+)*$/.test(name)).sort(comparePtyVersions).reverse() } catch { /* none installed */ }
-  for (const version of versions) {
+  let version = ''
+  try { version = readFileSync(join(root, 'current-pty'), 'utf8').trim() } catch { /* none installed */ }
+  if (/^\d+(\.\d+)*$/.test(version)) {
     const file = join(root, version, binary)
-    try { accessSync(file, constants.F_OK); return file } catch { /* try the next */ }
+    try { accessSync(file, constants.F_OK); return file } catch { /* the bundle's, then */ }
   }
   const beside = join(dirname(fileURLToPath(import.meta.url)), 'pty', binary)
   try { accessSync(beside, constants.F_OK); return beside } catch { return null }

@@ -70,7 +70,7 @@ fn every_fixture_request_parses_with_every_field() {
     let all: BTreeSet<String> = [
         "create", "kill", "inventory", "titles", "paneState", "paneInfo", "capture", "write",
         "paste", "key", "setTitle", "holdOpen", "releaseHold", "respawn", "jobPids", "processes",
-        "setEngineExit",
+        "setEngineExit", "shutdown",
     ]
     .into_iter()
     .map(str::to_owned)

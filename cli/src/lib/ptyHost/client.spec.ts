@@ -129,6 +129,27 @@ describe('PtyHostClient.connect', () => {
     expect(typeof fake.hellos[0].hello.clientId).toBe('string')
   })
 
+  it.runIf(PTY_PROTOCOL >= 2)('speaks an older host\'s own protocol, and none it does not support', async () => {
+    const fake = await fakeHost()
+    cleanup.push(() => fake.close())
+    const old = await PtyHostClient.connect({ ...fake.discovery, protocol: PTY_PROTOCOL - 1 })
+    if (!(old instanceof PtyHostClient)) throw new Error(`not connected: ${JSON.stringify(old)}`)
+    cleanup.push(() => old.close())
+    expect(old.protocol).toBe(PTY_PROTOCOL - 1)
+    expect(fake.hellos[0].hello).toMatchObject({ protocol: PTY_PROTOCOL - 1 })
+    // Its stream connections too.
+    const stream = await old.openStream()
+    cleanup.push(() => stream?.destroy())
+    expect(stream).not.toBeNull()
+    expect(fake.hellos[1].hello).toMatchObject({ protocol: PTY_PROTOCOL - 1, role: 'stream' })
+    for (const protocol of [PTY_PROTOCOL + 1, PTY_PROTOCOL - 2]) {
+      expect(await PtyHostClient.connect({ ...fake.discovery, protocol }))
+        .toEqual({ incompatible: expect.stringContaining(`protocol ${protocol} is not supported`) })
+    }
+    // Nothing was said to the host for them.
+    expect(fake.hellos).toHaveLength(2)
+  })
+
   it('reports a bad token as incompatible', async () => {
     const fake = await fakeHost({ token: 'right' })
     cleanup.push(() => fake.close())

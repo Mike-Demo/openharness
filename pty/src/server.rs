@@ -25,7 +25,7 @@ use serde_json::{Map, Value, json};
 use crate::pane::PaneEvent;
 use crate::panes::Panes;
 use crate::protocol::{
-    Failure, HelloLine, PROTOCOL, Request, Role, hello_auth, hello_proof, valid_nonce,
+    Failure, HelloLine, Op, PROTOCOL, Request, Role, hello_auth, hello_proof, valid_nonce,
 };
 use crate::transport::{Connection, Listener};
 
@@ -91,24 +91,34 @@ impl Clients {
     }
 }
 
+/// What a host does once a `shutdown` was granted and its reply written: take down what it
+/// published, and exit.
+pub type OnShutdown = Arc<dyn Fn() + Send + Sync>;
+/// How long the reply to a granted `shutdown` may take to be written before the host exits anyway: a
+/// client that stopped reading must not keep a host that makes no more panes.
+const SHUTDOWN_REPLY_WAIT: Duration = Duration::from_secs(5);
+
 struct Ctx {
     panes: Arc<Panes>,
     info: HostInfo,
     clients: Clients,
+    on_shutdown: OnShutdown,
 }
 
-/// Serve `listener` forever: the dispatcher for `events` (the receiver `Panes::new` returned)
-/// and one thread per connection.
+/// Serve `listener` until a `shutdown` is granted (`on_shutdown`, which exits): the dispatcher
+/// for `events` (the receiver `Panes::new` returned) and one thread per connection.
 pub fn run<L: Listener>(
     listener: L,
     panes: Panes,
     events: Receiver<(String, PaneEvent)>,
     info: HostInfo,
+    on_shutdown: OnShutdown,
 ) -> io::Result<()> {
     let ctx = Arc::new(Ctx {
         panes: Arc::new(panes),
         info,
         clients: Clients::default(),
+        on_shutdown,
     });
     let dispatcher = ctx.clone();
     std::thread::Builder::new()
@@ -209,10 +219,12 @@ impl Ctx {
         .to_string()
     }
 
-    /// The reply line for one request line.
-    fn answer(&self, line: &str) -> String {
+    /// The reply line for one request line, and whether it grants a `shutdown`: the host exits
+    /// once that line is written.
+    fn answer(&self, line: &str) -> (String, bool) {
         let failure = |id: u64, code: &str, reason: String| {
-            serde_json::to_string(&Failure::new(id, code, reason)).unwrap_or_default()
+            let line = serde_json::to_string(&Failure::new(id, code, reason)).unwrap_or_default();
+            (line, false)
         };
         let value: Value = match serde_json::from_str(line) {
             Ok(v) => v,
@@ -223,6 +235,7 @@ impl Ctx {
             Ok(r) => r,
             Err(e) => return failure(id, "bad_request", e.to_string()),
         };
+        let shutdown = matches!(request.op, Op::Shutdown);
         let handled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.panes.handle(request.op)
         }));
@@ -232,7 +245,7 @@ impl Ctx {
                 out.insert("id".into(), id.into());
                 out.insert("ok".into(), true.into());
                 out.extend(fields);
-                Value::Object(out).to_string()
+                (Value::Object(out).to_string(), shutdown)
             }
             Ok(Err(err)) => failure(id, err.code, err.reason),
             Err(_) => failure(id, "internal", "the host failed this request".into()),
@@ -278,7 +291,7 @@ fn control<C: Connection>(mut reader: BufReader<C>, conn: C, ctx: &Ctx) -> io::R
     let (queue, lines) = mpsc::sync_channel::<String>(QUEUE);
     let closer = Mutex::new(conn.try_clone()?);
     let mut writer = conn;
-    std::thread::Builder::new()
+    let written = std::thread::Builder::new()
         .name("pty-conn-writer".into())
         .spawn(move || {
             for line in lines {
@@ -291,18 +304,39 @@ fn control<C: Connection>(mut reader: BufReader<C>, conn: C, ctx: &Ctx) -> io::R
     let id = ctx
         .clients
         .add(queue.clone(), Box::new(move || lock(&closer).shutdown()));
+    let mut shutdown = false;
     let ended = (|| {
         while let Some(line) = read_line(&mut reader, MAX_LINE)? {
             if line.trim().is_empty() {
                 continue;
             }
-            if queue.send(ctx.answer(&line)).is_err() {
+            let (reply, granted) = ctx.answer(&line);
+            if queue.send(reply).is_err() {
+                break;
+            }
+            if granted {
+                shutdown = true;
                 break;
             }
         }
         Ok(())
     })();
     ctx.clients.remove(id);
+    if shutdown {
+        // The reply first: the writer ends once every handle on its queue is gone (the clients
+        // list's went above), after what is queued is written.
+        drop(queue);
+        let exit = ctx.on_shutdown.clone();
+        let _ = std::thread::Builder::new()
+            .name("pty-shutdown".into())
+            .spawn(move || {
+                std::thread::sleep(SHUTDOWN_REPLY_WAIT);
+                exit();
+            });
+        let _ = written.join();
+        log::info!("shutdown granted: no panes left; exiting");
+        (ctx.on_shutdown)();
+    }
     // The writer sends what is queued, then ends; the socket closes with the last handle.
     ended
 }
@@ -340,6 +374,7 @@ mod tests {
                 pid: 1,
             },
             clients: Clients::default(),
+            on_shutdown: Arc::new(|| {}),
         }
     }
 
@@ -409,17 +444,33 @@ mod tests {
     #[test]
     fn answers_carry_the_request_id() {
         let ctx = ctx();
-        let v: Value = serde_json::from_str(&ctx.answer(r#"{"id":7,"op":"titles"}"#)).unwrap();
+        let answer = |line: &str| -> Value {
+            let (reply, shutdown) = ctx.answer(line);
+            assert!(!shutdown);
+            serde_json::from_str(&reply).unwrap()
+        };
+        let v = answer(r#"{"id":7,"op":"titles"}"#);
         assert_eq!(v, json!({"id": 7, "ok": true, "titles": {}}));
-        let v: Value = serde_json::from_str(&ctx.answer(r#"{"id":8,"op":"bogus"}"#)).unwrap();
+        let v = answer(r#"{"id":8,"op":"bogus"}"#);
         assert_eq!(
             (v["id"].clone(), v["code"].clone()),
             (json!(8), json!("bad_request"))
         );
-        let v: Value = serde_json::from_str(&ctx.answer("not json")).unwrap();
+        let v = answer("not json");
         assert_eq!(
             (v["id"].clone(), v["code"].clone()),
             (json!(0), json!("bad_request"))
+        );
+    }
+
+    #[test]
+    fn only_a_granted_shutdown_says_so() {
+        let ctx = ctx();
+        let (reply, shutdown) = ctx.answer(r#"{"id":3,"op":"shutdown"}"#);
+        assert!(shutdown);
+        assert_eq!(
+            serde_json::from_str::<Value>(&reply).unwrap(),
+            json!({"id": 3, "ok": true})
         );
     }
 

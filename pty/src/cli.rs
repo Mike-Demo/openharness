@@ -1,4 +1,6 @@
 //! Command line: `serve`, `version`, `ps --json`.
+//!
+//! The protocol is fixed at build time (`protocol::PROTOCOL`); `version` prints it.
 
 use std::path::{Path, PathBuf};
 
@@ -238,7 +240,25 @@ fn publish_and_serve<L: crate::transport::Listener>(
             token: info.token.clone(),
         },
     )?;
-    crate::server::run(listener, panes, events, info)
+    let published = (crate::discovery::file_path(run), listener.endpoint());
+    // Once: the connection that was granted it and its reply's deadline (server.rs) may both call it;
+    // the second waits in `call_once` while the first exits.
+    let once = std::sync::Once::new();
+    let on_shutdown = std::sync::Arc::new(move || {
+        once.call_once(|| {
+            let (discovery, endpoint) = &published;
+            // The discovery file first: a client must not find a host that is about to be gone.
+            // This host holds the home's lock, so the file is its own. The pane counter and the
+            // lock stay: pane ids never repeat for the home and protocol.
+            let _ = std::fs::remove_file(discovery);
+            #[cfg(unix)]
+            let _ = std::fs::remove_file(endpoint);
+            #[cfg(not(unix))]
+            let _ = endpoint;
+            std::process::exit(0);
+        })
+    });
+    crate::server::run(listener, panes, events, info, on_shutdown)
 }
 
 #[cfg(test)]

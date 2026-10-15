@@ -12,7 +12,7 @@ import type { Duplex } from 'node:stream'
 import {
   helloAuth,
   helloProof,
-  PTY_PROTOCOL,
+  SUPPORTED_PTY_PROTOCOLS,
   type HelloLine,
   type HelloReply,
   type HelloRole,
@@ -122,7 +122,8 @@ function hello(discovery: PtyHostDiscovery, role: HelloRole, timeoutMs: number):
       const line: HelloLine = {
         // Never the token itself: what listens here may not be the host.
         hello: {
-          auth: helloAuth(discovery.token, nonce), nonce, protocol: PTY_PROTOCOL, role,
+          // The host's own protocol, which its discovery file names: an older host still draining speaks its own.
+          auth: helloAuth(discovery.token, nonce), nonce, protocol: discovery.protocol, role,
           clientId: `harnessd-${process.pid}-${randomUUID()}`,
         },
       }
@@ -179,6 +180,9 @@ export class PtyHostClient {
     discovery: PtyHostDiscovery,
     timeoutMs = DEFAULT_TIMEOUT_MS,
   ): Promise<PtyHostClient | { incompatible: string } | null> {
+    if (!SUPPORTED_PTY_PROTOCOLS.includes(discovery.protocol)) {
+      return { incompatible: `protocol ${discovery.protocol} is not supported; this daemon speaks ${SUPPORTED_PTY_PROTOCOLS.join(' and ')}` }
+    }
     const outcome = await hello(discovery, 'control', timeoutMs)
     if (outcome.state === 'unreachable') return null
     if (outcome.state === 'incompatible') return { incompatible: outcome.reason }
@@ -186,6 +190,10 @@ export class PtyHostClient {
   }
 
   readonly instance: string
+  /** The protocol this connection speaks: the host's own, which gates the ops added since (protocol.ts). */
+  get protocol(): number {
+    return this.discovery.protocol
+  }
   /** The host's process, as its discovery file names it: another pid after a reconnect is another host. */
   get pid(): number {
     return this.discovery.pid

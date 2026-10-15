@@ -71,7 +71,8 @@ import { findLiveSession, findResumedTranscript } from '../lib/sessionRepair.js'
 import { processSessionOf } from '../engines/sessionStores.js'
 import { createHandoffDependencies } from './handoffDependencies.js'
 import { TmuxBackend } from '../lib/tmuxBackend.js'
-import { PtyHostBackend } from '../lib/ptyHostBackend.js'
+import { isDrainBackend, ptyHostBackends, PtyHostDrain, rowsOnInstance } from '../lib/ptyHost/drain.js'
+import { removeUnusedPtyVersions } from '../lib/ptyHost/launch.js'
 import { DEFAULT_HOST_THEME, loadHostTheme, saveHostTheme, type HostTheme } from '../lib/hostTheme.js'
 import { restoreAgents, type RestoreAgentsDeps, type RestoreSummary } from '../lib/restoreAgents.js'
 import { restoreTerminals } from '../lib/restoreTerminals.js'
@@ -536,9 +537,13 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // local socket and the backend link, leaves for an update, and says what is missing.
   const candidates: TerminalBackend[] = []
   if (terminalConfig.backends.includes('tmux')) candidates.push(new TmuxBackend(() => hostTheme))
-  // The Harness PTY host (pty/): reached, or started detached so its panes outlive this daemon.
-  const ptyHostBackend = terminalConfig.backends.includes('ptyhost') ? new PtyHostBackend({ home: env.HARNESS_PTY_DIR }) : null
-  if (ptyHostBackend) candidates.push(ptyHostBackend)
+  // The Harness PTY host (pty/): reached, or started detached so its panes outlive this daemon. A host of the
+  // protocol before, still running from before an update, is a drain backend beside it (lib/ptyHost/drain.ts).
+  const ptyHosts = terminalConfig.backends.includes('ptyhost')
+    ? ptyHostBackends(env.HARNESS_PTY_DIR, { rowsOn: (instanceId) => rowsOnInstance(registry.list(), instanceId) })
+    : null
+  const ptyHostBackend = ptyHosts?.create ?? null
+  if (ptyHosts) candidates.push(ptyHosts.create, ...ptyHosts.drain)
   // Each is handed the registry's panes on it, and only those, for adopting what an older build left
   // (tmux's legacy session names): pane ids are per backend. One whose prepare throws is unavailable.
   const preparing = prepareTerminalBackends(candidates, (backend) => ownedPanesOf(registry.list(), backend.name))
@@ -554,7 +559,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     ? [{ backend: backend.name, reason: result.reason, code: result.code }] : [])[0] ?? null
   // The backend new panes are made on. Every other pane operation reaches the pane's own backend
   // through the coordinator (`terminals.backendFor`).
-  const createBackend: TerminalBackend | null = terminalBackends[0] ?? null
+  const createBackend: TerminalBackend | null = terminalBackends.find((backend) => !isDrainBackend(backend)) ?? null
   // What a create, fork or resume answers while there is none: the configured backend's code, not always tmux's.
   const createUnavailable = noBackendCode(terminalConfig.backends)
   // A hook's tmux runtime hint is taken only while tmux is the backend new panes are made on
@@ -565,6 +570,17 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     terminalBackends,
     terminalConfig.backends,
   )
+  // Shut down a drained host once it has no pane, and take its backend out of `terminalBackends` (stepped after
+  // each reconcile pass, below).
+  const ptyDrain = ptyHosts?.drain.length
+    ? new PtyHostDrain({
+      drain: ptyHosts.drain.filter((backend) => terminalBackends.includes(backend)),
+      backends: terminalBackends,
+      coordinator: terminals,
+      inUse: (instanceId) => rowsOnInstance(registry.list(), instanceId),
+      cleanup: () => { removeUnusedPtyVersions(env.HARNESS_PTY_DIR) },
+    })
+    : null
   const sqliteWarning = sqlitePreflightMessage()
   if (sqliteWarning) console.warn(sqliteWarning)
   // The user's shell environment is captured at startup, not on the first recap — a slow profile
@@ -1696,7 +1712,14 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       },
     } : {}),
     ...discovery,
-    onReconciled: gridAssignments.observe,
+    onReconciled: (agents) => {
+      gridAssignments.observe(agents)
+      if (ptyDrain) {
+        void ptyDrain.step().catch((error) => {
+          console.error('[terminal] ptyhost: drain failed:', error instanceof Error ? error.message : error)
+        })
+      }
+    },
     onProbeStatus: (status) => {
       discoveryReady = status.ready
       discoveryError = status.error
@@ -1704,8 +1727,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   })
   // A PTY host that died took its panes with it: the reconnected (new) host lists none of them, and a pass
   // now marks their agents gone, which the resume path takes from there, rather than at the next tick.
-  if (ptyHostBackend) {
-    ptyHostBackend.onHostReplaced = () => {
+  // A drain host that exited took its panes too.
+  for (const backend of ptyHosts ? [ptyHosts.create, ...ptyHosts.drain] : []) {
+    backend.onHostReplaced = () => {
       void agentReconciler.trigger().catch((error) => {
         console.error('[terminal] ptyhost: reconcile after host restart failed:', error instanceof Error ? error.message : error)
       })
@@ -2644,7 +2668,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     ['the registry', () => registry.flush({ exiting: true })], ['the updater', () => daemonBoot.updaterBeside?.()],
     ['the reconciler', () => agentReconciler.stop()],
     // The connection alone: the host and its panes stay up for the successor to reattach.
-    ['the pty host connection', () => ptyHostBackend?.dispose()],
+    ['the pty host connection', () => { ptyHostBackend?.dispose(); ptyDrain?.dispose() }],
     ['the timers', () => { clearInterval(logTrimTimer); clearInterval(runtimeReconcileTimer); clearInterval(paneTitleSyncTimer) }],
     ['the question watchers', () => questionWatcher.stopAll()],
     ['the turn heartbeats', () => { for (const t of heartbeats.values()) clearInterval(t); heartbeats.clear() }],
@@ -2704,6 +2728,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     daemonBoot.updaterBeside?.()
     agentReconciler.stop()
     ptyHostBackend?.dispose()
+    ptyDrain?.dispose()
     clearInterval(logTrimTimer)
     clearInterval(runtimeReconcileTimer)
     clearInterval(paneTitleSyncTimer)
