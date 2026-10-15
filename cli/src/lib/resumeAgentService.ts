@@ -27,6 +27,9 @@ export interface ResumeAgentServiceDeps {
   stoppedAgents: StoppedAgentStore
   /** Where a resumed harness's new pane is made (main.ts `createBackend`); null with no backend ready. */
   createBackend: (CreateAgentPaneDeps['tmuxBackend'] & Pick<TerminalBackend, 'releaseHold'>) | null
+  /** What a resume answers when [createBackend] is null: the configured backend's own code (terminalBackend.ts
+   *  `noBackendCode`); `TMUX_UNAVAILABLE`, as before, by default. */
+  noBackendCode?: string
   /** The backend that holds [runtime] (`terminals.backendFor`): a pane is asked about on its own backend, tmux's
    *  first on a row that has one (`terminalTargetOf`). */
   backendFor(runtime: TerminalRuntimeRef): Pick<TerminalBackend, 'paneState' | 'rootProcess' | 'inventory' | 'releaseHold'> | undefined
@@ -47,7 +50,7 @@ export interface ResumeAgentServiceDeps {
 }
 
 export function createResumeAgentService(deps: ResumeAgentServiceDeps) {
-  const { registry, stoppedAgents, createBackend, backendFor, restartJobs, stopJobs, pinnedControls,
+  const { registry, stoppedAgents, createBackend, noBackendCode = 'TMUX_UNAVAILABLE', backendFor, restartJobs, stopJobs, pinnedControls,
     retainExitedSession, announceSession, relaunchOverrides, prepareSessionResume,
     refreshGridWebSearch, clearDeleted, attachDsh, attachSession, relaunchMarks } = deps
   const resumeConversations = new Set<string>()
@@ -196,7 +199,7 @@ export function createResumeAgentService(deps: ResumeAgentServiceDeps) {
     },
     launch: async (saved, resumeSessionId) => {
       // As a create with no backend ready answers (core/agents/create.ts).
-      if (!createBackend) return { ok: false, error: 'TMUX_UNAVAILABLE' }
+      if (!createBackend) return { ok: false, error: noBackendCode }
       // An explicit change is checked before allocating anything, and is persisted with the
       // resumed row. Ordinary Open keeps the saved mode, including the older-engine fallback.
       if (permissionMode !== undefined) {

@@ -332,6 +332,14 @@ function post(port, path, body, onResponse) {
   })
 }
 
+/** Mirrors syncStateDirectory in src/lib/secureState.ts: Windows cannot flush a directory handle (EPERM), and NTFS
+ *  journals the rename itself. */
+function syncStateDirectory(directory) {
+  if (process.platform === 'win32') return
+  const fd = openSync(directory, 'r')
+  try { fsyncSync(fd) } finally { closeSync(fd) }
+}
+
 function secureStateDirectory(directory, create = true) {
   if (create) mkdirSync(directory, { recursive: true, mode: 0o700 })
   const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
@@ -605,15 +613,26 @@ function argvTokens(args) {
   })
 }
 
+/**
+ * Mirrors programName in src/lib/processTable.ts: the file name, lower-cased, without a Windows program extension
+ * (`claude.exe`, `node.exe` read as `claude`, `node`), either separator ending a folder; `cmd.exe` keeps its, since
+ * it is the Windows command processor, not Command Code's `cmd`.
+ */
+function programName(token) {
+  const path = String(token || '').replace(/[\\/]+$/, '')
+  const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1).toLowerCase()
+  return name === 'cmd.exe' ? name : name.replace(/\.(?:exe|cmd|bat|ps1|com)$/, '')
+}
+
 function processEntrypoint(args) {
   const tokens = argvTokens(args)
   if (!tokens.length) return ''
   let index = 0
-  let command = basename(tokens[index]).toLowerCase()
+  let command = programName(tokens[index])
   if (command === 'env') {
     index++
     while (index < tokens.length && (tokens[index].startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]))) index++
-    command = basename(tokens[index] || '').toLowerCase()
+    command = programName(tokens[index] || '')
   }
   if (!/^(?:node|nodejs|bun|deno|python(?:\d+(?:\.\d+)*)?|bash|zsh|sh)$/.test(command)) return tokens[index] || ''
   index++
@@ -642,7 +661,7 @@ function unvisArgs(args) {
 
 function hermesInlineLauncher(row) {
   const args = unvisArgs(row.args).trim()
-  if (!/^python(?:\d+(?:\.\d+)*)?$/.test(basename(argvTokens(args)[0] ?? '').toLowerCase())) return false
+  if (!/^python(?:\d+(?:\.\d+)*)?$/.test(programName(argvTokens(args)[0] ?? ''))) return false
   const prefix = /^(?:"[^"]+"|'[^']+'|\S+)(?:\s+-(?:I|E|s|S|u|B|O{1,2}|q))*\s+-c\s+/.exec(args)
   if (!prefix) return false
   const source = args.slice(prefix[0].length).replace(/^["']/, '')
@@ -725,15 +744,16 @@ function commTruncatedPrefixOf(seen, want) {
 }
 
 function processMatchScore(row, engine, ownership, allowAgentHint = false) {
-  const executable = basename(row.executable).toLowerCase()
+  const executable = programName(row.executable)
   const entrypoint = processEntrypoint(row.args).toLowerCase()
-  const entrybase = basename(entrypoint).toLowerCase()
+  const entrybase = programName(entrypoint)
   const explicit = process.env[ENGINE_PATH_ENV[engine]]
   const configured = String(explicit || ENGINE_COMMANDS[engine] || '').toLowerCase()
-  const configuredBase = basename(configured).toLowerCase()
+  const configuredBase = programName(configured)
+  // Linux's `comm` cap is in bytes of the name as the kernel holds it: compared unstripped.
   if (configuredBase && configuredBase !== 'agent' && (row.executable.toLowerCase() === configured
     || entrypoint === configured || executable === configuredBase || entrybase === configuredBase
-    || commTruncatedPrefixOf(executable, configuredBase))) return 4
+    || commTruncatedPrefixOf(basename(row.executable).toLowerCase(), basename(configured).toLowerCase()))) return 4
   if (engine === 'codex') return /@openai[\/\\]codex[\/\\]bin[\/\\]codex(?:\.js)?$/.test(entrypoint) ? 2 : 0
   if (engine === 'cursor') {
     if (executable === 'cursor-agent' || entrybase === 'cursor-agent') return 3
@@ -788,7 +808,7 @@ function comparePtyVersions(a, b) {
 
 /**
  * Mirrors ptyHostBinary in src/lib/ptyHost/launch.ts: `HARNESS_PTY_BIN` as it is, else the newest managed
- * `<runtime>/pty/<version>/harness-pty.exe`, else the one beside this script (the bundle's).
+ * `<runtime>/pty/<version>/harness-pty.exe`, else the one in `pty/` beside this script (the bundle's).
  */
 function ptyHostBinary() {
   const override = process.env.HARNESS_PTY_BIN?.trim()
@@ -801,7 +821,7 @@ function ptyHostBinary() {
     const file = join(root, version, binary)
     try { accessSync(file, constants.F_OK); return file } catch { /* try the next */ }
   }
-  const beside = join(dirname(fileURLToPath(import.meta.url)), binary)
+  const beside = join(dirname(fileURLToPath(import.meta.url)), 'pty', binary)
   try { accessSync(beside, constants.F_OK); return beside } catch { return null }
 }
 
@@ -853,8 +873,8 @@ async function processRows() {
 }
 
 function aliasRows(rows) {
-  return rows.filter((row) => basename(row.executable).toLowerCase() === 'agent'
-    || basename(processEntrypoint(row.args)).toLowerCase() === 'agent')
+  return rows.filter((row) => programName(row.executable) === 'agent'
+    || programName(processEntrypoint(row.args)) === 'agent')
 }
 
 async function enrichProcessImages(rows) {
@@ -1033,8 +1053,7 @@ function writeBoot(bootFile) {
     try { writeFileSync(fd, currentBootId()); fsyncSync(fd) } finally { closeSync(fd) }
     renameSync(tmp, bootFile)
     renamed = true
-    const directoryFd = openSync(dirname(bootFile), 'r')
-    try { fsyncSync(directoryFd) } finally { closeSync(directoryFd) }
+    syncStateDirectory(dirname(bootFile))
   } catch {
     // best effort
   } finally {
@@ -1256,8 +1275,7 @@ function writeRegistry(file, sessions, current = () => true) {
     if (!current()) return false
     renameSync(tmp, file)
     renamed = true
-    const directoryFd = openSync(dirname(file), 'r')
-    try { fsyncSync(directoryFd) } finally { closeSync(directoryFd) }
+    syncStateDirectory(dirname(file))
     return true
   } finally {
     if (!renamed) {

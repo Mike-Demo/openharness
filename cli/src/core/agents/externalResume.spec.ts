@@ -115,6 +115,12 @@ it('preserves known refusals before creating a pane, but holds thrown or malform
   expect(await test.controller.create(input({ engine: 'terminal' }))).toMatchObject({ error: 'INVALID_SESSION' })
   test.deps.backend = null
   expect(await test.controller.create(input())).toMatchObject({ error: 'TMUX_UNAVAILABLE' })
+  // The configured backend's own code where there is none (Windows: the pty host).
+  test.deps.noBackendCode = 'PTY_HOST_UNAVAILABLE'
+  expect(await test.controller.create(input())).toMatchObject({ error: 'PTY_HOST_UNAVAILABLE' })
+  // A backend that cannot close a waiting pane by its token is still tmux's refusal, as before.
+  test.deps.backend = { create: test.create } as never
+  expect(await test.controller.create(input())).toMatchObject({ error: 'TMUX_UNAVAILABLE' })
 })
 
 it('holds busy waits outside the shared restore queue, pins ownership and journals actual interruption', async () => {

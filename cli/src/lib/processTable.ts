@@ -63,6 +63,19 @@ function argvPrefix(args: string, nativeArgv?: readonly string[]): () => string 
   }
 }
 
+/**
+ * A command's program name, as engine matching compares it: its file name, lower-cased, without a Windows program
+ * extension (`claude.exe`, `codex.cmd`, `node.exe` read as `claude`, `codex`, `node`). Either separator ends a folder,
+ * since a Windows row names its folders with a backslash and is read on every platform (the hook's copy, tests). `cmd.exe`
+ * keeps its extension: it is the Windows command processor, never Command Code's `cmd`. A Unix name has none of these
+ * extensions, so it reads as its basename did. Keep the standalone hook's copy (hook/notify.mjs) in sync.
+ */
+export function programName(token: string): string {
+  const path = token.replace(/[\\/]+$/, '')
+  const name = path.slice(Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1).toLowerCase()
+  return name === 'cmd.exe' ? name : name.replace(/\.(?:exe|cmd|bat|ps1|com)$/, '')
+}
+
 const ORI_FLAGS_WITH_VALUE = new Set(['--model', '--log-level', '--completions'])
 const INTERPRETER_OPTIONS_WITH_VALUE = new Set(['-r', '--require', '--loader', '--import', '--conditions', '--inspect-port'])
 const INLINE_CODE_OPTIONS = new Set(['-c', '--command', '-e', '--eval', '--print'])
@@ -77,11 +90,11 @@ const INLINE_CODE_OPTIONS = new Set(['-c', '--command', '-e', '--eval', '--print
  */
 function processEntrypoint(args: string, next = argvPrefix(args)): string {
   let token = next() ?? ''
-  let command = basename(token).toLowerCase()
+  let command = programName(token)
   if (command === 'env') {
     token = next() ?? ''
     while (token.startsWith('-') || /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) token = next() ?? ''
-    command = basename(token).toLowerCase()
+    command = programName(token)
   }
   // `ori <engine>` (OpenRouter's launcher) computes an environment and then `execve`s the vendor binary
   // away, so a pane running it looks exactly like a bare `claude`/`codex` for all but the ~100ms before
@@ -93,7 +106,7 @@ function processEntrypoint(args: string, next = argvPrefix(args)): string {
       if (ORI_FLAGS_WITH_VALUE.has(token)) next()
       token = next() ?? ''
     }
-    command = basename(token).toLowerCase()
+    command = programName(token)
   }
   if (!/^(?:node|nodejs|bun|deno|python(?:\d+(?:\.\d+)*)?|bash|zsh|sh)$/.test(command)) return token
 
@@ -146,7 +159,7 @@ function unvisArgs(args: string): string {
 
 function hermesInlineLauncher(row: Pick<ProcessRow, 'args'>): boolean {
   const args = unvisArgs(row.args).trim()
-  if (!/^python(?:\d+(?:\.\d+)*)?$/.test(basename(argvPrefix(args)() ?? '').toLowerCase())) return false
+  if (!/^python(?:\d+(?:\.\d+)*)?$/.test(programName(argvPrefix(args)() ?? ''))) return false
   const prefix = /^(?:"[^"]+"|'[^']+'|\S+)(?:\s+-(?:I|E|s|S|u|B|O{1,2}|q))*\s+-c\s+/.exec(args)
   if (!prefix) return false
   const source = args.slice(prefix[0].length).replace(/^["']/, '')
@@ -166,8 +179,8 @@ function hermesInlineLauncher(row: Pick<ProcessRow, 'args'>): boolean {
 }
 
 function agentAliasCandidate(row: Pick<ProcessRow, 'executable' | 'args'>): boolean {
-  if (basename(row.executable).toLowerCase() === 'agent') return true
-  return basename(processEntrypoint(row.args)).toLowerCase() === 'agent'
+  if (programName(row.executable) === 'agent') return true
+  return programName(processEntrypoint(row.args)) === 'agent'
 }
 
 
@@ -605,19 +618,20 @@ function heuristicEngineProcessMatchScore(
   engine: RegisteredSession['engine'],
   ownership = agentCommandOwnershipSnapshot(),
 ): number {
-  const executable = basename(row.executable).toLowerCase()
+  const executable = programName(row.executable)
   const entrypoint = processEntrypoint(row.args, argvPrefix(row.args, row.nativeArgv)).toLowerCase()
-  const entrybase = basename(entrypoint).toLowerCase()
+  const entrybase = programName(entrypoint)
   // Antigravity also ships an IDE-side `agy` inside its .app bundle. It is not the terminal engine,
   // even when an AGY_PATH override happens to use the same basename.
   if (engine === 'agy' && /\.app[\/\\]Contents[\/\\]/.test(`${row.executable}\n${entrypoint}`)) return 0
   // Only an explicit override is ownership evidence. A default command label is not: both Cursor and
   // Grok ship `agent`, which is exactly the collision this matcher must resolve rather than assume away.
   const configured = enginePathOverride(engine)?.toLowerCase()
-  const configuredBase = basename(configured ?? '').toLowerCase()
+  const configuredBase = programName(configured ?? '')
+  // Linux's `comm` cap is in bytes of the name as the kernel holds it: compared unstripped.
   if (configured && configuredBase !== 'agent' && (row.executable.toLowerCase() === configured
     || entrypoint === configured || executable === configuredBase || entrybase === configuredBase
-    || commTruncatedPrefixOf(executable, configuredBase))) return 4
+    || commTruncatedPrefixOf(basename(row.executable).toLowerCase(), basename(configured).toLowerCase()))) return 4
 
   // Command Code rewrites argv/comm to a session title, which becomes its only long-lived marker.
   if (engine === 'commandcode' && (/^\s*⌘(?:\s|$)/.test(row.executable) || /^\s*⌘(?:\s|$)/.test(row.args))) return 3
@@ -709,8 +723,8 @@ export function ambiguousAgentProcess(
 ): boolean {
   if (engineCapabilityProbe(row.args)) return false
   if (!agentAliasCandidate(row) || hasCursorPackageEntrypoint(row.args)) return false
-  const executable = basename(row.executable).toLowerCase()
-  const entrybase = basename(processEntrypoint(row.args)).toLowerCase()
+  const executable = programName(row.executable)
+  const entrybase = programName(processEntrypoint(row.args))
   if (executable === 'cursor-agent' || entrybase === 'cursor-agent' || executable === 'grok' || entrybase === 'grok') return false
   const owner = agentAliasOwner([row.imageFileKey, row.entrypointFileKey], ownership)
   return owner === 'unknown' || owner === 'conflict'

@@ -373,6 +373,8 @@ describe('creating an agent', () => {
   describe('refusals before any pane opens', () => {
     it('without tmux, in a folder being purged, or in a folder that is not one', async () => {
       expect(await setup({ createBackend: null }).create(request())).toEqual({ ok: false, error: 'TMUX_UNAVAILABLE' })
+      // Where the pty host is the configured backend (Windows), its own code: there is no tmux to install.
+      expect(await setup({ createBackend: null, noBackendCode: 'PTY_HOST_UNAVAILABLE' }).create(request())).toEqual({ ok: false, error: 'PTY_HOST_UNAVAILABLE' })
       expect(await setup({ blocksFolder: () => true }).create(request())).toEqual({ ok: false, error: 'WORKTREE_BUSY' })
       const { create } = setup()
       const file = join(folder(['x']), 'x')

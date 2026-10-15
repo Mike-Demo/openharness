@@ -49,7 +49,7 @@ describe('ptyHostBinary', () => {
     mkdirSync(path.join(runtime, 'pty', '0.11.0'), { recursive: true })
     executable(path.join(runtime, 'pty', 'latest', exe))
     const besideDir = tempDir('dist-')
-    executable(path.join(besideDir, exe))
+    executable(path.join(besideDir, 'pty', exe))
     expect(ptyHostBinary({ env: {}, runtimeDir: runtime, besideDir })).toBe(path.join(runtime, 'pty', '0.10.0', exe))
   })
 
@@ -60,11 +60,14 @@ describe('ptyHostBinary', () => {
     expect(ptyHostBinary({ env: {}, runtimeDir: runtime, besideDir: '/nowhere' })).toBeNull()
   })
 
-  it('falls back to the binary beside the bundle, then to null', () => {
+  it('falls back to the binary in pty/ beside the bundle (build-bundle.mjs), then to null', () => {
     const besideDir = tempDir('dist-')
     expect(ptyHostBinary({ env: {}, runtimeDir: '/nowhere', besideDir })).toBeNull()
+    // Not loose beside it: the host's ConPTY payload travels in its folder.
     executable(path.join(besideDir, exe))
-    expect(ptyHostBinary({ env: { HARNESS_PTY_BIN: '  ' }, runtimeDir: '/nowhere', besideDir })).toBe(path.join(besideDir, exe))
+    expect(ptyHostBinary({ env: {}, runtimeDir: '/nowhere', besideDir })).toBeNull()
+    executable(path.join(besideDir, 'pty', exe))
+    expect(ptyHostBinary({ env: { HARNESS_PTY_BIN: '  ' }, runtimeDir: '/nowhere', besideDir })).toBe(path.join(besideDir, 'pty', exe))
   })
 })
 

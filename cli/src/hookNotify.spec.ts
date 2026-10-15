@@ -690,6 +690,31 @@ describe('hook notify terminal scope', () => {
     }])
   })
 
+  it('knows Claude Code\'s native exe on Windows by its name without the extension', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adapter-hook-offline-windows-exe-'))
+    tmpDirs.push(dir)
+    const claudeProjectsDir = join(dir, 'claude-projects')
+    const dataDir = join(dir, 'data')
+    const transcriptPath = join(claudeProjectsDir, 'demo', 'session-x.jsonl')
+    mkdirSync(join(claudeProjectsDir, 'demo'), { recursive: true })
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(dataDir, 'registry.json'), '[]', { mode: 0o600 })
+    writeFileSync(transcriptPath, '{}\n')
+
+    // The row harness-pty lists for Claude Code's native install (Windows 11, 2026-10-15).
+    await runHook({
+      port: 9, tmuxPane: '%7', processEngine: 'claude', windowsProcessTable: true, dataDir, claudeProjectsDir,
+      processExecutable: 'claude.exe', processArgs: 'C:\\Users\\admin\\.local\\bin\\claude.exe',
+      input: { hook_event_name: 'SessionStart', session_id: 'session-x', transcript_path: transcriptPath, cwd: '/tmp/demo' },
+    })
+
+    expect(JSON.parse(readFileSync(join(dataDir, 'registry.json'), 'utf-8'))).toMatchObject([{
+      sessionId: 'session-x',
+      engine: 'claude',
+      processIdentity: { pid: 7001, executable: 'claude.exe', startMarker: 'w:133000000000000001' },
+    }])
+  })
+
   it('leaves a corrupt offline registry byte-identical instead of replacing it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'adapter-hook-offline-corrupt-'))
     tmpDirs.push(dir)

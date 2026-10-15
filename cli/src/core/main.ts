@@ -98,7 +98,7 @@ import { sessionStoreContracts } from '../engines/sessionStoreContracts.js'
 import { argvTokens, processRows } from '../lib/processTable.js'
 import { defaultTerminalBackends } from '../config/terminalConfig.js'
 import { prepareTerminalBackends, TerminalBackendCoordinator } from '../lib/terminalBackendCoordinator.js'
-import { canRestart, heldIn, type TerminalBackend } from '../lib/terminalBackend.js'
+import { canRestart, heldIn, noBackendCode, type TerminalBackend } from '../lib/terminalBackend.js'
 import { handoffAgentId } from '../lib/terminalHandoff.js'
 import { TerminalStreamManager } from '../lib/terminalStreamManager.js'
 import { ownedPanesOf, terminalRouteKey, terminalRuntimeLabel } from '../lib/terminalRuntime.js'
@@ -554,6 +554,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // The backend new panes are made on. Every other pane operation reaches the pane's own backend
   // through the coordinator (`terminals.backendFor`).
   const createBackend: TerminalBackend | null = terminalBackends[0] ?? null
+  // What a create, fork or resume answers while there is none: the configured backend's code, not always tmux's.
+  const createUnavailable = noBackendCode(terminalConfig.backends)
   // A hook's tmux runtime hint is taken only while tmux is the backend new panes are made on
   // (core/engines/hooks.ts). Restart, retarget, restore and adoption reach each pane's own backend
   // through the coordinator, gated on what it can do (`canRestart`, `isHeld`, `killHeld`).
@@ -2118,7 +2120,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     prepareNative: (native, current, environment, clear) => native.prepareHooks(env.DISABLE_HOOK_INSTALL ? 0 : hookPort, current, environment, clear),
     gridLaunch,
     writeGridConfigDir,
-    // No backend to make the pane on is not this check's to say: the launch answers TMUX_UNAVAILABLE.
+    // No backend to make the pane on is not this check's to say: the launch answers the configured backend's code.
     capabilities: () => createBackend?.capabilities() ?? Promise.resolve({ sessionEnv: true }),
     installCodexHooks: (codexHome) => env.DISABLE_HOOK_INSTALL ? true : engineHookFacets.codex.installIn(hookPort, codexHome),
     dshLaunch: dshLaunch.relaunch,
@@ -2390,7 +2392,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // Opening a conversation Harness did not start, and taking it over from a terminal (core/agents/adopt.ts).
   externalResumes = createExternalResumes({
     // Its waiting pane opens where new panes are made, and is asked about and closed by the backend it is on.
-    registry, backend: createBackend, backendFor: (runtime) => terminals.backendFor(runtime),
+    registry, backend: createBackend, noBackendCode: createUnavailable, backendFor: (runtime) => terminals.backendFor(runtime),
     stopped: () => stoppedAgents.list(), cancelled: id => restoreCancelled(id),
     generation: () => searchGeneration,
     waiting: row => heldIn(row, row.externalResume!.token, (runtime) => terminals.backendFor(runtime)).then(value => value === true),
@@ -2407,6 +2409,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     native: prepareNativeLaunch,
     dshLaunch,
     createBackend,
+    noBackendCode: createUnavailable,
     registry,
     externalResume: externalResumes.create,
     watchNewPane,
@@ -2436,6 +2439,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     authority: launchAuthority,
     dshLaunch,
     createBackend,
+    noBackendCode: createUnavailable,
     registry,
     mirror,
     pendingForkInherit,
@@ -2489,6 +2493,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     restartJobs,
     // A resumed harness opens where new panes are made; every pane is stopped and asked about on its own backend.
     createBackend,
+    noBackendCode: createUnavailable,
     backendFor: (runtime) => terminals.backendFor(runtime),
     agentReconciler,
     forgetSession,

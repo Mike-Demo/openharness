@@ -61,6 +61,9 @@ export interface CreateAgentDeps {
   native?: (engine: AgentEngine, source: NativeLaunchSource, authority: LaunchAuthority) => Promise<NativeLaunchResult>
   /** The backend new panes are made on; null where none is configured or could be readied. */
   createBackend: TerminalBackend | null
+  /** What a launch answers when [createBackend] is null: the configured backend's own code (terminalBackend.ts
+   *  `noBackendCode`); `TMUX_UNAVAILABLE`, as before, by default. */
+  noBackendCode?: string
   registry: typeof registry
   externalResume: CreateAgent
   watchNewPane: ReturnType<typeof createPaneWatcher>
@@ -90,7 +93,7 @@ export interface CreateAgentDeps {
 }
 
 export function createAgentCreator({
-  native: inspectNative, publishConfig, createBackend, registry, externalResume, watchNewPane, announceSession, attachDsh,
+  native: inspectNative, publishConfig, createBackend, noBackendCode = 'TMUX_UNAVAILABLE', registry, externalResume, watchNewPane, announceSession, attachDsh,
   prepareApiTools, hookPort, hooksDisabled, installOpencodePlugin, gridLaunchMachine, buildGridLaunch, terminalHintMachineName, blocksFolder,
   gridSetup, privateGridName, dshLaunch,
 }: CreateAgentDeps) {
@@ -99,7 +102,7 @@ export function createAgentCreator({
     const stale = () => ({ ok: false as const, error: 'LAUNCH_AUTHORITY_CHANGED', unavailable: 'launch', detail: 'Waiting for the original launch request’s authority.' })
     if (!authority.current()) return stale()
     let { engine, cwd, bypassPermission, permissionMode, grid, codexHome, dsh, prompt, name, agent, scmLaunchRecord, startedBy, parentAgentId } = input
-    if (!createBackend) return { ok: false, error: 'TMUX_UNAVAILABLE' }
+    if (!createBackend) return { ok: false, error: noBackendCode }
     if (blocksFolder(cwd)) return { ok: false, error: 'WORKTREE_BUSY' }
     const workspaceIdentity = () => { const info = statSync(cwd); return `${info.dev}:${info.ino}:${realpathSync(cwd)}` }
     let originalWorkspace: string

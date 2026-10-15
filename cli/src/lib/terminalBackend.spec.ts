@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { canRestart, heldIn, missingBackendCode, restartTargetOf, terminalTargetOf, type TerminalBackend } from './terminalBackend.js'
+import { canRestart, heldIn, missingBackendCode, noBackendCode, restartTargetOf, terminalTargetOf, type TerminalBackend } from './terminalBackend.js'
 import type { TerminalRuntimeRef } from './terminalTypes.js'
 
 const tmux = { backend: 'tmux' as const, paneId: '%3' }
@@ -74,5 +74,13 @@ describe('where a row\'s pane is reached', () => {
     expect(missingBackendCode({ runtimes: [pty, tmux] })).toBe('TMUX_UNAVAILABLE')
     expect(missingBackendCode({ runtimes: [pty] })).toBe('PTY_HOST_UNAVAILABLE')
     expect(missingBackendCode({ runtimes: [] })).toBe('TMUX_UNAVAILABLE')
+  })
+
+  it('names the backend new panes are made on when none could be readied', () => {
+    expect(noBackendCode(['tmux'])).toBe('TMUX_UNAVAILABLE')
+    expect(noBackendCode(['tmux', 'ptyhost'])).toBe('TMUX_UNAVAILABLE')
+    expect(noBackendCode(['ptyhost'])).toBe('PTY_HOST_UNAVAILABLE')
+    expect(noBackendCode(['ptyhost', 'tmux'])).toBe('PTY_HOST_UNAVAILABLE')
+    expect(noBackendCode([])).toBe('TMUX_UNAVAILABLE')
   })
 })

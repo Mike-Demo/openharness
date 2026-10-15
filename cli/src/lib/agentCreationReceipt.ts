@@ -487,8 +487,7 @@ export class AgentCreationReceipts {
       try { writeFileSync(fd, JSON.stringify(receipt)); fsyncSync(fd) }
       finally { closeSync(fd) }
       if (!exclusive) renameSync(writing, file)
-      const directoryFd = openSync(dirname(file), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
-      try { fsyncSync(directoryFd) } finally { closeSync(directoryFd) }
+      syncStateDirectory(dirname(file), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
     } finally {
       // Failed reservations stay on disk so a partial write cannot permit a
       // duplicate. Only this write's private replacement file is disposable.

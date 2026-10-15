@@ -66,9 +66,17 @@ function requireInsideWindowsRoots(path: string, kind: 'directory' | 'file'): vo
  * save failed after its rename. NTFS journals the rename itself; the file's data was flushed before it.
  */
 export function syncStateDirectory(directory: string, flags: number | string = 'r'): void {
-  if (process.platform === 'win32') return
+  if (!directorySyncSupported()) return
   const fd = openSync(directory, flags)
   try { fsyncSync(fd) } finally { closeSync(fd) }
+}
+
+/**
+ * Whether a directory handle can be flushed here, for a caller that holds one open to check what it is before the
+ * flush (`syncStateDirectory` opens its own): not on Windows, for the same reason.
+ */
+export function directorySyncSupported(): boolean {
+  return process.platform !== 'win32'
 }
 
 function secureWindowsStateDirectory(directory: string, create: boolean): void {

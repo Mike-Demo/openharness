@@ -670,6 +670,24 @@ printf '%s %s' "$harness_status" "$resumed"`], { encoding: 'utf8', stdio: ['igno
     expect(buildEngineLaunchArgv('claude', {}, 'zsh')).toEqual([engineBin('claude')])
   })
 
+  // Windows 11's default execution policy refuses npm's codex.ps1, which PowerShell would pick for a bare `codex`.
+  it('names the engine\'s .cmd shim or .exe on Windows, never its .ps1', () => {
+    const npm = mkdtempSync(join(tmpdir(), 'engine-launch-npm-'))
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    try {
+      for (const name of ['codex', 'codex.cmd', 'codex.ps1']) writeFileSync(join(npm, name), '')
+      vi.stubEnv('PATH', npm)
+      vi.stubEnv('CODEX_PATH', '')
+      Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+      expect(buildEngineCommandArgv('codex', { bypassPermission: true }))
+        .toEqual([join(npm, 'codex.cmd'), '--approve-for-me', ...CODEX_SCREEN])
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+      vi.unstubAllEnvs()
+      rmSync(npm, { recursive: true, force: true })
+    }
+  })
+
   it('appends the confirmed flag for engines with a known bypass flag', () => {
     expect(buildEngineCommandArgv('claude', { bypassPermission: true }))
       .toEqual([engineBin('claude'), '--permission-mode', 'auto'])

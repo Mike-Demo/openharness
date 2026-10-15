@@ -192,6 +192,7 @@ describe('forking an agent', () => {
 
   it('refuses without tmux, an agent, a folder, or with a grid or a turn in progress', async () => {
     expect(await setup(source(), { createBackend: null }).fork({ agentId: 'a1', name: null, prompt: null })).toEqual({ ok: false, error: 'TMUX_UNAVAILABLE' })
+    expect(await setup(source(), { createBackend: null, noBackendCode: 'PTY_HOST_UNAVAILABLE' }).fork({ agentId: 'a1', name: null, prompt: null })).toEqual({ ok: false, error: 'PTY_HOST_UNAVAILABLE' })
     expect(await setup(null).fork({ agentId: 'a1', name: null, prompt: null })).toEqual({ ok: false, error: 'AGENT_NOT_FOUND' })
     expect(await setup(source({ cwd: undefined })).fork({ agentId: 'a1', name: null, prompt: null })).toMatchObject({ error: 'CWD_NOT_FOUND', detail: expect.stringContaining('no working folder') })
     expect(await setup(source({ cwd: join(root, 'file') })).fork({ agentId: 'a1', name: null, prompt: null })).toEqual({ ok: false, error: 'CWD_NOT_FOUND' })

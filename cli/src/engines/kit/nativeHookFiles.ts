@@ -5,6 +5,7 @@ import { accessSync, closeSync, constants, fchmodSync, fstatSync, fsync, linkSyn
 import { basename, dirname, join } from 'node:path'
 import { NativeEvidenceBudget } from './nativeEvidence.js'
 import { NativePaths, verifyNativePathFacts } from './nativePaths.js'
+import { directorySyncSupported } from '../../lib/secureState.js'
 
 export class HookPreparationHeld extends Error {
   constructor(detail: string) { super(`Hook preparation is waiting: ${detail}`); this.name = 'HookPreparationHeld' }
@@ -25,7 +26,8 @@ async function syncDirectory(path: string, attempt: HookPreparationAttempt): Pro
   const fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW)
   try {
     if (fileIdentity(fstatSync(fd, { bigint: true })) !== expected) throw new HookPreparationHeld('the directory changed before sync')
-    await attempt.flush(fd)
+    // Windows cannot flush a directory handle (secureState.ts `syncStateDirectory`); NTFS journals the names.
+    if (directorySyncSupported()) await attempt.flush(fd)
     if (fileIdentity(lstatSync(path, { bigint: true })) !== expected) throw new HookPreparationHeld('the directory changed during sync')
   } finally { closeSync(fd) }
 }

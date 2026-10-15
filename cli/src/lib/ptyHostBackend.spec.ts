@@ -22,6 +22,7 @@ vi.mock('./processSignals.js', async (importOriginal) => {
 })
 
 const { PtyHostBackend } = await import('./ptyHostBackend.js')
+const { defaultWindowsShell } = await import('./windows/shell.js')
 const { processRows, setProcessTableSource } = await import('./processTable.js')
 const { setAgentSignaller, signalAgentProcess } = await import('./processSignals.js')
 
@@ -111,8 +112,15 @@ describe('PtyHostBackend create', () => {
   it('runs the shell when given no command', async () => {
     const { backend, calls } = await ready({ create: { state: 'ok', value: { pane: '%4' } } })
     await backend.create({})
-    const expected = process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : process.env.SHELL || '/bin/sh'
-    expect(calls[0]).toMatchObject({ op: 'create', command: [expected] })
+    expect(calls[0]).toMatchObject({ op: 'create', command: [process.env.SHELL || '/bin/sh'] })
+  })
+
+  it('runs PowerShell on Windows when given no command', async () => {
+    const { backend, calls } = await ready({ create: { state: 'ok', value: { pane: '%4' } } }, { platform: 'win32' })
+    try {
+      await backend.create({})
+      expect(calls.find((call) => call.op === 'create')).toMatchObject({ op: 'create', command: defaultWindowsShell() })
+    } finally { backend.dispose() }
   })
 
   it('sends nothing once the harness has changed', async () => {

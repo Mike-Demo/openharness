@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { hardenPrivateStateFileIfPresent, insideWindowsRoots, readPrivateStateFile, secureStateDirectory, syncStateDirectory, windowsStateRoots } from './secureState.js'
+import { directorySyncSupported, hardenPrivateStateFileIfPresent, insideWindowsRoots, readPrivateStateFile, secureStateDirectory, syncStateDirectory, windowsStateRoots } from './secureState.js'
 
 const WINDOWS = process.platform === 'win32'
 
@@ -145,5 +145,18 @@ describe('syncStateDirectory', () => {
 
   it.skipIf(WINDOWS)('fails as fsync does for a directory that is not there', () => {
     expect(() => syncStateDirectory(join(tmpdir(), 'secure-state-missing-dir'))).toThrow(/ENOENT/)
+  })
+
+  it('does nothing on Windows, and says so to a caller that holds the directory open', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    try {
+      Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+      expect(directorySyncSupported()).toBe(false)
+      expect(() => syncStateDirectory(join(tmpdir(), 'secure-state-missing-dir'))).not.toThrow()
+      Object.defineProperty(process, 'platform', { ...platform, value: 'linux' })
+      expect(directorySyncSupported()).toBe(true)
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+    }
   })
 })

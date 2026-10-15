@@ -14,7 +14,7 @@ import { startupFunctions, startupNeedsScript, startupRuns } from '../engines/ki
 import { screenArgs, screenEnvPrefix, screenPrelude } from '../engines/kit/launchScreen.js'
 import { isTerminalEngine, type AgentEngine } from '../engines/types.js'
 import { isOpencodeV2 } from '../engines/opencode/contract.js'
-import { binaryOnPath, resolveBinaryOnPath } from './binaryOnPath.js'
+import { binaryOnPath, resolveBinaryOnPath, windowsLaunchCommand } from './binaryOnPath.js'
 import { engineBin } from './engineBin.js'
 import { engineInstallPaths, npmEnginePrefix, type EngineInstallRecipe } from './engineInstall.js'
 import { engineLabel } from './agentNames.js'
@@ -350,7 +350,8 @@ export function supportsNativeFork(engine: AgentEngine): boolean {
 
 /** The executable argv, before the interactive-shell wrapper is applied. */
 export function buildEngineCommandArgv(engine: AgentEngine, opts: LaunchCommandOptions = {}): string[] {
-  const argv = [opts.native?.executable?.command ?? engineBin(engine)]
+  // Windows: the engine's .exe or .cmd shim, never the .ps1 PowerShell would pick (binaryOnPath.ts).
+  const argv = [windowsLaunchCommand(opts.native?.executable?.command ?? engineBin(engine))]
   // A fork is a resume that leaves the source alone; the two are exclusive, and the fork wins.
   const fork = opts.forkSessionId ? LAUNCH_FORK_FLAG[engine] : undefined
   const resumeFlag = fork ? fork.lead : opts.resumeSessionId ? LAUNCH_RESUME_FLAG[engine] : undefined

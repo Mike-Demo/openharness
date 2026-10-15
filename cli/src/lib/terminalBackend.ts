@@ -166,6 +166,16 @@ export function missingBackendCode(session: { readonly runtimes: readonly Termin
   return TERMINAL_UNAVAILABLE_CODE[tmuxFirst(session.runtimes)[0]?.backend ?? 'tmux']
 }
 
+/**
+ * What a create, fork or resume answers when no backend could be readied to make its pane on: the code of the backend
+ * new panes are made on, the first configured one (main.ts `createBackend`). Tmux keeps the `TMUX_UNAVAILABLE` it
+ * always had; a Windows daemon, whose only backend is the pty host, names it (`PTY_HOST_UNAVAILABLE`) rather than a
+ * tmux it never had.
+ */
+export function noBackendCode(configured: readonly TerminalBackendName[]): string {
+  return TERMINAL_UNAVAILABLE_CODE[configured[0] ?? 'tmux']
+}
+
 /** [runtimes] with their tmux ones first, the rest in row order. */
 function tmuxFirst(runtimes: readonly TerminalRuntimeRef[]): TerminalRuntimeRef[] {
   return [...runtimes].sort((a, b) => Number(b.backend === 'tmux') - Number(a.backend === 'tmux'))

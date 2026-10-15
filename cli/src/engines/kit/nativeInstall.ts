@@ -121,7 +121,7 @@ function publish(value){
   current();fs.linkSync(temporary,result);
   if(id(fs.lstatSync(result,{bigint:true}))!==id(fs.fstatSync(fd,{bigint:true}))||read(result)!==bytes)throw Error('Changed published result');
   if(id(fs.lstatSync(temporary,{bigint:true}))!==id(fs.fstatSync(fd,{bigint:true})))throw Error('Changed result staging file');
-  fs.unlinkSync(temporary);fs.fsyncSync(directoryFd);
+  fs.unlinkSync(temporary);if(process.platform!=='win32')fs.fsyncSync(directoryFd);
   if(id(fs.lstatSync(result,{bigint:true}))!==id(fs.fstatSync(fd,{bigint:true}))||read(result)!==bytes)throw Error('Changed confirmed result');
  }finally{fs.closeSync(fd)}
 }

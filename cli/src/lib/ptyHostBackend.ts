@@ -27,6 +27,7 @@ import type { TerminalBackend, TerminalBackendPrepared } from './terminalBackend
 import { TMUX_KEYS } from './terminalKeys.js'
 import { sameProcessIdentity, terminalRouteKey } from './terminalRuntime.js'
 import { windowsProcessRows } from './windows/processTable.js'
+import { defaultWindowsShell } from './windows/shell.js'
 import { taskkillTree, type TreeKillOutcome } from './windows/treeKill.js'
 import {
   TERMINAL_ACTION_SUCCEEDED,
@@ -98,11 +99,11 @@ function actionOf(result: PtyHostCallResult<unknown>): TerminalActionResult {
 }
 
 /**
- * What runs in a pane created with no command: the user's shell, as tmux's `default-shell` is. On Windows
- * the command processor until the shell choice of lib/windows/shell.ts lands (Task 20).
+ * What runs in a pane created with no command on [platform]: the user's shell, as tmux's `default-shell` is. On
+ * Windows, PowerShell (lib/windows/shell.ts).
  */
-function defaultCommand(): string[] {
-  if (process.platform === 'win32') return [process.env.ComSpec ?? 'cmd.exe']
+function defaultCommand(platform: NodeJS.Platform): string[] {
+  if (platform === 'win32') return defaultWindowsShell()
   return [process.env.SHELL || '/bin/sh']
 }
 
@@ -325,7 +326,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
     // its error readable. The agent services release it once the pane is a real agent (`releaseHold`).
     const result = await client.call({
       op: 'create',
-      command: request.command?.length ? request.command : defaultCommand(),
+      command: request.command?.length ? request.command : defaultCommand(this.platform),
       ...(request.cwd ? { cwd: request.cwd } : {}),
       ...(request.env && Object.keys(request.env).length ? { env: request.env } : {}),
       cols: CREATE_COLS,

@@ -7,6 +7,7 @@ import { performance } from 'node:perf_hooks'
 import { MAX_CATALOG_HOMES, readHomeCatalog, type HomeCatalog, type HomeCatalogRead } from './homeCatalog.js'
 import { IdentityReadUnavailable } from './identityScan.js'
 import { NATIVE_EVIDENCE_MS } from './nativeEvidence.js'
+import { directorySyncSupported } from '../../lib/secureState.js'
 
 const MAX_RECORDS = MAX_CATALOG_HOMES * 2 + 2
 const MAX_BYTES = 64 * 1024
@@ -208,7 +209,9 @@ function syncDirectory(directory: string, check: () => void, ancestor = false): 
     const info = fstatSync(fd, { bigint: true })
     if (ancestor) { if (!info.isDirectory()) throw unavailable('has an unavailable ancestor directory') }
     else inspect(info, true)
-    fsyncSync(fd); check()
+    // Windows cannot flush a directory handle (secureState.ts `syncStateDirectory`); NTFS journals the names.
+    if (directorySyncSupported()) fsyncSync(fd)
+    check()
   }
   finally { closeSync(fd) }
 }

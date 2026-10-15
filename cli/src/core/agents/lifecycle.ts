@@ -23,6 +23,8 @@ export interface LifecycleDeps {
   restartJobs: StopAgentServiceDeps['restartJobs']
   /** Where a resumed harness's new pane is made. */
   createBackend: ResumeAgentServiceDeps['createBackend']
+  /** What a resume answers when [createBackend] is null (terminalBackend.ts `noBackendCode`). */
+  noBackendCode?: ResumeAgentServiceDeps['noBackendCode']
   /** The backend that holds a pane (`terminals.backendFor`): stop closes, and resume asks about, each pane on its own. */
   backendFor: (runtime: Parameters<StopAgentServiceDeps['backendFor']>[0]) =>
     (ReturnType<StopAgentServiceDeps['backendFor']> & ReturnType<ResumeAgentServiceDeps['backendFor']>) | undefined
@@ -52,7 +54,7 @@ export interface LifecycleDeps {
 }
 
 export function createAgentLifecycle({
-  registry, stoppedAgents, restartJobs, createBackend, backendFor, agentReconciler, forgetSession, markDeleted, clearDeleted, stopNative, settlePane, cancelExternal,
+  registry, stoppedAgents, restartJobs, createBackend, noBackendCode, backendFor, agentReconciler, forgetSession, markDeleted, clearDeleted, stopNative, settlePane, cancelExternal,
   sessionCheckpoints, mirror, sessionSearch, send, pinnedControls, retainExitedSession, announceSession,
   relaunchOverrides, prepareSessionResume, refreshGridWebSearch, attachDsh, attachSession, relaunchMarks, stopped,
 }: LifecycleDeps) {
@@ -87,7 +89,7 @@ export function createAgentLifecycle({
   })
 
   const resume = createResumeAgentService({
-    registry, stoppedAgents, createBackend, backendFor, restartJobs, stopJobs, pinnedControls,
+    registry, stoppedAgents, createBackend, noBackendCode, backendFor, restartJobs, stopJobs, pinnedControls,
     retainExitedSession, announceSession, relaunchOverrides, prepareSessionResume,
     refreshGridWebSearch, clearDeleted, attachDsh, attachSession, relaunchMarks,
   })

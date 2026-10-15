@@ -382,6 +382,14 @@ describe('production resume handler', () => {
     setup(); expect(await start()).toMatchObject({ ok: false, error }); expect(create).not.toHaveBeenCalled()
     expect(deps.stoppedAgents.get(saved.agentId)?.agentId).toBe(saved.agentId)
   })
+  it('names the configured backend when none can open the resumed pane', async () => {
+    deps.createBackend = null
+    expect(await start()).toEqual({ ok: false, error: 'TMUX_UNAVAILABLE' })
+    deps.noBackendCode = 'PTY_HOST_UNAVAILABLE'
+    expect(await start()).toEqual({ ok: false, error: 'PTY_HOST_UNAVAILABLE' })
+    expect(create).not.toHaveBeenCalled()
+    expect(deps.stoppedAgents.get(saved.agentId)?.agentId).toBe(saved.agentId)
+  })
   it('does not rewrite a profile while an earlier allocation is unconfirmed', async () => {
     deps.stoppedAgents.beginResume(saved.agentId)
     expect(await start()).toMatchObject({ error: 'RESUME_UNCONFIRMED' })

@@ -41,6 +41,9 @@ export interface ForkAgentDeps {
   authority?: (agentId: string) => () => boolean
   /** The backend new panes are made on, tmux or the pty host; null when none could be readied. */
   createBackend: TerminalBackend | null
+  /** What a launch answers when [createBackend] is null: the configured backend's own code (terminalBackend.ts
+   *  `noBackendCode`); `TMUX_UNAVAILABLE`, as before, by default. */
+  noBackendCode?: string
   registry: typeof registry
   mirror: Pick<TurnRecaps, 'isBusy' | 'recentAsks' | 'recent' | 'lastFullText'>
   /** Forks whose session has not reported in yet, to the source session whose recap they inherit (bind.ts). */
@@ -58,14 +61,14 @@ export interface ForkAgentDeps {
 
 export function createAgentForker({
   native: inspectNative, prepareNative, authority: captureAuthority,
-  createBackend, registry, mirror, pendingForkInherit, watchNewPane, announceSession, attachDsh, prepareApiTools, relaunchOverrides, gridName, dshLaunch,
+  createBackend, noBackendCode = 'TMUX_UNAVAILABLE', registry, mirror, pendingForkInherit, watchNewPane, announceSession, attachDsh, prepareApiTools, relaunchOverrides, gridName, dshLaunch,
 }: ForkAgentDeps) {
   const prepare = async ({ agentId, name, prompt }: Parameters<ForkAgent>[0], authority: LaunchAuthority): Promise<LaunchPreparation<Awaited<ReturnType<ForkAgent>>>> => {
     const ownsSource = captureAuthority?.(agentId) ?? (() => true)
     const owner = () => authority.current() && ownsSource()
     const changed = { ok: false, error: 'AGENT_CHANGED', detail: 'The original fork source changed or stopped during preparation.' } as const
     if (!owner()) return changed
-    if (!createBackend) return { ok: false, error: 'TMUX_UNAVAILABLE' }
+    if (!createBackend) return { ok: false, error: noBackendCode }
     const observed = registry.byAgent(agentId)
     if (!observed) return { ok: false, error: 'AGENT_NOT_FOUND' }
     const source = structuredClone(observed)

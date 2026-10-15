@@ -28,6 +28,9 @@ export interface ExternalResumeDeps {
   /** The backend an adoption's waiting pane opens on (the one new panes are made on); null when there is none.
    *  One that cannot close a held pane by its token (`killHeld`) opens none. */
   backend: Pick<TerminalBackend, 'create' | 'killHeld'> | null
+  /** What an adoption answers when [backend] is null: the configured backend's own code (terminalBackend.ts
+   *  `noBackendCode`); `TMUX_UNAVAILABLE`, as before, by default. */
+  noBackendCode?: string
   /** Each runtime's own backend: a cancelled adoption's waiting pane is closed by the one it is on. */
   backendFor: (runtime: TerminalRuntimeRef) => Pick<TerminalBackend, 'killHeld'> | undefined
   inspect(request: ExternalSessionRequest): Promise<ExternalSessionAnswer>
@@ -162,7 +165,7 @@ export function createExternalResumes(deps: ExternalResumeDeps) {
   const create: CreateAgent = async input => {
     if (stopped || !opened) return { ok: false, error: 'CORE_NOT_READY' }
     const backend = deps.backend
-    if (!backend?.killHeld) return { ok: false, error: 'TMUX_UNAVAILABLE' }
+    if (!backend?.killHeld) return { ok: false, error: backend ? 'TMUX_UNAVAILABLE' : deps.noBackendCode ?? 'TMUX_UNAVAILABLE' }
     const request = externalSessionRequest({ sessionId: input.resumeSessionId, engine: input.engine })
     if (!request) return { ok: false, error: 'INVALID_SESSION' }
     const answer = await inspect(request)

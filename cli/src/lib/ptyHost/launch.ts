@@ -43,7 +43,7 @@ function compareVersions(a: string, b: string): number {
 export interface PtyHostBinaryOptions {
   env?: NodeJS.ProcessEnv
   runtimeDir?: string
-  /** The bundle's own directory (`dist/` in a release). */
+  /** The bundle's own directory (`dist/` in a release); the binary is looked for in its `pty/`. */
   besideDir?: string
 }
 
@@ -53,7 +53,8 @@ export interface PtyHostBinaryOptions {
  * 2. the newest `<runtime>/pty/<version>/harness-pty[.exe]`. Binaries install per version because
  *    Windows cannot overwrite a running .exe (spec §4, host upgrade), and the newest is the one a
  *    new host should run; older ones stay for the hosts still draining on them;
- * 3. beside the bundle, where `build-bundle.mjs` puts it for local Windows testing.
+ * 3. in `pty/` beside the bundle, where `build-bundle.mjs` puts it with its ConPTY payload for local Windows testing
+ *    (scripts/lib/ptyPayload.mjs).
  */
 export function ptyHostBinary(options: PtyHostBinaryOptions = {}): string | null {
   const override = (options.env ?? process.env).HARNESS_PTY_BIN?.trim()
@@ -69,7 +70,7 @@ export function ptyHostBinary(options: PtyHostBinaryOptions = {}): string | null
     const file = path.join(root, version, BINARY)
     if (runnable(file)) return file
   }
-  const beside = path.join(options.besideDir ?? path.dirname(fileURLToPath(import.meta.url)), BINARY)
+  const beside = path.join(options.besideDir ?? path.dirname(fileURLToPath(import.meta.url)), 'pty', BINARY)
   return runnable(beside) ? beside : null
 }
 
