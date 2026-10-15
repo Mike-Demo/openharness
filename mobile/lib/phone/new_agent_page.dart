@@ -43,6 +43,7 @@ class NewAgentPage extends StatefulWidget {
     required this.notifier,
     required this.machineId,
     this.folder,
+    this.deskTabId,
     this.voice,
   });
 
@@ -56,6 +57,10 @@ class NewAgentPage extends StatefulWidget {
   /// A folder on [machineId] to start in — Find's `+ New Harness in api`. Null takes the last one
   /// used there.
   final String? folder;
+
+  /// The desk tab the new harness joins — the tab Find was narrowed to when New Harness was tapped.
+  /// Null joins the tab the phone is in. See `PhoneDesk.adopt`.
+  final String? deskTabId;
 
   @override
   State<NewAgentPage> createState() => _NewAgentPageState();
@@ -783,6 +788,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
       // with its own default CODEX_HOME.
       codexHome: _showsCodexProfile ? _codexProfile?.path : null,
       model: _model,
+      deskTabId: widget.deskTabId,
       attempt: creation,
       prompt: task.isEmpty ? null : task,
       // Whenever a first task is sent, the harness is called by its words until the engine titles

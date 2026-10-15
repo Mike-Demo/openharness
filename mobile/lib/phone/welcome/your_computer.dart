@@ -6,6 +6,8 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 import 'package:share_plus/share_plus.dart';
 
 import 'package:harness_mobile/core/handoff.dart';
+import 'package:harness_mobile/measurement/onboarding_measurement.dart';
+import 'package:harness_mobile/measurement/product_measurement.dart';
 import 'package:harness_mobile/shared/theme/app_theme.dart';
 import 'package:harness_mobile/state/app_state.dart';
 
@@ -144,7 +146,12 @@ class _YourComputerPageState extends State<YourComputerPage>
 /// Signed in there with it, the computer joins the account, and the screen moves on by itself
 /// ([ComputerWatch]): no Add Phone, nothing to scan.
 class GoToComputer extends StatelessWidget {
-  const GoToComputer({super.key, required this.account, this.notYou});
+  const GoToComputer({
+    super.key,
+    required this.account,
+    this.notYou,
+    this.onSent,
+  });
 
   /// The account the computer has to sign in to — this phone's.
   final String? account;
@@ -153,12 +160,15 @@ class GoToComputer extends StatelessWidget {
   /// none with no account to name — "Not you?" would ask about nobody.
   final Widget? notYou;
 
+  /// The address went out through the share sheet ([GoAddressButton.onSent]).
+  final VoidCallback? onSent;
+
   @override
   Widget build(BuildContext context) => Column(
     mainAxisSize: MainAxisSize.min,
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
-      const GoAddressButton(),
+      GoAddressButton(onSent: onSent),
       const SizedBox(height: OnboardingFrame.stepsAbove),
       StepsTimeline(
         steps: goToSteps(account),
@@ -193,6 +203,10 @@ class NotYouSignOut extends StatelessWidget {
         behavior: HitTestBehavior.opaque,
         onTap: () {
           HapticFeedback.selectionClick();
+          notifier.onboardingMeasurement.mark(
+            ProductFlow.computerWait,
+            OnboardingMark.notYou,
+          );
           unawaited(confirmSignOut(context, notifier));
         },
         child: ConstrainedBox(
@@ -272,7 +286,10 @@ class _ComputerWatchState extends State<ComputerWatch> {
 /// While it is up it also offers the page to a Mac nearby by Handoff ([Handoff]): signed in to the
 /// same Apple account, the Mac shows it in its Dock, and nothing is typed at all.
 class GoAddressButton extends StatefulWidget {
-  const GoAddressButton({super.key});
+  const GoAddressButton({super.key, this.onSent});
+
+  /// The share sheet sent the address somewhere — not merely opened and dismissed.
+  final VoidCallback? onSent;
 
   @override
   State<GoAddressButton> createState() => _GoAddressButtonState();
@@ -309,13 +326,14 @@ class _GoAddressButtonState extends State<GoAddressButton> {
         ? null
         : box.localToGlobal(Offset.zero) & box.size;
     try {
-      await SharePlus.instance.share(
+      final result = await SharePlus.instance.share(
         ShareParams(
           uri: _url,
           subject: 'Get Harness for your computer',
           sharePositionOrigin: origin,
         ),
       );
+      if (result.status == ShareResultStatus.success) widget.onSent?.call();
     } catch (_) {
       // No share sheet came up: the address is still there to type, and can be pressed again.
     }

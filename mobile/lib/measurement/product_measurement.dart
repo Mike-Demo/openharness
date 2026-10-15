@@ -31,6 +31,9 @@ enum ProductFlow {
 
   /// Whether a signed-out session that opted in may count it.
   bool get beforeSignIn => index <= ProductFlow.signIn.index;
+
+  /// Mirrors `PRODUCT_USAGE_LONG_FLOWS`: a step that can take hours, whose over_1m is split further.
+  bool get long => this == computerWait || this == firstMessage;
 }
 
 enum ProductOutcome { ok, failed, cancelled, unknown }
@@ -78,6 +81,9 @@ class ProductMeasurement extends ChangeNotifier {
   final _setupFacts = <ProductFlow, String>{};
 
   bool get sharing => _account != null && _enabled == true;
+
+  /// The account's choice has read off: what waits to be counted for it never is.
+  bool get declined => _account != null && _enabled == false;
   bool get _setupAllowed =>
       surface != 'web' &&
       signedOutSharing &&
@@ -183,7 +189,26 @@ class ProductMeasurement extends ChangeNotifier {
             ? '10s_to_1m'
             : 'over_1m'}',
       );
+      if (!flow.long || ms < 60000) return;
+      _count(
+        channel,
+        day,
+        '$prefix${ms < 300000
+            ? '1m_to_5m'
+            : ms < 900000
+            ? '5m_to_15m'
+            : ms < 3600000
+            ? '15m_to_1h'
+            : 'over_1h'}',
+      );
     };
+  }
+
+  /// Counts [measure] of [flow] — one of `PRODUCT_USAGE_ONBOARDING_MARKS` — for an account that shares.
+  void mark(ProductFlow flow, String measure) {
+    if (_disposed || !sharing) return;
+    final day = _now().toUtc().toIso8601String().substring(0, 10);
+    _count('ui', day, 'ui_${surface}_${flow.wire}_$measure');
   }
 
   /// One attempt counted under several flows at once — `sign_in` and the button that started it.
