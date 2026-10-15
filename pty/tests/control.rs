@@ -98,18 +98,23 @@ fn discovery_names_the_host() {
     }
     #[cfg(windows)]
     {
-        // `\\.\pipe\harness-pty-<16 hex>-p<protocol>`.
-        let hash = endpoint
+        // `\\.\pipe\harness-pty-<16 hex of the user and home>-<16 random hex>-p<protocol>`.
+        let parts: Vec<&str> = endpoint
             .strip_prefix(r"\\.\pipe\harness-pty-")
             .and_then(|rest| rest.strip_suffix(&format!("-p{PROTOCOL}")))
-            .unwrap_or_else(|| panic!("{endpoint}"));
-        assert!(
-            hash.len() == 16
-                && hash
-                    .bytes()
-                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
-            "{endpoint}"
-        );
+            .unwrap_or_else(|| panic!("{endpoint}"))
+            .split('-')
+            .collect();
+        assert_eq!(parts.len(), 2, "{endpoint}");
+        for part in parts {
+            assert!(
+                part.len() == 16
+                    && part
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+                "{endpoint}"
+            );
+        }
     }
     // The hello reply names the same host.
     let s = dial(&disc);

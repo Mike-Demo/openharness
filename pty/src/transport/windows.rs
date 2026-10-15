@@ -42,9 +42,10 @@ use windows_sys::Win32::Security::{
     SetFileSecurityW, TOKEN_QUERY, TOKEN_USER, TokenUser,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_ATTRIBUTE_NORMAL,
-    FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX, ReadFile,
-    SECURITY_IDENTIFICATION, WriteFile,
+    CREATE_NEW, CreateDirectoryW, CreateFileW, FILE_APPEND_DATA, FILE_ATTRIBUTE_NORMAL,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_ALWAYS, PIPE_ACCESS_DUPLEX, ReadFile,
+    SECURITY_IDENTIFICATION, SYNCHRONIZE, WriteFile,
 };
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::{
@@ -250,6 +251,30 @@ pub fn create_private_file(path: &Path) -> io::Result<std::fs::File> {
             0,
             &attributes,
             CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { std::fs::File::from_raw_handle(handle as _) })
+}
+
+/// Open `path` to append to, creating it with the user-only DACL when it is not there (a file that
+/// is keeps its own). Shared for reading, writing and deletion: the person can read the log while the
+/// host runs, another host's line or two goes in, and the file can be renamed (rotated).
+pub fn open_private_append(path: &Path) -> io::Result<std::fs::File> {
+    let security = OwnerOnly::new()?;
+    let attributes = security.attributes();
+    let name = wide_path(path);
+    let handle = unsafe {
+        CreateFileW(
+            name.as_ptr(),
+            FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            &attributes,
+            OPEN_ALWAYS,
             FILE_ATTRIBUTE_NORMAL,
             std::ptr::null_mut(),
         )

@@ -156,7 +156,8 @@ pub fn install(home: &Path) {
 
 /// `<home>/logs/`, the owner's alone (0700 on Unix, the run directory's user-only DACL on Windows),
 /// then the log in it, opened to append: created 0600 on Unix (and made so, whatever an older file
-/// had), on Windows with the user-only DACL from its creation.
+/// had), on Windows with the user-only DACL from its creation, and shared, so it can be read (and
+/// rotated) while it is open.
 fn open_log(home: &Path, path: &Path) -> io::Result<(File, u64)> {
     let dir = log_dir(home);
     #[cfg(unix)]
@@ -179,13 +180,7 @@ fn open_log(home: &Path, path: &Path) -> io::Result<(File, u64)> {
     let file = {
         std::fs::create_dir_all(home)?;
         crate::transport::windows::secure_dir(&dir)?;
-        match crate::transport::windows::create_private_file(path) {
-            Ok(file) => file,
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                std::fs::OpenOptions::new().append(true).open(path)?
-            }
-            Err(err) => return Err(err),
-        }
+        crate::transport::windows::open_private_append(path)?
     };
     let size = file.metadata()?.len();
     Ok((file, size))

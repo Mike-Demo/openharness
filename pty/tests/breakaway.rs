@@ -114,16 +114,27 @@ fn serve_in(job: &OwnedHandle, home: &std::path::Path) -> (std::process::Child, 
     (child, disc)
 }
 
-/// The first line the host wrote to stderr, or nothing within a moment. (The copy inherits
-/// stderr, so the pipe stays open while it runs: no reading to the end.)
-fn first_line(stderr: std::process::ChildStderr) -> String {
+/// What the host (and its copy) wrote to stderr within a moment: its log lines. (The copy
+/// inherits stderr, so the pipe stays open while it runs: no reading to the end.)
+fn first_lines(stderr: std::process::ChildStderr) -> String {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = BufReader::new(stderr).read_line(&mut line);
-        let _ = tx.send(line);
+        for line in BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
     });
-    rx.recv_timeout(Duration::from_secs(2)).unwrap_or_default()
+    let end = Instant::now() + Duration::from_secs(2);
+    let mut lines = Vec::new();
+    while let Some(left) = end.checked_duration_since(Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(line) => lines.push(line),
+            Err(_) => break,
+        }
+    }
+    lines.join("\n")
 }
 
 fn answers(disc: &serde_json::Value) {
@@ -141,9 +152,11 @@ fn a_host_in_a_job_that_refuses_breakaway_serves_from_a_detached_copy_in_it() {
     let home = tempfile::tempdir().unwrap();
     let (mut child, disc) = serve_in(&job, home.path());
     let pid = disc["pid"].as_u64().unwrap() as u32;
-    let stderr = first_line(child.stderr.take().unwrap());
+    let stderr = first_lines(child.stderr.take().unwrap());
     assert!(
-        stderr.contains("warning") && stderr.contains("stays in the job"),
+        stderr
+            .lines()
+            .any(|line| line.contains(" WARN ") && line.contains("stays in the job")),
         "{stderr}"
     );
     // The copy is in the job (it could not leave), and serves.
@@ -167,8 +180,9 @@ fn a_host_in_a_job_that_allows_breakaway_serves_from_a_copy_outside_it() {
     let pid = disc["pid"].as_u64().unwrap() as u32;
     // No warning: it broke away. (Even when this test runs inside a job of its own, an SSH
     // session's or a CI runner's, that does not allow breakaway: the job left is the nearest.)
-    let stderr = first_line(child.stderr.take().unwrap());
-    assert!(!stderr.contains("warning"), "{stderr}");
+    let stderr = first_lines(child.stderr.take().unwrap());
+    assert!(stderr.contains("serving"), "{stderr}");
+    assert!(!stderr.contains(" WARN "), "{stderr}");
     // The copy is out of the job, and closing the job (which kills what is in it) leaves it.
     assert!(!in_job(pid, &job));
     drop(job);
