@@ -34,6 +34,7 @@ export const RESUME_REASONS = ['runtime_unavailable', 'saved_state_missing', 'pr
 export type ResumeReason = typeof RESUME_REASONS[number]
 export const PRODUCT_HEALTH_METRICS = [
   ...CLI_REPORT_FAILURES.map(reason => `health_cli_report_failure_${reason}` as const),
+  ...CLI_REPORT_FAILURES.map(reason => `health_desktop_report_failure_${reason}` as const),
   ...HEALTH_SOURCES.flatMap(source => RESUME_REASONS.map(reason => `request_${source}_resume_reason_${reason}` as const)),
   // hn's (`tui`) come through its daemon's queue, under that daemon's context, never one of their own.
   ...(['cli', 'desktop', 'tui'] as const).flatMap(surface => HEALTH_MEASURES.map(m => `health_${surface}_${m}` as const)),

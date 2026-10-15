@@ -7,6 +7,8 @@ import '../core/config.dart';
 import '../core/models.dart';
 import '../core/test_run.dart';
 import '../logging/http_log.dart';
+import '../measurement/product_report_failure.dart';
+import '../measurement/product_health_contract.dart';
 import '../viewer/device_ack.dart';
 import '../viewer/device_log.dart';
 import '../viewer/device_log_sync.dart'
@@ -119,16 +121,40 @@ class ApiClient {
   Future<Map<String, dynamic>> productUsageReport(
     Map<String, dynamic> report,
   ) async {
-    final response = await _dio.post(
-      '/api/product-usage/report',
-      data: report,
-      options: Options(
-        headers: {'x-adapter-local': '1'},
-        receiveTimeout: const Duration(seconds: 5),
-        sendTimeout: const Duration(seconds: 5),
-      ),
-    );
-    return Map<String, dynamic>.from(unwrapApiResponse(response) as Map);
+    try {
+      final response = await _dio.post(
+        '/api/product-usage/report',
+        data: report,
+        options: Options(
+          headers: {'x-adapter-local': '1'},
+          receiveTimeout: const Duration(seconds: 5),
+          sendTimeout: const Duration(seconds: 5),
+        ),
+      );
+      final body = response.data;
+      if (response.statusCode != 200 ||
+          body is! Map ||
+          body['success'] != true ||
+          body['data'] is! Map) {
+        throw ProductReportFailure.http(
+          response.statusCode,
+          body is Map && body['error'] is Map
+              ? (body['error'] as Map)['code']
+              : null,
+        );
+      }
+      return Map<String, dynamic>.from(body['data'] as Map);
+    } on DioException catch (error) {
+      throw ProductReportFailure(switch (error.type) {
+        DioExceptionType.connectionTimeout ||
+        DioExceptionType.sendTimeout ||
+        DioExceptionType.receiveTimeout =>
+          ProductHealthMeasure.reportFailureTimeout,
+        DioExceptionType.connectionError =>
+          ProductHealthMeasure.reportFailureUnreachable,
+        _ => ProductHealthMeasure.reportFailureOther,
+      });
+    }
   }
 
   Future<void> productUsageFeedback(String answer, String receipt) async {

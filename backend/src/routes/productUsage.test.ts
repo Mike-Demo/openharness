@@ -40,6 +40,13 @@ it('does not reflect a database error or report contents', async () => {
   expect(response.statusCode).toBe(503)
   expect(response.body).not.toContain('PRIVATE_CANARY')
 })
+it('returns retryable backpressure without admitting another database write', async () => {
+  methods.ingestProductUsage.mockRejectedValue({ code: 'USAGE_BUSY', message: 'PRIVATE_CANARY' })
+  const response = await submit(good)
+  expect(response.statusCode).toBe(429)
+  expect(response.json().error.code).toBe('USAGE_BUSY')
+  expect(response.body).not.toContain('PRIVATE_CANARY')
+})
 it.each([['P2034', 'USAGE_WRITE_CONFLICT'], ['P2002', 'USAGE_WRITE_CONFLICT'],
   ['P2028', 'USAGE_TRANSACTION_FAILED'], ['PRIVATE_CANARY', 'USAGE_UNAVAILABLE']])(
   'returns only the fixed delivery category for storage error %s', async (code, expected) => {

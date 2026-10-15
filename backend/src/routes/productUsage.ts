@@ -79,6 +79,7 @@ export async function productUsageRoutes(app: FastifyInstance): Promise<void> {
     catch (error) {
       // A fixed category can diagnose delivery without exposing database errors or report contents.
       const storageCode = (error as { code?: unknown } | null)?.code
+      if (storageCode === 'USAGE_BUSY') return sendError(reply, 'Usage measurement busy', 'USAGE_BUSY', 429)
       const code = storageCode === 'P2034' || storageCode === 'P2002' ? 'USAGE_WRITE_CONFLICT'
         : storageCode === 'P2028' ? 'USAGE_TRANSACTION_FAILED' : 'USAGE_UNAVAILABLE'
       return sendError(reply, 'Usage report unavailable', code, 503)

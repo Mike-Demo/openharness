@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
 import '../core/test_run.dart';
+import 'product_report_failure.dart';
 
 /// Separate from every authenticated API client: no auth interceptor, cookie jar or device headers.
 /// Web pre-sign-in collection remains disabled until its transport can guarantee omitted cookies.
@@ -29,6 +30,14 @@ Future<Map<String, dynamic>> sendSetupMeasurement(
     final body = response.data;
     if (body is! Map || body['data'] is! Map) return {};
     return Map<String, dynamic>.from(body['data'] as Map);
+  } on DioException catch (error) {
+    final body = error.response?.data;
+    throw ProductReportFailure.http(
+      error.response?.statusCode,
+      body is Map && body['error'] is Map
+          ? (body['error'] as Map)['code']
+          : null,
+    );
   } finally {
     dio.close(force: true);
   }

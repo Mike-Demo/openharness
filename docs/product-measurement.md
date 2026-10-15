@@ -77,7 +77,8 @@ Desktop's only new disk state is the last consented run's version, clean-exit/up
 revision and a local-only account-scope hash. One serialized asynchronous write plus one latest
 pending value bounds disk work. It is cleared on sign-out/off and never enters a report. An unclean
 run can mean a force quit or power loss, and only becomes observable if the app returns. Update
-flags are best effort; analytics never delays exit. Gateway work-day flags expire after 35 days;
+flags are best effort; the existing expected-version flag starts during download so its disk write
+does not begin only at exit, and failed downloads clear it. Analytics never delays exit. Gateway work-day flags expire after 35 days;
 a local yes/no marker prevents an old installation from being counted as newly activated again.
 All new fields are allowlisted; no URLs, raw error strings, stack traces, device specifications,
 task/session IDs or content are accepted. Feedback is voluntary and shown/answered/dismissed
@@ -102,6 +103,9 @@ invalid, too-large, authentication, rate-limit, timeout, unreachable, write-conf
 server and other categories. A transaction failure does not by itself prove a timeout. No raw error
 message, database detail, URL or unknown error code is collected. These diagnostics share the same
 privacy choice and bounded queue, so a delivery outage can delay its own diagnostic counters.
+Desktop now splits failed delivery attempts into the same fixed categories. A permanently invalid
+or oversized packet is discarded so it cannot block newer reports; transient errors retry the
+same receipt. Delayed errors after a choice or account change are discarded.
 The local app proxy accepts only bounded UI counts, or Desktop health/UI counts with the exact
 public release, OS and channel context. It does not accept daemon counters or arbitrary context.
 
@@ -143,6 +147,10 @@ immutable-report retry. Receipts prevent both immediate and later retries from c
 Reports update their counters and separate margins in one Mongo update command inside
 that transaction. A partial write aborts the receipt and all counts; no per-report body is stored.
 This shortens shared-row contention without adding a daemon timer or delaying product actions.
+Each backend process admits one aggregate report transaction at a time, with at most 32 waiting
+reports and a one-second queue deadline. Overflow returns a retryable busy response. Permission
+is checked inside the transaction after admission, including every conflict retry. Other server
+processes can still contend; this does not promise zero delivery failures.
 The public `/api/health` response includes validated release tag/SHA coordinates so a successful
 image build can be distinguished from the version actually serving requests.
 

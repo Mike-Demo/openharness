@@ -6132,6 +6132,10 @@ class AppNotifier extends ChangeNotifier {
       }
       info = fresh;
       availableUpdate = info;
+      // Start the existing last-run flag while download I/O is in progress. Saving
+      // it only just before exit races the asynchronous disk write on fast updates.
+      // No reporting or disk flush is awaited by the update.
+      productRuntimeHealth?.expectUpdate(info.version);
       // One notify per whole percent. Dio reports every chunk, and each notify
       // rebuilds the whole app shell (the banner lives in its ListenableBuilder),
       // so a 45 MB build would repaint thousands of times for a bar 200px wide.
@@ -6153,12 +6157,12 @@ class AppNotifier extends ChangeNotifier {
       );
       if (staged == null) {
         finish(ProductOutcome.failed);
+        productRuntimeHealth?.cancelUpdate();
         updateError = 'Could not download and verify Harness ${info.version}.';
         return false;
       }
       // The next consented launch can confirm the version; never wait for reporting.
       finish(ProductOutcome.ok);
-      productRuntimeHealth?.expectUpdate(info.version);
       finishApply = productMeasurement.begin(ProductFlow.updateApply);
       final applied = await updater.applyStaged(staged, selfPid: pid);
       finishApply(applied ? ProductOutcome.ok : ProductOutcome.failed);
