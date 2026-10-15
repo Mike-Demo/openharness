@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { newAgentPayload, newCommand, NewUsageError, parseNewArgs, resolveNewMachine, trustAsked, type NewCommandDeps, type NewSocket } from './newCommand.js'
 import { SANDBOXED } from './unreachable.js'
+import { AgentClientError } from '../agentClient/daemon.js'
 
 const env = { cwd: '/work/repo', home: '/home/me' }
 
@@ -398,12 +399,12 @@ describe('harness new: the daemon', () => {
     // An MCP client ends a tool call at a minute (Codex's default tool_timeout_sec): a Codex install takes about that.
     const installing = { state: 'pending', held: { service: 'install', detail: 'Installing Codex. The harness starts once it is installed.' } }
     const pending: Array<[string, Record<string, unknown>]> = []
-    const origin = { check: async () => {}, prompt: (text: string) => text, created: async () => null, next: () => '', existing: async () => null,
+    const origin = { check: async () => {}, prompt: (text: string) => text, created: async () => null, answer: () => ({ effect: '', next: [] }), existing: async () => null,
       pending: (machineId: string, creation: Record<string, unknown>) => { pending.push([machineId, creation]) } }
-    const run = async (env: NodeJS.ProcessEnv, json = false) => {
+    const run = async (env: NodeJS.ProcessEnv, json = false, name = 'cx') => {
       let clock = 0
       const socket = new FakeSocket((frame) => frame.type === 'agent_create' || frame.type === 'agent_create_status' ? installing : frame.type === 'agent_create_cancel' ? { state: 'cancelled' } : null)
-      const d = deps(['codex', '--name', 'cx', ...(json ? ['--json'] : []), '--', 'Reply with pong'], socket,
+      const d = deps(['codex', '--name', name, ...(json ? ['--json'] : []), '--', 'Reply with pong'], socket,
         { origin: async () => origin, env, now: () => clock, sleep: async (ms) => { clock += ms } })
       expect(await newCommand(d)).toBe(0)
       expect(clock).toBe(40_000)
@@ -411,36 +412,43 @@ describe('harness new: the daemon', () => {
       return { d, socket }
     }
     const mcp = await run({ HARNESS_VIA_MCP: '1' })
-    expect(mcp.d.out).toEqual(['Harness is installing Codex; the harness "cx" starts by itself once it is installed. '
-      + 'Check on it with harness_list or harness_wait (names: "cx"); do not start it again.'])
+    expect(mcp.d.out).toEqual(['cx on this computer: installing Codex. It starts by itself once installed; do not start it again.\n'
+      + 'Next: harness_wait (names: "cx")  (until it has started and answered)'])
     expect(mcp.d.err).toEqual([])
     const creationId = mcp.socket.sent.find((f) => f.type === 'agent_create')!.payload.creationId
     expect(pending).toEqual([['m2', { creationId, name: 'cx', engine: 'codex' }]])
     const shell = await run({})
     expect(shell.d.err).toEqual(['Installing Codex. The harness starts once it is installed.'])
-    expect(shell.d.out).toEqual(['Harness is installing Codex; the harness "cx" starts by itself once it is installed. '
-      + 'Check on it with harness ps or harness wait cx; do not start it again.'])
+    expect(shell.d.out).toEqual(['cx on this computer: installing Codex. It starts by itself once installed; do not start it again.\n'
+      + 'Next: harness wait cx  (until it has started and answered)'])
     const json = await run({ HARNESS_VIA_MCP: '1' }, true)
-    expect(JSON.parse(json.d.out[0]!)).toMatchObject({ ok: true, pending: true, machineId: 'm2', name: 'cx' })
+    expect(JSON.parse(json.d.out[0]!)).toMatchObject({ ok: true, pending: true, machineId: 'm2', name: 'cx',
+      next: [{ run: 'harness_wait (names: "cx")', when: 'until it has started and answered' }] })
     expect(json.d.err).toEqual([])
+    // A name of two words: one name to wait on, as the shell takes it and as the tool does.
+    const spaced = await run({}, false, 'code review')
+    expect(spaced.d.out[0]!.split('\n').at(-1)).toBe('Next: harness wait "code review"  (until it has started and answered)')
+    const spacedMcp = await run({ HARNESS_VIA_MCP: '1' }, false, 'code review')
+    expect(spacedMcp.d.out[0]!.split('\n').at(-1)).toBe('Next: harness_wait (names: "code review")  (until it has started and answered)')
   })
 
   it('names no harness it was given no name for, and asks for at least ten seconds however long the setup took', async () => {
     let clock = 0
     const installing = { state: 'pending', held: { service: 'install', detail: 'Installing Codex.' } }
     // Forty seconds gone before the machine answered: a slow line to another machine.
-    const origin = { check: async () => { clock += 45_000 }, prompt: (text: string) => text, created: async () => null, next: () => '', pending: () => {} }
+    const origin = { check: async () => { clock += 45_000 }, prompt: (text: string) => text, created: async () => null, answer: () => ({ effect: '', next: [] }), pending: () => {} }
     let asks = 0
     const socket = new FakeSocket((frame) => frame.type === 'agent_create' ? installing : frame.type === 'agent_create_status' ? (asks++, installing) : null)
     const d = deps(['codex'], socket, { origin: async () => origin, now: () => clock, sleep: async (ms) => { clock += ms } })
     expect(await newCommand(d)).toBe(0)
     expect(asks).toBe(5)
-    expect(d.out).toEqual(['Harness is installing Codex; the harness starts by itself once it is installed. Check on it with harness ps; do not start it again.'])
+    expect(d.out).toEqual(['The harness on this computer: installing Codex. It starts by itself once installed; do not start it again.\n'
+      + 'Next: harness ps  (to follow it)'])
   })
 
   it('still cancels an agent\'s launch held for anything but an install, at 40 seconds', async () => {
     let clock = 0
-    const origin = { check: async () => {}, prompt: (text: string) => text, created: async () => null, next: () => '', pending: () => {} }
+    const origin = { check: async () => {}, prompt: (text: string) => text, created: async () => null, answer: () => ({ effect: '', next: [] }), pending: () => {} }
     const socket = new FakeSocket((frame) => frame.type === 'agent_create_cancel' ? { state: 'cancelled' }
       : frame.type === 'agent_create' || frame.type === 'agent_create_status' ? { state: 'pending', held: { service: 'native', detail: 'Waiting.' } } : null)
     const d = deps(['codex', '--name', 'cx'], socket, { origin: async () => origin, now: () => clock, sleep: async (ms) => { clock += ms } })
@@ -452,7 +460,7 @@ describe('harness new: the daemon', () => {
     const socket = new FakeSocket(() => null)
     const note = '"cx" is already starting: Harness is installing Codex. It starts by itself; wait for it with harness wait cx. Do not start it again.'
     const asked: unknown[] = []
-    const origin = { check: async () => { throw new Error('not reached') }, prompt: (text: string) => text, created: async () => null, next: () => '',
+    const origin = { check: async () => { throw new Error('not reached') }, prompt: (text: string) => text, created: async () => null, answer: () => ({ effect: '', next: [] }),
       existing: async (name: string | null, asking: { machineId: string; engine: string }) => {
         asked.push(asking)
         return name === 'cx' ? { name: 'cx', machineId: 'm2', state: 'starting' as const, note } : null
@@ -469,7 +477,7 @@ describe('harness new: the daemon', () => {
 
   it('records the creation a harness was asked by when the machine made it', async () => {
     const created: unknown[][] = []
-    const origin = { check: async () => {}, prompt: (text: string) => text, next: () => '', pending: () => {},
+    const origin = { check: async () => {}, prompt: (text: string) => text, answer: () => ({ effect: '', next: [] }), pending: () => {},
       created: async (...args: unknown[]) => { created.push(args); return null } }
     const socket = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'k1', name: 'cx' } } : null)
     expect(await newCommand(deps(['codex', '--name', 'cx'], socket, { origin: async () => origin }))).toBe(0)
@@ -484,6 +492,23 @@ describe('harness new: the daemon', () => {
     expect(d.out[0]).toBe('Created fixer on this computer in /work/repo/.worktrees/x.')
   })
 
+  it('exits 5 when the agent is refused, and says why in JSON beside the old error', async () => {
+    const message = 'You have 4 harnesses running. Close one you are done with first (harness close <name>).'
+    const origin = { check: async () => { throw new AgentClientError('SPAWN_LIMIT', message, 'OPEN_LIMIT') },
+      prompt: (text: string) => text, created: async () => null, answer: () => ({ effect: '', next: [] }) }
+    const text = deps(['codex', '--name', 'x'], new FakeSocket(() => null), { origin: async () => origin })
+    expect(await newCommand(text)).toBe(5)
+    expect(text.err).toEqual([message])
+    const json = deps(['codex', '--name', 'x', '--json'], new FakeSocket(() => null), { origin: async () => origin })
+    expect(await newCommand(json)).toBe(5)
+    expect(JSON.parse(json.out[0]!)).toEqual({ ok: false, error: message, code: 'SPAWN_LIMIT', reason: 'OPEN_LIMIT',
+      next: [{ run: 'harness close <name>', when: 'one you are done with, to free a place' }] })
+    // Not a refusal: a failure, as before.
+    const failing = deps(['codex', '--json'], new FakeSocket(() => null), { origin: async () => ({ ...origin, check: async () => { throw new Error('broke') } }) })
+    expect(await newCommand(failing)).toBe(1)
+    expect(JSON.parse(failing.out[0]!)).toEqual({ ok: false, error: 'broke' })
+  })
+
   it('run by an agent: checks its limits, heads its task with who sent it, records it, and says how to follow it', async () => {
     const created: Array<[string, Record<string, unknown>]> = []
     let warning: string | null = null
@@ -491,7 +516,8 @@ describe('harness new: the daemon', () => {
       check: async () => {},
       prompt: (text: string, machineId: string) => `[from lead on ${machineId}]\n\n${text}`,
       created: async (machineId: string, agent: Record<string, unknown>) => { created.push([machineId, agent]); return warning },
-      next: (agent: Record<string, unknown>) => `Read it: harness show ${String(agent.name)}`,
+      answer: (agent: Record<string, unknown>) => ({ effect: 'The person sees it in Harness, beside you.',
+        next: [{ run: `harness wait ${String(agent.name)}`, when: `until it has answered; then read it: harness show ${String(agent.name)}` }] }),
     }
     const socket = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'a9', name: 'reviewer' } } : null)
     const d = deps(['codex', '--name', 'reviewer', '--', 'review', 'it'], socket, { origin: async () => origin })
@@ -500,7 +526,14 @@ describe('harness new: the daemon', () => {
     // The machine records that an agent started it: the pull requests it opens say so (lib/agentAttribution.ts).
     expect(socket.sent[1]!.payload.startedBy).toBe('agent')
     expect(created).toEqual([['m2', { id: 'a9', name: 'reviewer' }]])
-    expect(d.out[1]).toBe('Read it: harness show reviewer')
+    // Starting, never started the task; what changed; and what to run next.
+    expect(d.out).toEqual(['reviewer on this computer: starting. Codex, in /work/repo.', 'The person sees it in Harness, beside you.',
+      'Next: harness wait reviewer  (until it has answered; then read it: harness show reviewer)'])
+    const json = deps(['codex', '--name', 'reviewer', '--json', '--', 'review', 'it'], new FakeSocket((frame) => frame.type === 'agent_create'
+      ? { state: 'created', agent: { id: 'a9', name: 'reviewer' } } : null), { origin: async () => origin })
+    expect(await newCommand(json)).toBe(0)
+    expect(JSON.parse(json.out[0]!)).toMatchObject({ ok: true, agent: { id: 'a9' }, effect: 'The person sees it in Harness, beside you.',
+      next: [{ run: 'harness wait reviewer', when: 'until it has answered; then read it: harness show reviewer' }] })
     // No task: nothing to head.
     const quiet = new FakeSocket((frame) => frame.type === 'agent_create' ? { state: 'created', agent: { id: 'b1', name: 'idle' } } : null)
     expect(await newCommand(deps(['codex'], quiet, { origin: async () => origin }))).toBe(0)
@@ -551,7 +584,7 @@ describe('harness new: the daemon', () => {
 
   it('run by a harness here: names it as the one that started the new harness, so the windows open it beside it', async () => {
     const origin = {
-      check: async () => {}, prompt: (text: string) => text, created: async () => null, next: () => '', parentAgentId: 'lead-agent',
+      check: async () => {}, prompt: (text: string) => text, created: async () => null, answer: () => ({ effect: '', next: [] }), parentAgentId: 'lead-agent',
     }
     const created = (id: string) => new FakeSocket((frame) => frame.type === 'fs_list_dir' ? { path: '/Users/mini', entries: [] }
       : frame.type === 'agent_create' ? { state: 'created', agent: { id, name: id } } : null)
@@ -628,7 +661,7 @@ const agentStarting = () => {
       check: async () => {},
       prompt: (text: string) => text,
       created: async (_machineId: string, agent: Record<string, unknown>) => { created.push(String(agent.id)); return null },
-      next: () => 'Read it: harness show it',
+      answer: () => ({ effect: '', next: [{ run: 'harness show it', when: 'to read it' }] }),
     },
   }
 }
@@ -711,7 +744,7 @@ describe('harness new: a folder the engine would ask about', () => {
     c.claudeTrusts(realpathSync(scratch))
     const trusted = deps(['claude', scratch, '--', 'go'], creating({ id: 'a1', name: 'opinion' }), { origin: async () => origin, env: c.env, home: c.home })
     expect(await newCommand(trusted)).toBe(0)
-    expect(trusted.out).toEqual([`Created opinion on this computer in ${scratch}.`, 'Read it: harness show it'])
+    expect(trusted.out).toEqual([`opinion on this computer: starting. Claude Code, in ${scratch}.`, 'Next: harness show it  (to read it)'])
   })
 
   it('starts an agent\'s harness in a folder with content, and says it will wait for the person to trust it', async () => {
@@ -721,17 +754,17 @@ describe('harness new: a folder the engine would ask about', () => {
     const shell = deps(['codex', work, '--name', 'reviewer', '--', 'review it'], creating({ id: 'a1', name: 'reviewer' }), { origin: async () => origin, env: c.env, home: c.home })
     expect(await newCommand(shell)).toBe(0)
     expect(shell.out).toEqual([
-      `Created reviewer on this computer in ${work}.`,
+      `reviewer on this computer: starting. Codex, in ${work}.`,
       `Codex will ask the person to trust ${work} before it starts, so it waits for them until they answer (harness wait exits 3). `
         + 'For new work, a project name avoids this: harness new codex reviewer --name reviewer -- …',
-      'Read it: harness show it',
+      'Next: harness show it  (to read it)',
     ])
     expect(created).toEqual(['a1'])
     const viaMcp = deps(['claude', work, '--name', 'reviewer', '--', 'review it'], creating({ id: 'a2', name: 'reviewer' }),
       { origin: async () => origin, env: { ...c.env, HARNESS_VIA_MCP: '1' }, home: c.home })
     expect(await newCommand(viaMcp)).toBe(0)
     expect(viaMcp.out[1]).toBe(`Claude Code will ask the person to trust ${work} before it starts, so it waits for them until they answer `
-      + '(harness_wait says needs-input). For new work, a project name avoids this: harness_start (project: "reviewer", …)')
+      + '(harness_wait says it needs the person). For new work, a project name avoids this: harness_start (project: "reviewer", …)')
     const json = deps(['codex', work, '--json', '--', 'go'], creating({ id: 'a3', name: 'x' }), { origin: async () => origin, env: c.env, home: c.home })
     expect(await newCommand(json)).toBe(0)
     expect(JSON.parse(json.out[0]!)).toMatchObject({ ok: true, agent: { id: 'a3' }, note: expect.stringContaining('Codex will ask the person to trust') })
@@ -739,7 +772,7 @@ describe('harness new: a folder the engine would ask about', () => {
     c.codexTrusts(realpathSync(work))
     const trusted = deps(['codex', work, '--', 'go'], creating({ id: 'a4', name: 'x' }), { origin: async () => origin, env: c.env, home: c.home })
     expect(await newCommand(trusted)).toBe(0)
-    expect(trusted.out).toEqual([`Created x on this computer in ${work}.`, 'Read it: harness show it'])
+    expect(trusted.out).toEqual([`x on this computer: starting. Codex, in ${work}.`, 'Next: harness show it  (to read it)'])
   })
 
   it('leaves the person at a terminal, another machine, and a store harness\'s empty folder as they were', async () => {
@@ -754,13 +787,13 @@ describe('harness new: a folder the engine would ask about', () => {
     // Another machine's folders and settings are not here to read.
     const far = deps(['claude', '--machine', 'mini', scratch], creating({ id: 'f1', name: 'far' }), { origin: async () => origin, env: c.env, home: c.home })
     expect(await newCommand(far)).toBe(0)
-    expect(far.out).toEqual([`Created far on Mac mini in ${scratch}.`, 'Read it: harness show it'])
+    expect(far.out).toEqual([`far on Mac mini: starting. Claude Code, in ${scratch}.`, 'Next: harness show it  (to read it)'])
     // A store harness lays its template into an empty folder, which is then trusted; one with content is still asked about.
     const store = (folder: string) => new FakeSocket((frame) => frame.type === 'dsh_list' ? { dsh: [{ id: 'owner/kit', engine: 'claude', installed: true }] }
       : frame.type === 'agent_create' ? { state: 'created', agent: { id: 's1', name: 'kit' } } : null)
     const empty = deps(['owner/kit', scratch], store(scratch), { origin: async () => origin, env: c.env, home: c.home })
     expect(await newCommand(empty)).toBe(0)
-    expect(empty.out).toEqual([`Created kit on this computer in ${scratch}.`, 'Read it: harness show it'])
+    expect(empty.out).toEqual([`kit on this computer: starting. Claude Code, in ${scratch}.`, 'Next: harness show it  (to read it)'])
     const full = deps(['owner/kit', work], store(work), { origin: async () => origin, env: c.env, home: c.home })
     expect(await newCommand(full)).toBe(0)
     expect(full.out[1]).toBe(`Claude Code will ask the person to trust ${work} before it starts, so it waits for them until they answer `
