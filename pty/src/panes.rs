@@ -12,6 +12,11 @@
 //! `create` and `respawn` spawn under the table lock, so the new child's exit (handled under the
 //! same lock) always finds its entry.
 //!
+//! A child started with an `afterExit` does not end its pane by exiting: its status becomes the pane's
+//! `engineExit` and the pane runs that command next, held or not (`Panes::hand_off`). That is a Unix
+//! launch script's `harness_after` (cli/src/lib/engineLaunch.ts), which a Windows engine has no script
+//! for: the engine leaves, the pane is the person's shell, and the daemon reads why from `engineExit`.
+//!
 //! `respawn` is tmux's `respawn-pane -k`: a child still running is killed first (outside the
 //! lock), then the next one spawned. Each child of a pane has a generation (`PaneEvent::Exited`),
 //! and an exit applies only while its child is the pane's current one: a replaced child's exit,
@@ -34,7 +39,7 @@ use serde_json::{Map, Value, json};
 
 use crate::pane::{Pane, PaneEvent, PaneSpec};
 use crate::pane_ids::PaneIds;
-use crate::protocol::Op;
+use crate::protocol::{AfterExit, Op};
 use crate::stream::{Registry, Subscriber};
 
 /// The longest grace a `kill` gives a child before it is killed outright.
@@ -130,6 +135,8 @@ struct PaneEntry {
     dead: bool,
     exit_status: Option<i32>,
     engine_exit: Option<i32>,
+    /// What the current child hands the pane to once it exits by itself (`AfterExit`).
+    after_exit: Option<AfterExit>,
 }
 
 pub struct Panes {
@@ -235,12 +242,19 @@ impl Panes {
                     match table.get_mut(id) {
                         // A child a respawn replaced: the pane runs another, nobody is told.
                         Some(entry) if entry.generation != *generation => return None,
-                        Some(entry) if entry.hold => {
-                            entry.dead = true;
-                            entry.exit_status = *status;
-                            None
+                        Some(entry) => {
+                            // Handed to its next command: the pane runs on, nobody is told.
+                            if self.hand_off(id, entry, *status) {
+                                return None;
+                            }
+                            if entry.hold {
+                                entry.dead = true;
+                                entry.exit_status = *status;
+                                None
+                            } else {
+                                table.remove(id)
+                            }
                         }
-                        Some(_) => table.remove(id),
                         None => None,
                     }
                 };
@@ -253,6 +267,41 @@ impl Panes {
                     pane: id.to_owned(),
                     status: *status,
                 })
+            }
+        }
+    }
+
+    /// Start the exited child's `afterExit` in its pane, recording its status as the pane's
+    /// `engineExit`; whether the pane runs it. A spawn that fails leaves the exit to end the pane as
+    /// any other: held, it stays dead with the child's status; otherwise it goes.
+    fn hand_off(&self, id: &str, entry: &mut PaneEntry, status: Option<i32>) -> bool {
+        let Some(after) = entry.after_exit.take() else {
+            return false;
+        };
+        // A Windows exit code is always read (GetExitCodeProcess); -1 stands for one never learned.
+        let code = status.unwrap_or(-1);
+        let mut env = entry.env.clone();
+        env.extend(after.env);
+        env.insert("HARNESS_ENGINE_EXIT".into(), code.to_string());
+        let env = self.child_env(id, env);
+        match entry
+            .pane
+            .respawn(spec(after.command.clone(), None, env, 0, 0))
+        {
+            Ok(generation) => {
+                entry.generation = generation;
+                entry.start_command = after.command.join(" ");
+                entry.command = after.command;
+                entry.dead = false;
+                entry.exit_status = None;
+                entry.engine_exit = Some(code);
+                true
+            }
+            Err(e) => {
+                log::error!("pane {id}: could not start what follows its command: {e}");
+                // The generation the failed spawn used up: the exit below is the pane's own.
+                entry.generation = entry.pane.generation();
+                false
             }
         }
     }
@@ -306,6 +355,7 @@ impl Panes {
     /// tmux's `respawn-pane -k`, guarded as `heldPaneFormat` guards it: the held check, the kill
     /// of a running child (SIGHUP, the grace, SIGKILL, as `kill`), then the next child in the
     /// same pane and grid. Replies once that child is spawned.
+    #[allow(clippy::too_many_arguments)]
     fn respawn(
         &self,
         pane: String,
@@ -314,6 +364,7 @@ impl Panes {
         env: HashMap<String, String>,
         expected_held_token: Option<String>,
         clear_env: Vec<String>,
+        after_exit: Option<AfterExit>,
     ) -> Result<Reply, OpError> {
         let held = |entry: &PaneEntry| match &expected_held_token {
             Some(expected) if !held_by(&entry.start_command, expected) => Err(OpError::new(
@@ -405,6 +456,7 @@ impl Panes {
         entry.dead = false;
         entry.exit_status = None;
         entry.engine_exit = None;
+        entry.after_exit = after_exit;
         Ok(Reply::new())
     }
 
@@ -419,6 +471,7 @@ impl Panes {
                 owner,
                 label,
                 hold,
+                after_exit,
             } => {
                 // A child given no directory starts in the user's home (`Pane::spawn`).
                 let number = lock(&self.ids)
@@ -454,6 +507,7 @@ impl Panes {
                         dead: false,
                         exit_status: None,
                         engine_exit: None,
+                        after_exit,
                     },
                 );
                 reply(json!({ "pane": id }))
@@ -627,7 +681,16 @@ impl Panes {
                 env,
                 expected_held_token,
                 clear_env,
-            } => self.respawn(pane, command, cwd, env, expected_held_token, clear_env),
+                after_exit,
+            } => self.respawn(
+                pane,
+                command,
+                cwd,
+                env,
+                expected_held_token,
+                clear_env,
+                after_exit,
+            ),
             Op::SetEngineExit { pane, status } => {
                 let mut table = lock(&self.table);
                 let entry = table
@@ -1272,6 +1335,122 @@ mod tests {
         assert!(start.elapsed() >= Duration::from_millis(500));
     }
 
+    /// A pane created running `script` that hands itself to `after` once it exits by itself.
+    fn create_handing_off(panes: &Panes, script: &str, after: Value, hold: bool) -> String {
+        let r = panes
+            .handle(op(
+                json!({"op": "create", "command": ["/bin/sh", "-c", script],
+                "cols": 40, "rows": 10, "owner": "o", "hold": hold, "env": {"KEPT": "k"},
+                "afterExit": after}),
+            ))
+            .unwrap();
+        r["pane"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn an_exit_with_after_exit_hands_the_pane_on_and_records_the_engine_exit() {
+        for hold in [true, false] {
+            let (panes, notices) = table();
+            let after = json!({"command": ["/bin/sh", "-c",
+                "echo \"after=$HARNESS_ENGINE_EXIT $NAMED $KEPT.\"; sleep 30"], "env": {"NAMED": "codex"}});
+            let pane = create_handing_off(&panes, "echo engine-words; exit 7", after, hold);
+            until("the hand-off", || {
+                capture(&panes, &pane).unwrap().contains("after=7 codex k.")
+            });
+            let st = state(&panes, &pane);
+            assert_eq!(st["dead"], false, "hold {hold}");
+            assert_eq!(st["engineExit"], 7);
+            assert_eq!(st["exitStatus"], Value::Null);
+            assert_eq!(
+                st["startCommand"],
+                "/bin/sh -c echo \"after=$HARNESS_ENGINE_EXIT $NAMED $KEPT.\"; sleep 30"
+            );
+            // Nobody is told of an exit: the pane runs on, its engine's words in its grid.
+            assert!(notices.recv_timeout(Duration::from_millis(300)).is_err());
+            assert!(capture(&panes, &pane).unwrap().contains("engine-words"));
+            panes
+                .handle(op(json!({"op": "kill", "pane": pane})))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn the_hand_off_happens_once_and_then_the_pane_ends_as_any_other() {
+        let (panes, notices) = table();
+        let after = json!({"command": ["/bin/sh", "-c", "exit 3"]});
+        let held = create_handing_off(&panes, "exit 0", after.clone(), true);
+        assert_eq!(exit_notice(&notices, &held), Some(3));
+        let st = state(&panes, &held);
+        assert_eq!(
+            (
+                st["dead"].clone(),
+                st["exitStatus"].clone(),
+                st["engineExit"].clone()
+            ),
+            (json!(true), json!(3), json!(0))
+        );
+        let unheld = create_handing_off(&panes, "exit 0", after, false);
+        assert_eq!(exit_notice(&notices, &unheld), Some(3));
+        assert_eq!(state(&panes, &unheld), json!("gone"));
+    }
+
+    #[test]
+    fn a_hand_off_that_cannot_start_ends_the_pane_with_the_engine_status() {
+        let (panes, notices) = table();
+        let pane = create_handing_off(&panes, "exit 6", json!({"command": []}), true);
+        assert_eq!(exit_notice(&notices, &pane), Some(6));
+        let st = state(&panes, &pane);
+        assert_eq!(
+            (
+                st["dead"].clone(),
+                st["exitStatus"].clone(),
+                st["engineExit"].clone()
+            ),
+            (json!(true), json!(6), Value::Null)
+        );
+        // The pane's generation follows the failed spawn: a respawn still works.
+        panes
+            .handle(op(json!({"op": "respawn", "pane": pane, "command": ["/bin/sh", "-c", "echo back; sleep 30"]})))
+            .unwrap();
+        until("back", || capture(&panes, &pane).unwrap().contains("back"));
+    }
+
+    #[test]
+    fn a_kill_or_a_respawn_never_hands_off_and_a_respawn_sets_its_own() {
+        let (panes, notices) = table();
+        let after = json!({"command": ["/bin/sh", "-c", "echo handed; sleep 30"]});
+        // A kill takes the pane: nothing follows.
+        let killed = create_handing_off(&panes, "echo up; sleep 30", after.clone(), true);
+        until("up", || capture(&panes, &killed).unwrap().contains("up"));
+        panes
+            .handle(op(json!({"op": "kill", "pane": killed})))
+            .unwrap();
+        exit_notice(&notices, &killed);
+        assert_eq!(state(&panes, &killed), json!("gone"));
+        // A respawn replaces the child (its exit is the retired one's) and its hand-off: none given, none kept.
+        let pane = create_handing_off(&panes, "echo up; sleep 30", after.clone(), true);
+        until("up", || capture(&panes, &pane).unwrap().contains("up"));
+        panes
+            .handle(op(
+                json!({"op": "respawn", "pane": pane, "command": ["/bin/sh", "-c", "exit 2"]}),
+            ))
+            .unwrap();
+        assert_eq!(exit_notice(&notices, &pane), Some(2));
+        assert!(!capture(&panes, &pane).unwrap().contains("handed"));
+        assert_eq!(state(&panes, &pane)["engineExit"], Value::Null);
+        // One given with the respawn is the new child's.
+        panes
+            .handle(op(json!({"op": "respawn", "pane": pane, "command": ["/bin/sh", "-c", "exit 4"], "afterExit": after})))
+            .unwrap();
+        until("handed", || {
+            capture(&panes, &pane).unwrap().contains("handed")
+        });
+        assert_eq!(state(&panes, &pane)["engineExit"], 4);
+        panes
+            .handle(op(json!({"op": "kill", "pane": pane})))
+            .unwrap();
+    }
+
     #[test]
     fn kill_holds_the_grace_to_a_minute() {
         assert_eq!(kill_grace(500), Duration::from_millis(500));
@@ -1567,6 +1746,51 @@ mod windows_tests {
                 .handle(op(json!({"op": "key", "pane": pane, "key": "Enter"})))
                 .unwrap();
             assert_eq!(exit_notice(&notices, &pane), Some(6), "hold {hold}");
+        }
+    }
+
+    /// A Windows engine has no launch script to hand its pane to the person's shell: the host does, in a new
+    /// console on the same grid, with the status recorded and given to the shell (cli/src/lib/windows/engineStart.ts).
+    #[test]
+    fn an_engine_that_exits_hands_its_pane_to_the_shell_given_with_its_status() {
+        for hold in [true, false] {
+            let (panes, notices) = table();
+            let r = panes
+                .handle(op(json!({"op": "create",
+                    "command": ["cmd.exe", "/c", "echo engine-words& exit 7"],
+                    "cols": 80, "rows": 24, "owner": "o", "hold": hold, "afterExit": {
+                        "command": ["powershell.exe", "-NoLogo", "-NoProfile", "-NoExit", "-Command",
+                            "Write-Host ('after ' + $env:HARNESS_ENGINE_COMMAND + ' ' + $env:HARNESS_ENGINE_EXIT)"],
+                        "env": {"HARNESS_ENGINE_COMMAND": "codex"}}})))
+                .unwrap();
+            let pane = r["pane"].as_str().unwrap().to_owned();
+            until("the hand-off", || {
+                capture(&panes, &pane).contains("after codex 7")
+            });
+            let st = panes
+                .handle(op(json!({"op": "paneState", "pane": pane})))
+                .unwrap()["state"]
+                .clone();
+            assert_eq!(st["dead"], false, "hold {hold}");
+            assert_eq!(st["engineExit"], 7);
+            assert_eq!(st["command"][0], "powershell.exe");
+            // The shell is the pane's child now, alone in a job of its own. (The engine is a quick cmd.exe: two
+            // PowerShell starts passed the 20 s wait once under the whole suite's load.)
+            assert_eq!(job_pids(&panes, &pane).unwrap(), vec![root_pid(&panes)]);
+            let history = panes
+                .handle(op(json!({"op": "capture", "pane": pane, "ansi": false,
+                    "visible": false, "historyLines": 100})))
+                .unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert!(history.contains("engine-words"), "{history:?}");
+            // Nobody was told of an exit; the shell's own ends the pane as any other.
+            panes
+                .handle(op(json!({"op": "write", "pane": pane, "data":
+                    base64::engine::general_purpose::STANDARD.encode("exit 3\r")})))
+                .unwrap();
+            assert_eq!(exit_notice(&notices, &pane), Some(3), "hold {hold}");
         }
     }
 }

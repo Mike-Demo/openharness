@@ -12,6 +12,7 @@ import { StoppedAgentStore } from './stoppedAgents.js'
 import { AgentRestartCoordinator } from './restartAgent.js'
 import { checkPidRuntime } from './deleteAgentFallback.js'
 import { checkSessionRuntime, resolvePaneEngineProcess } from './paneEngineProcess.js'
+import { windowsAfterExit, windowsPaneLaunch } from './windows/engineStart.js'
 import { buildEngineLaunchArgv, dropPermissionFlagIfUnsupported, engineLaunchEnv, refusePermissionFlagIfUnsupported } from './engineLaunch.js'
 import { enginePathOverride } from './engineBin.js'
 import { installedDsh } from '../dsh/installed.js'
@@ -22,6 +23,10 @@ import type { TerminalInventoryResult } from './terminalTypes.js'
 import { WindowsBatchLaunchRefused } from './windows/launch.js'
 import { NATIVE_LAUNCH_MARKER } from './nativePaneHold.js'
 
+vi.mock('./windows/engineStart.js', async (original) => {
+  const actual = await original<typeof import('./windows/engineStart.js')>()
+  return { ...actual, windowsPaneLaunch: vi.fn(actual.windowsPaneLaunch) }
+})
 vi.mock('./deleteAgentFallback.js', () => ({ checkPidRuntime: vi.fn() }))
 vi.mock('./paneEngineProcess.js', () => ({ checkSessionRuntime: vi.fn(), resolvePaneEngineProcess: vi.fn() }))
 // `resumeCapability` reads the real flag table through this module; only the argv builder and the
@@ -400,6 +405,13 @@ describe('production resume handler', () => {
     await start()
     expect(engineLaunchEnv).toHaveBeenCalledWith(saved.engine, native)
     expect(create).toHaveBeenCalledWith(expect.objectContaining({ env: { GRID: '1', [NATIVE_LAUNCH_MARKER]: 'resume-native' } }))
+  })
+  it('starts a resumed Windows engine in its folder, its pane becoming the person\'s shell after it', async () => {
+    // What windowsPaneLaunch answers on Windows (windows/engineStart.spec.ts pins it there).
+    vi.mocked(windowsPaneLaunch).mockReturnValueOnce({ cwd: dir, afterExit: windowsAfterExit(saved.engine) })
+    await start()
+    expect(windowsPaneLaunch).toHaveBeenCalledWith(saved.engine, expect.any(Array), dir)
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ cwd: dir, afterExit: windowsAfterExit(saved.engine) }))
   })
   it('names the configured backend when none can open the resumed pane', async () => {
     deps.createBackend = null

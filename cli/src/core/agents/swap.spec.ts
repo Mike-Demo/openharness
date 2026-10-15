@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { windowsAfterExit } from '../../lib/windows/engineStart.js'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -86,9 +87,13 @@ describe('the pane-process swap', () => {
       expect(tmuxBackend.respawn).toHaveBeenLastCalledWith(runtime, expect.objectContaining({
         command: ['claude'], env: { GRID: '1', [NATIVE_LAUNCH_MARKER]: 'prepared-native' },
       }))
+      // In the agent's folder, which no launch script enters there, and the pane a shell after the engine.
+      expect(tmuxBackend.respawn).toHaveBeenLastCalledWith(runtime, expect.objectContaining({ cwd: '/work', afterExit: windowsAfterExit('claude') }))
       Object.defineProperty(process, 'platform', { ...platform, value: 'linux' })
       await swap.paneSwapDeps(session(), place(), { native }).respawn(['claude'])
       expect((tmuxBackend.respawn.mock.lastCall as unknown[] | undefined)?.[1]).not.toHaveProperty('env')
+      expect((tmuxBackend.respawn.mock.lastCall as unknown[] | undefined)?.[1]).toMatchObject({ cwd: homedir() })
+      expect((tmuxBackend.respawn.mock.lastCall as unknown[] | undefined)?.[1]).not.toHaveProperty('afterExit')
     } finally { Object.defineProperty(process, 'platform', platform) }
   })
 

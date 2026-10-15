@@ -1,5 +1,5 @@
 [
-  {"id": 1, "op": "create", "command": ["sh", "-l"], "cwd": "/tmp", "env": {"A": "1"}, "cols": 120, "rows": 40, "owner": "harness:o", "label": "agent", "hold": true},
+  {"id": 1, "op": "create", "command": ["sh", "-l"], "cwd": "/tmp", "env": {"A": "1"}, "cols": 120, "rows": 40, "owner": "harness:o", "label": "agent", "hold": true, "afterExit": {"command": ["pwsh.exe", "-NoLogo"], "env": {"N": "codex"}}},
   {"id": 2, "op": "kill", "pane": "%1", "graceMs": 1500},
   {"id": 3, "op": "inventory"},
   {"id": 4, "op": "titles"},
@@ -12,7 +12,7 @@
   {"id": 11, "op": "setTitle", "pane": "%1", "title": "t"},
   {"id": 12, "op": "holdOpen", "pane": "%1"},
   {"id": 13, "op": "releaseHold", "pane": "%1"},
-  {"id": 14, "op": "respawn", "pane": "%1", "command": ["sh"], "cwd": "/var", "env": {"B": "2"}, "expectedHeldToken": "u", "clearEnv": ["C"]},
+  {"id": 14, "op": "respawn", "pane": "%1", "command": ["sh"], "cwd": "/var", "env": {"B": "2"}, "expectedHeldToken": "u", "clearEnv": ["C"], "afterExit": {"command": ["cmd.exe"], "env": {"M": "claude"}}},
   {"id": 15, "op": "jobPids", "pane": "%1"},
   {"id": 16, "op": "processes"},
   {"id": 17, "op": "setEngineExit", "pane": "%1", "status": -1}

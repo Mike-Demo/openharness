@@ -136,6 +136,17 @@ pub struct Request {
     pub op: Op,
 }
 
+/// What a pane runs once its child exits by itself (`create`'s and `respawn`'s `afterExit`): the hand-off a
+/// Unix launch script makes in the pane (cli/src/lib/engineLaunch.ts `harness_after`), which on Windows has no
+/// script to make it. The host records the child's status as the pane's `engineExit`, then starts `command` in
+/// the same pane and grid, with the pane's environment, `env`, and `HARNESS_ENGINE_EXIT=<status>`.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+pub struct AfterExit {
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
 pub enum Op {
@@ -149,6 +160,8 @@ pub enum Op {
         owner: String,
         label: Option<String>,
         hold: bool,
+        #[serde(rename = "afterExit", default)]
+        after_exit: Option<AfterExit>,
     },
     Kill {
         pane: String,
@@ -184,6 +197,9 @@ pub enum Op {
         /// later one: tmux's `set-environment -u` on the pane's session ahead of `respawn-pane`.
         #[serde(rename = "clearEnv", default)]
         clear_env: Vec<String>,
+        /// The new child's hand-off, in place of any the pane had (none when absent).
+        #[serde(rename = "afterExit", default)]
+        after_exit: Option<AfterExit>,
     },
     JobPids { pane: String },
     Processes,
@@ -227,7 +243,10 @@ mod tests {
     #[test]
     fn parses_create_request() {
         let r: Request = serde_json::from_str(r#"{"id":1,"op":"create","command":["sh"],"cols":80,"rows":24,"owner":"o","hold":true}"#).unwrap();
-        assert!(matches!(r.op, Op::Create { ref command, cols: 80, rows: 24, hold: true, .. } if command == &vec!["sh".to_string()]));
+        assert!(matches!(r.op, Op::Create { ref command, cols: 80, rows: 24, hold: true, after_exit: None, .. } if command == &vec!["sh".to_string()]));
+        let r: Request = serde_json::from_str(r#"{"id":1,"op":"create","command":["codex"],"cols":80,"rows":24,"owner":"o","hold":true,"afterExit":{"command":["pwsh.exe","-NoLogo"]}}"#).unwrap();
+        assert!(matches!(r.op, Op::Create { after_exit: Some(AfterExit { ref command, ref env }), .. }
+            if command == &vec!["pwsh.exe".to_string(), "-NoLogo".to_string()] && env.is_empty()));
     }
     #[test]
     fn clean_eof_is_none_and_truncation_is_error() {
@@ -308,6 +327,7 @@ mod tests {
             r#"{"op":"setTitle","pane":"%1","title":"t"}"#,
             r#"{"op":"releaseHold","pane":"%1"}"#,
             r#"{"op":"respawn","pane":"%1","command":["sh"],"expectedHeldToken":"u"}"#,
+            r#"{"op":"respawn","pane":"%1","command":["sh"],"afterExit":{"command":["pwsh.exe"],"env":{"A":"b"}}}"#,
             r#"{"op":"jobPids","pane":"%1"}"#,
             r#"{"op":"setEngineExit","pane":"%1","status":-1}"#,
         ];

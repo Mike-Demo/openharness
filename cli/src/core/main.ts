@@ -62,6 +62,7 @@ import { ENGINES, enginePathOverride } from '../lib/engineBin.js'
 import { isTerminalEngine, type AgentEngine } from '../engines/types.js'
 import { engineInstallRecipe } from '../lib/engineInstall.js'
 import { buildEngineLaunchArgv, engineLaunchEnv, supportsFirstPrompt } from '../lib/engineLaunch.js'
+import { windowsPaneLaunch } from '../lib/windows/engineStart.js'
 import { workspaceMissing } from '../lib/workspaceCheck.js'
 import { HERMES_SYSTEM_MANAGED_DIR, type GridLaunchMachine } from '../lib/gridLaunchWire.js'
 import { writeGridConfigDir } from '../lib/gridConfigDir.js'
@@ -2223,7 +2224,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
           })
           // Windows: the variables the argv's `/usr/bin/env` prefix carries elsewhere, last (engineLaunchEnv).
           const paneEnv = { ...launchEnv, ...engineLaunchEnv(entry.engine, overrides.native) }
-          return { argv, ...(overrides.native ? { nativeToken: overrides.native.token, current: overrides.native.current } : {}), ...(Object.keys(paneEnv).length ? { env: paneEnv } : {}) }
+          return { argv, ...(overrides.native ? { nativeToken: overrides.native.token, current: overrides.native.current } : {}), ...(Object.keys(paneEnv).length ? { env: paneEnv } : {}),
+            // Windows: the workspace to start in and the shell the pane becomes after the engine (lib/windows/engineStart.ts).
+            paneLaunch: windowsPaneLaunch(entry.engine, argv, entry.cwd) }
         },
       }),
       createPane: restoreOn.createPane,

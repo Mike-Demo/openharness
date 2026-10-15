@@ -8,6 +8,7 @@ import { isTerminalEngine, type AgentEngine } from '../../engines/types.js'
 import { engineBin, enginePathOverride } from '../../lib/engineBin.js'
 import { engineInstallRecipe } from '../../lib/engineInstall.js'
 import { buildEngineLaunchArgv, commandAvailableInInteractiveShell } from '../../lib/engineLaunch.js'
+import { windowsPaneLaunch } from '../../lib/windows/engineStart.js'
 import { probeGatewayRuntime } from '../../lib/gatewayRuntime.js'
 import { sid } from '../../lib/log.js'
 import type { registry, RegisteredSession } from '../../lib/registry.js'
@@ -130,13 +131,12 @@ export function createAgentRestarter({
       try {
         // The same opening a fresh terminal tile prints (`onCreateAgent`'s `terminalHint`): a
         // restarted tile is a fresh shell too, and should look like one.
-        const respawned = await backend.respawn(runtime, {
-          command: buildEngineLaunchArgv(engine, {
-            ...(session.cwd ? { cwd: session.cwd } : {}),
-            terminalHint: { machineName: terminalHintMachineName() },
-          }),
-          cwd: homedir(),
+        const command = buildEngineLaunchArgv(engine, {
+          ...(session.cwd ? { cwd: session.cwd } : {}),
+          terminalHint: { machineName: terminalHintMachineName() },
         })
+        // Windows: the shell starts in the folder itself, which the launch enters elsewhere (lib/windows/engineStart.ts).
+        const respawned = await backend.respawn(runtime, { command, cwd: homedir(), ...windowsPaneLaunch(engine, command, session.cwd) })
         if (!current()) return changed
         if (respawned.state !== 'succeeded') return { ok: false, error: 'RESTART_FAILED', detail: respawned.reason }
         await backend.releaseHold(runtime)

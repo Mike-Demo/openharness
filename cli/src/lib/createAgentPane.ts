@@ -20,6 +20,7 @@ import type { TerminalBackend } from './terminalBackend.js'
 import type { TerminalCreateResult, TerminalRuntimeRef } from './terminalTypes.js'
 import { terminalRouteKey } from './terminalRuntime.js'
 import type { ExternalResumeIntent } from './externalResume.js'
+import type { WindowsPaneLaunch } from './windows/engineStart.js'
 import type { StartedBy } from './agentAttribution.js'
 
 const DEFAULT_MAX_ATTEMPTS = 3
@@ -63,6 +64,9 @@ export interface CreateAgentPaneDeps<Ref extends TerminalRuntimeRef = TerminalRu
   argv: string[]
   /** Explicit-argv terminals start here; engine wrappers still enter cwd after rc files. */
   spawnCwd?: string
+  /** Windows: the folder the engine starts in (it has no wrapper to enter one) and the shell the pane becomes when it
+   *  exits (lib/windows/engineStart.ts `windowsPaneLaunch`); nothing elsewhere. */
+  paneLaunch?: WindowsPaneLaunch
   env?: Record<string, string>
   grid?: { baseUrl: string; model: string | null } | null
   /** The grid launch behind `grid` (credential included — what restore/restart relaunch the pane with)
@@ -107,7 +111,8 @@ export async function createAndRegisterPane<Ref extends TerminalRuntimeRef = Ter
       // The login shell starts somewhere stable; its argv enters the requested workspace after rc
       // files. `deps.cwd` still travels below, into the registry entry — this is only about where
       // the pane's OWN shell starts, not the workspace the agent ends up in.
-      cwd: deps.spawnCwd ?? homedir(),
+      cwd: deps.spawnCwd ?? deps.paneLaunch?.cwd ?? homedir(),
+      ...(deps.paneLaunch?.afterExit ? { afterExit: deps.paneLaunch.afterExit } : {}),
       label,
       command: deps.argv,
       ...(deps.current ? { current: deps.current } : {}),

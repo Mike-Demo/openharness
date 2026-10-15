@@ -24,6 +24,7 @@ import { buildHarnessSessionLabel } from '../../lib/harnessSessionLabel.js'
 import { projectDisplayName, type registry, type RegisteredSession } from '../../lib/registry.js'
 import type { TerminalBackend } from '../../lib/terminalBackend.js'
 import { windowsLaunchRefusal } from '../../lib/windows/launch.js'
+import { windowsPaneLaunch } from '../../lib/windows/engineStart.js'
 import { prepareInstructionWrites, scmLaunchEnv } from '../../scm/scmProjects.js'
 import type { createLaunchHelpers } from './launch.js'
 import { mergedLaunchEnv } from './launchEnv.js'
@@ -181,6 +182,8 @@ export function createAgentForker({
       cwd: source.cwd,
       sessionLabel: label,
       argv,
+      // Windows: the workspace to start in and the shell the pane becomes after the engine (lib/windows/engineStart.ts).
+      paneLaunch: windowsPaneLaunch(engine, argv, source.cwd),
       // The SCM's environment last, after the harness context's, as at create and relaunch.
       // Windows: the variables the argv's `/usr/bin/env` prefix carries elsewhere, last (engineLaunchEnv).
       env: mergedLaunchEnv(mergedLaunchEnv(mergedLaunchEnv(Object.keys(built.overrides.env).length ? built.overrides.env : undefined, dshEnv),

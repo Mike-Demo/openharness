@@ -39,6 +39,7 @@
 import { isTerminalEngine, type AgentEngine } from '../engines/types.js'
 import type { AgentLaunch, ProcessIdentity, RegisteredSession } from './registry.js'
 import type { TerminalDispatchControl, TerminalRuntimeRef } from './terminalTypes.js'
+import type { WindowsPaneLaunch } from './windows/engineStart.js'
 import { sameTerminalPlacement, terminalInstanceId, terminalRouteKey } from './terminalRuntime.js'
 import { resumesConversation } from './resumeCapability.js'
 
@@ -47,6 +48,9 @@ export interface RestoreLaunch {
   current?(): boolean
   argv: string[]
   env?: Record<string, string>
+  /** Windows: the folder the engine starts in and the shell its pane becomes after it (lib/windows/engineStart.ts
+   *  `windowsPaneLaunch`); elsewhere the launch script enters the folder and hands the pane on itself. */
+  paneLaunch?: WindowsPaneLaunch
 }
 
 /** The launch, why there is none, or the service its launch asks that could not be asked (`held`). */

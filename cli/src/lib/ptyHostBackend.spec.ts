@@ -109,6 +109,21 @@ describe('PtyHostBackend create', () => {
     expect(calls).toEqual([{ op: 'create', command: ['claude'], cwd: '/w', env: { K: 'v' }, cols: 200, rows: 50, owner: 'me', label: 'harness-claude-1', hold: true }])
   })
 
+  it('gives the host what the pane runs after its command, without its env when it has none', async () => {
+    const { backend, calls } = await ready({ create: { state: 'ok', value: { pane: '%4' } } })
+    await backend.create({ command: ['codex.exe'], afterExit: { command: ['pwsh.exe'], env: { HARNESS_ENGINE_COMMAND: 'codex' } } })
+    await backend.create({ command: ['codex.exe'], afterExit: { command: ['cmd.exe'] } })
+    expect(calls.map((call) => (call as { afterExit?: unknown }).afterExit)).toEqual([
+      { command: ['pwsh.exe'], env: { HARNESS_ENGINE_COMMAND: 'codex' } }, { command: ['cmd.exe'] },
+    ])
+    await backend.respawn(PANE, { command: ['codex.exe'], afterExit: { command: ['pwsh.exe'], env: { A: 'b' } } })
+    await backend.respawn(PANE, { command: ['codex.exe'], afterExit: { command: ['cmd.exe'] } })
+    expect(calls.slice(2)).toEqual([
+      { op: 'respawn', pane: '%1', command: ['codex.exe'], afterExit: { command: ['pwsh.exe'], env: { A: 'b' } } },
+      { op: 'respawn', pane: '%1', command: ['codex.exe'], afterExit: { command: ['cmd.exe'] } },
+    ])
+  })
+
   it('runs the shell when given no command', async () => {
     const { backend, calls } = await ready({ create: { state: 'ok', value: { pane: '%4' } } })
     await backend.create({})

@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use harness_pty::protocol::{Op, Request};
+use harness_pty::protocol::{AfterExit, Op, Request};
 use serde_json::Value;
 
 fn fixture() -> Vec<Value> {
@@ -16,6 +16,13 @@ fn env(v: &Value) -> HashMap<String, String> {
     serde_json::from_value(v.clone()).unwrap()
 }
 
+fn after_exit(v: &Value) -> Option<AfterExit> {
+    Some(AfterExit {
+        command: serde_json::from_value(v["command"].clone()).unwrap(),
+        env: env(&v["env"]),
+    })
+}
+
 fn str_of(v: &Value) -> Option<String> {
     v.as_str().map(str::to_owned)
 }
@@ -24,7 +31,8 @@ fn str_of(v: &Value) -> Option<String> {
 /// as its default: compare every optional or defaulted field with the fixture.
 fn assert_every_field_read(op: &Op, v: &Value) {
     match op {
-        Op::Create { cwd, env: e, label, .. } => {
+        Op::Create { cwd, env: e, label, after_exit: after, .. } => {
+            assert_eq!(*after, after_exit(&v["afterExit"]));
             assert_eq!(cwd.clone(), str_of(&v["cwd"]));
             assert_eq!(*e, env(&v["env"]));
             assert_eq!(label.clone(), str_of(&v["label"]));
@@ -33,7 +41,8 @@ fn assert_every_field_read(op: &Op, v: &Value) {
         Op::Capture { history_lines, .. } => {
             assert_eq!(history_lines.map(u64::from), v["historyLines"].as_u64())
         }
-        Op::Respawn { cwd, env: e, expected_held_token, clear_env, .. } => {
+        Op::Respawn { cwd, env: e, expected_held_token, clear_env, after_exit: after, .. } => {
+            assert_eq!(*after, after_exit(&v["afterExit"]));
             assert_eq!(cwd.clone(), str_of(&v["cwd"]));
             assert_eq!(*e, env(&v["env"]));
             assert_eq!(expected_held_token.clone(), str_of(&v["expectedHeldToken"]));

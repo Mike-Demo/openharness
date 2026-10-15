@@ -93,6 +93,17 @@ export interface TerminalDispatchControl {
   expectedHeldToken?: string
 }
 
+/**
+ * What a pane runs once its command exits by itself, in the same pane, with that exit recorded as the pane's
+ * `engineExit`: the hand-off a Unix launch script makes itself (lib/engineLaunch.ts `harness_after`), given to the
+ * pty host for a Windows engine, which has no script (lib/windows/engineStart.ts). tmux never gets one.
+ */
+export interface TerminalAfterExit {
+  command: string[]
+  /** Its own variables, beside the pane's; the host adds `HARNESS_ENGINE_EXIT`, the status. */
+  env?: Record<string, string>
+}
+
 export interface TerminalCreateRequest extends TerminalDispatchControl {
   cwd?: string
   label?: string
@@ -105,6 +116,8 @@ export interface TerminalCreateRequest extends TerminalDispatchControl {
    * `gridLaunch.ts`), and argv is world-readable through `ps` for as long as the process lives.
    */
   env?: Record<string, string>
+  /** What the pane runs when `command` exits by itself (`TerminalAfterExit`); the pty host's alone. */
+  afterExit?: TerminalAfterExit
 }
 
 /**
@@ -123,6 +136,8 @@ export interface TerminalRespawnRequest extends TerminalDispatchControl {
   /** Names taken out of what the pane was created with, for this child and every later one. The pty host does it
    *  in the respawn; a backend with `clearEnv()` (tmux) is cleared through that instead, before the respawn. */
   clearEnv?: readonly string[]
+  /** The new process's hand-off (`TerminalAfterExit`), replacing any the pane had; the pty host's alone. */
+  afterExit?: TerminalAfterExit
 }
 
 export type TerminalCreateResult<Ref extends TerminalRuntimeRef = TerminalRuntimeRef> =

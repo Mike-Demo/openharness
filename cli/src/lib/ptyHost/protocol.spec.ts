@@ -134,10 +134,10 @@ describe('ptyHost protocol messages', () => {
  * The type of each field of an op, for every field the TypeScript type declares, optional ones
  * included (`-?`): the compiler rejects a table that misses or invents a field.
  */
-type FieldType = 'string' | 'number' | 'boolean' | 'string[]' | 'env'
+type FieldType = 'string' | 'number' | 'boolean' | 'string[]' | 'env' | 'afterExit'
 type OpFields = { [K in PtyOp['op']]: { [F in keyof Omit<PtyOpOf<K>, 'op'>]-?: FieldType } }
 const OP_FIELDS: OpFields = {
-  create: { command: 'string[]', cwd: 'string', env: 'env', cols: 'number', rows: 'number', owner: 'string', label: 'string', hold: 'boolean' },
+  create: { command: 'string[]', cwd: 'string', env: 'env', cols: 'number', rows: 'number', owner: 'string', label: 'string', hold: 'boolean', afterExit: 'afterExit' },
   kill: { pane: 'string', graceMs: 'number' },
   inventory: {},
   titles: {},
@@ -150,13 +150,17 @@ const OP_FIELDS: OpFields = {
   setTitle: { pane: 'string', title: 'string' },
   holdOpen: { pane: 'string' },
   releaseHold: { pane: 'string' },
-  respawn: { pane: 'string', command: 'string[]', cwd: 'string', env: 'env', expectedHeldToken: 'string', clearEnv: 'string[]' },
+  respawn: { pane: 'string', command: 'string[]', cwd: 'string', env: 'env', expectedHeldToken: 'string', clearEnv: 'string[]', afterExit: 'afterExit' },
   jobPids: { pane: 'string' },
   processes: {},
   setEngineExit: { pane: 'string', status: 'number' },
 }
 
 function typeOf(value: unknown): FieldType | 'other' {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value) && 'command' in value) {
+    const { command, env, ...rest } = value as Record<string, unknown>
+    return typeOf(command) === 'string[]' && typeOf(env) === 'env' && !Object.keys(rest).length ? 'afterExit' : 'other'
+  }
   if (Array.isArray(value)) return value.every(v => typeof v === 'string') ? 'string[]' : 'other'
   if (value !== null && typeof value === 'object') {
     return Object.values(value).every(v => typeof v === 'string') ? 'env' : 'other'

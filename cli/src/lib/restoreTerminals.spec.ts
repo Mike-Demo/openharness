@@ -99,6 +99,10 @@ describe('restore, on each pane\'s own backend', () => {
     expect(tmuxBackend.create).toHaveBeenCalledExactlyOnceWith({ cwd: '/home/me', label: 'harness-claude', command: ['claude'] })
     ptyBackend.create.mockResolvedValueOnce({ state: 'failed', dispatch: 'not_started', reason: 'host down' } as never)
     expect(await terminals.createPane(entry([pty]), { argv: ['claude'] })).toEqual({ ok: false, reason: 'host down' })
+    // Windows: the workspace and the hand-off the launch carries (lib/windows/engineStart.ts).
+    const afterExit = { command: ['pwsh.exe'], env: { HARNESS_ENGINE_COMMAND: 'claude' } }
+    await terminals.createPane(entry([pty]), { argv: ['claude'], paneLaunch: { cwd: 'C:\\work', afterExit } })
+    expect(ptyBackend.create).toHaveBeenLastCalledWith({ cwd: 'C:\\work', label: 'harness-claude', command: ['claude'], afterExit })
   })
 
   it('respawns in place on the pane\'s own backend with the dispatch control, the held token included', async () => {
@@ -109,6 +113,9 @@ describe('restore, on each pane\'s own backend', () => {
     expect(tmuxBackend.respawn).not.toHaveBeenCalled()
     ptyBackend.respawn.mockResolvedValueOnce({ state: 'failed', dispatch: 'not_started', reason: 'The waiting pane changed' } as never)
     expect(await terminals.respawn(pty, { argv: ['claude'] })).toEqual({ ok: false, reason: 'The waiting pane changed' })
+    const afterExit = { command: ['pwsh.exe'] }
+    await terminals.respawn(pty, { argv: ['claude'], paneLaunch: { cwd: 'C:\\work', afterExit } })
+    expect(ptyBackend.respawn).toHaveBeenLastCalledWith(pty, { command: ['claude'], cwd: 'C:\\work', afterExit })
   })
 
   it('refuses, never guesses, for a pane whose backend went', async () => {

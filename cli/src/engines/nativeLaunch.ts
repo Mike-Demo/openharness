@@ -7,9 +7,12 @@ import { failureReason } from '../lib/failureReason.js'
 import { permissionFlagToVerify, type PermissionLaunchChoice } from '../lib/engineLaunch.js'
 import type { EngineInstallRecipe } from '../lib/engineInstall.js'
 import { patientDeadline } from '../lib/patientExec.js'
+import { windowsEngineArgv } from '../lib/windows/launch.js'
 import { engineHooks } from './hooks.js'
 import * as hooks from './nativeHooks.js'
 import { captureLaunchExecutable, LAUNCH_LOCATION_VARIABLES } from './kit/launchExecutable.js'
+import { startupOwnedFlag } from './kit/launchStartup.js'
+import { launchContract } from './launches.js'
 import type { HookPreparationProof } from './kit/nativeHookFiles.js'
 import { nativeHookLocations, nativeProcessEnvironment, type NativeHookOptions } from './kit/nativeLocations.js'
 import { parseMajor, type NativeExecutableSnapshot } from './kit/nativeVersion.js'
@@ -29,6 +32,12 @@ export interface NativeLaunch {
   readonly environment: Readonly<Record<string, string>>
   readonly clearEnvironment?: readonly string[]
   readonly proofs: readonly HookPreparationProof[]
+  /**
+   * Windows: what the engine's declared startup puts first in its argv (Codex's `--no-daemon` when its help lists it),
+   * read from this executable's help at inspection, since no launch script probes it there (lib/windows/engineStart.ts).
+   * Absent elsewhere, and for an engine that declares no startup probe.
+   */
+  readonly startupArgs?: readonly string[]
   retain?(proof: HookPreparationProof): boolean
   ready?(): boolean
   current(): boolean
@@ -67,10 +76,13 @@ async function read(executable: string, args: readonly string[], environment: Re
     const answer = (output: ProbeOutput | null) => { if (!answered) { answered = true; done(output) } }
     let child: ReturnType<typeof execFile>
     try {
+      // Windows starts an npm shim's script under node, never the shim through cmd.exe, which Node refuses to run
+      // without a shell (lib/windows/launch.ts); elsewhere [executable] as it is.
+      const [program, ...programArgs] = windowsEngineArgv('the engine', [executable, ...args], { environment: nativeProcessEnvironment(environment) })
       // Node's timeout can discard unread output after a core stall, then
       // report exit 0. Keep its pipes and use discovery's patient deadline.
-      child = execFile(executable, [...args], {
-        env: nativeProcessEnvironment(environment), encoding: 'utf8', killSignal: 'SIGKILL', maxBuffer: 64 * 1024,
+      child = execFile(program!, programArgs, {
+        env: nativeProcessEnvironment(environment), encoding: 'utf8', killSignal: 'SIGKILL', maxBuffer: 64 * 1024, windowsHide: true,
       }, (error, stdout, stderr) => {
         settled = true; probes--; cancelDeadline(); clearTimeout(drain)
         // A numeric code is the child's own exit status. A spawn failure, a signal or the output
@@ -126,6 +138,16 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
   // Unknown is an observation of this attempt, never a permanent installed-file answer.
   if (engine === 'opencode' && opencodeMajor === null) return waiting('Waiting to confirm the selected OpenCode executable’s version.')
   if (!executable.current()) return waiting('Waiting for the selected engine executable to stop changing.')
+  // Windows: the startup probe a launch script makes before every run elsewhere (engines/kit/launchStartup.ts), made
+  // once here, of the executable this launch holds. No answer holds the launch, as the script ends one.
+  const owned = process.platform === 'win32' ? startupOwnedFlag(launchContract(engine)) : null
+  let startupArgs: readonly string[] | undefined
+  if (owned) {
+    const help = await read(executable.command, ['--help'], environment)
+    if (help && help.code !== 0 && executable.current()) return cannotRun(engine, failureReason(`${help.stderr}\n${help.stdout}`, `it exited with status ${help.code}`))
+    if (!help || help.code !== 0 || !`${help.stdout}${help.stderr}`.trim()) return waiting('Waiting to confirm the selected executable’s startup options.')
+    startupArgs = Object.freeze(helpLists(`${help.stdout}\n${help.stderr}`, owned.flag) ? [owned.flag] : [])
+  }
   let proofs: readonly HookPreparationProof[] = [], selectedEnvironment = environment
   const dependencies: HookPreparationProof[] = []
   const dependenciesCurrent = () => dependencies.every(proof => proof.current())
@@ -135,7 +157,7 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
   /** Why the latest help probe's executable failed, when it ran and exited non-zero. */
   let failed: string | null = null
   const launch: NativeLaunch = {
-    token: randomUUID(), executable, opencodeMajor, current, ready: () => prepared && current(),
+    token: randomUUID(), executable, opencodeMajor, current, ready: () => prepared && current(), ...(startupArgs ? { startupArgs } : {}),
     get environment() { return selectedEnvironment },
     get proofs() { return [...dependencies, ...proofs] },
     retain(proof) {
@@ -196,8 +218,7 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
       // for good, waiting to confirm its permission flags.
       const help = `${probe.stdout}\n${probe.stderr}`
       if (!help.trim()) return 'unknown'
-      const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-      const answer = new RegExp(`(?:^|[^A-Za-z0-9-])${escaped}(?![A-Za-z0-9-])`).test(help) ? 'supported' : 'unsupported'
+      const answer = helpLists(help, flag) ? 'supported' : 'unsupported'
       permissions.set(flag, answer)
       return answer
     },
@@ -206,6 +227,12 @@ export async function inspectNativeLaunch(engine: AgentEngine, source: NativeLau
     return failed ? cannotRun(engine, failed) : waiting('Waiting to confirm the selected executable’s permission flags.')
   }
   return { ok: true, launch }
+}
+
+/** Whether [help] lists [flag] as a whole option, not the start of a longer one (`--auto` is not `--auto-update`). */
+function helpLists(help: string, flag: string): boolean {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?:^|[^A-Za-z0-9-])${escaped}(?![A-Za-z0-9-])`).test(help)
 }
 
 const installers: Partial<Record<AgentEngine, (port: number, options: NativeHookOptions) => Promise<boolean>>> = {

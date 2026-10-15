@@ -19,6 +19,7 @@ import type { LaunchOverrides, LaunchOverridesResult } from './launchOverrides.j
 import type { AgentRestartCoordinator } from './restartAgent.js'
 import { missingBackendCode, terminalTargetOf, type TerminalBackend } from './terminalBackend.js'
 import { windowsLaunchRefusal } from './windows/launch.js'
+import { windowsPaneLaunch } from './windows/engineStart.js'
 import { sameTerminalPlacement } from './terminalRuntime.js'
 import type { TerminalRuntimeRef } from './terminalTypes.js'
 import { harnessPermissionEnvironment } from './harnessDefaults.js'
@@ -330,6 +331,8 @@ export function createResumeAgentService(deps: ResumeAgentServiceDeps) {
           engine: saved.engine,
           sessionLabel: buildHarnessSessionLabel(saved.engine),
           argv,
+          // Windows: the workspace to start in and the shell the pane becomes after the engine (windows/engineStart.ts).
+          paneLaunch: windowsPaneLaunch(saved.engine, argv, cwd),
           ...(Object.keys(paneEnv).length ? { env: paneEnv } : {}),
         })
         if (sourceError) throw sourceError

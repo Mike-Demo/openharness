@@ -9,6 +9,7 @@ import { homedir } from 'node:os'
 import { checkPidRuntime, terminateDeletedAgent } from '../../lib/deleteAgentFallback.js'
 import { buildEngineCommandArgv, buildEngineLaunchArgv, engineLaunchEnv } from '../../lib/engineLaunch.js'
 import { windowsLaunchRefusal } from '../../lib/windows/launch.js'
+import { windowsPaneLaunch } from '../../lib/windows/engineStart.js'
 import { mergedLaunchEnv } from './launchEnv.js'
 import type { RegisteredSession } from '../../lib/registry.js'
 import { AgentRestartCoordinator, type RestartAgentDeps } from '../../lib/restartAgent.js'
@@ -106,6 +107,8 @@ export function createPaneSwap({ byAgent, prepareSessionResume, keepAbandonedCon
           command: argv,
           ...(current ? { current } : {}),
           cwd: homedir(),
+          // Windows: the workspace to start in and the shell the pane becomes after the engine (lib/windows/engineStart.ts).
+          ...windowsPaneLaunch(session.engine, argv, session.cwd),
           ...(env ? { env } : {}),
           ...(launch.clearPaneEnv?.length ? { clearEnv: launch.clearPaneEnv } : {}),
         })

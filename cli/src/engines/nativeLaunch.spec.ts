@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { inspectNativeLaunch } from './nativeLaunch.js'
 import { captureLaunchExecutable } from './kit/launchExecutable.js'
 import { engineHooks } from './hooks.js'
@@ -276,4 +276,45 @@ it.each([
   expect(result.launch.environment[variable]).toBe(home)
   expect(await result.launch.prepareHooks(19473, () => true)).toBe(true)
   expect(confirmHome).not.toHaveBeenCalled()
+})
+
+// Windows has no launch script to probe Codex's owned-process flag before each run (engines/kit/launchStartup.ts):
+// the inspection reads the held executable's help once, and the flag rides in the argv (lib/windows/engineStart.ts).
+describe('the startup probe on Windows', () => {
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  beforeEach(() => { Object.defineProperty(process, 'platform', { ...platform, value: 'win32' }) })
+  afterEach(() => { Object.defineProperty(process, 'platform', platform) })
+
+  it('answers with the flag when the help lists it, and without when it does not', async () => {
+    fixture.help = 'Options:\n      --no-daemon   Run in this process'
+    expect(await inspectNativeLaunch('codex')).toMatchObject({ ok: true, launch: { startupArgs: ['--no-daemon'] } })
+    expect(fixture.calls).toEqual(['/fixture/engine'])
+    fixture.help = 'Options:\n      --no-daemonize'
+    expect(await inspectNativeLaunch('codex')).toMatchObject({ ok: true, launch: { startupArgs: [] } })
+    // On both streams, as the permission probe reads it.
+    fixture.help = ''; fixture.stderr = '--no-daemon'
+    expect(await inspectNativeLaunch('codex')).toMatchObject({ ok: true, launch: { startupArgs: ['--no-daemon'] } })
+  })
+
+  it('refuses a Codex whose help failed, and holds one that gave no answer', async () => {
+    fixture.exit = 2; fixture.stderr = 'Error: broken install'
+    expect(await inspectNativeLaunch('codex')).toMatchObject({ ok: false, refusal: 'ENGINE_CANNOT_RUN', detail: expect.stringContaining('broken install') })
+    fixture.current = false
+    expect(await inspectNativeLaunch('codex')).toMatchObject({ ok: false, unavailable: 'native' })
+    fixture.current = true; fixture.exit = 0; fixture.failed = true
+    expect(await inspectNativeLaunch('codex')).toMatchObject({ ok: false, unavailable: 'native', detail: 'Waiting to confirm the selected executable’s startup options.' })
+    fixture.failed = false; fixture.help = ''; fixture.stderr = ''
+    expect(await inspectNativeLaunch('codex')).toMatchObject({ ok: false, unavailable: 'native' })
+  })
+
+  it('probes no engine without a startup probe, and nothing elsewhere', async () => {
+    const claude = await inspectNativeLaunch('claude')
+    expect(claude.ok && claude.launch.startupArgs).toBeUndefined()
+    expect(fixture.calls).toEqual([])
+    Object.defineProperty(process, 'platform', platform)
+    if (process.platform === 'win32') return
+    const codex = await inspectNativeLaunch('codex')
+    expect(codex.ok && codex.launch.startupArgs).toBeUndefined()
+    expect(fixture.calls).toEqual([])
+  })
 })

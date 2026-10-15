@@ -316,6 +316,16 @@ describe('restarting an agent', () => {
       expect(run.deps.relaunchOverrides).not.toHaveBeenCalled()
     })
 
+    it('on Windows, starts the shell in its folder, which no launch script enters there', async () => {
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+      const run = setup(terminal())
+      try {
+        Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+        expect(await run.restart('a1')).toMatchObject({ ok: true })
+      } finally { Object.defineProperty(process, 'platform', platform) }
+      expect(run.tmuxBackend.respawn).toHaveBeenCalledWith(runtime, { command: ['zsh', '-l'], cwd: '/work' })
+    })
+
     it('with no folder of its own, opens without one', async () => {
       await setup(terminal({ cwd: undefined })).restart('a1')
       expect(buildEngineLaunchArgv).toHaveBeenCalledWith('terminal', { terminalHint: { machineName: 'studio' } })

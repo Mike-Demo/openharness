@@ -6,6 +6,7 @@ import { installedDsh } from '../../dsh/installed.js'
 import { createAndRegisterPane } from '../../lib/createAgentPane.js'
 import { WindowsBatchLaunchRefused } from '../../lib/windows/launch.js'
 import { enginePathOverride } from '../../lib/engineBin.js'
+import { windowsAfterExit } from '../../lib/windows/engineStart.js'
 import { buildEngineLaunchArgv, engineLaunchEnv, refusePermissionFlagIfUnsupported, supportsNamedAgent } from '../../lib/engineLaunch.js'
 import { planFork } from '../../lib/forkAgent.js'
 import { prepareInstructionWrites } from '../../scm/scmProjects.js'
@@ -196,6 +197,15 @@ describe('forking an agent', () => {
     vi.mocked(engineLaunchEnv).mockReturnValueOnce({ HARNESS_NATIVE_FIXTURE: 'token' })
     expect(await setup(source()).fork({ agentId: 'a1', name: null, prompt: null })).toMatchObject({ ok: true })
     expect(vi.mocked(createAndRegisterPane).mock.calls[0]![0].env).toMatchObject({ HARNESS_NATIVE_FIXTURE: 'token' })
+  })
+
+  it('starts a Windows fork in the source\'s folder, its pane becoming the person\'s shell after it', async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    try {
+      Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+      expect(await setup(source()).fork({ agentId: 'a1', name: null, prompt: null })).toMatchObject({ ok: true })
+    } finally { Object.defineProperty(process, 'platform', platform) }
+    expect(vi.mocked(createAndRegisterPane).mock.calls[0]![0].paneLaunch).toEqual({ cwd: work, afterExit: windowsAfterExit('claude') })
   })
 
   it('refuses a batch-file engine on Windows whose first message cmd.exe would read, by name', async () => {

@@ -166,8 +166,15 @@ export interface PaneInfo {
   tty: string
 }
 
+/** `create`'s and `respawn`'s `afterExit` (pty/src/protocol.rs `AfterExit`): what the pane runs once its child exits by
+ *  itself, the status recorded as its `engineExit` and given to it as `HARNESS_ENGINE_EXIT`. */
+export interface PtyAfterExit {
+  command: string[]
+  env?: Record<string, string>
+}
+
 export type PtyOp =
-  | { op: 'create'; command: string[]; cwd?: string; env?: Record<string, string>; cols: number; rows: number; owner: string; label?: string; hold: boolean }
+  | { op: 'create'; command: string[]; cwd?: string; env?: Record<string, string>; cols: number; rows: number; owner: string; label?: string; hold: boolean; afterExit?: PtyAfterExit }
   | { op: 'kill'; pane: string; graceMs?: number }
   | { op: 'inventory' }
   | { op: 'titles' }
@@ -180,7 +187,7 @@ export type PtyOp =
   | { op: 'setTitle'; pane: string; title: string }
   | { op: 'holdOpen'; pane: string }
   | { op: 'releaseHold'; pane: string }
-  | { op: 'respawn'; pane: string; command: string[]; cwd?: string; env?: Record<string, string>; expectedHeldToken?: string; clearEnv?: string[] }
+  | { op: 'respawn'; pane: string; command: string[]; cwd?: string; env?: Record<string, string>; expectedHeldToken?: string; clearEnv?: string[]; afterExit?: PtyAfterExit }
   | { op: 'jobPids'; pane: string }
   | { op: 'processes' }
   | { op: 'setEngineExit'; pane: string; status: number }

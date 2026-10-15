@@ -8,6 +8,7 @@ import { dshPinnedPermissionMode } from '../../dsh/manifest.js'
 import { incompatibleHarnessEngine } from '../../dsh/compatibility.js'
 import { createAndRegisterPane } from '../../lib/createAgentPane.js'
 import { enginePathOverride } from '../../lib/engineBin.js'
+import { windowsAfterExit } from '../../lib/windows/engineStart.js'
 import { buildEngineLaunchArgv, engineLaunchEnv, namedAgentArgs, permissionModeFlags, refusePermissionFlagIfUnsupported, supportsFirstPrompt } from '../../lib/engineLaunch.js'
 import { setUpWithin } from '../../lib/setUpWithin.js'
 import { writeGridConfigDir } from '../../lib/gridConfigDir.js'
@@ -479,6 +480,18 @@ describe('creating an agent', () => {
       expect(await setup().create(request())).toMatchObject({ ok: true })
       expect(vi.mocked(createAndRegisterPane).mock.calls[0][0].env).toMatchObject({ HARNESS_NATIVE_FIXTURE: 'token' })
       expect(engineLaunchEnv).toHaveBeenCalledWith('claude', undefined)
+    })
+
+    it('starts a Windows engine in its workspace, its pane becoming the person\'s shell after it', async () => {
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+      const input = request()
+      try {
+        Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+        expect(await setup().create(input)).toMatchObject({ ok: true })
+      } finally { Object.defineProperty(process, 'platform', platform) }
+      expect(vi.mocked(createAndRegisterPane).mock.calls[0][0].paneLaunch).toEqual({ cwd: input.cwd, afterExit: windowsAfterExit('claude') })
+      expect(await setup().create(request())).toMatchObject({ ok: true })
+      expect(vi.mocked(createAndRegisterPane).mock.calls[1][0].paneLaunch).toEqual({})
     })
 
     it('starts an approving session in the default harness permission when no mode was named', async () => {

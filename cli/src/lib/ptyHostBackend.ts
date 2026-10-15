@@ -334,6 +334,8 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
       owner: this.owner(),
       ...(request.label ? { label: request.label } : {}),
       hold: true,
+      // Windows: the shell the pane becomes when its engine exits, made by the host (lib/windows/engineStart.ts).
+      ...(request.afterExit ? { afterExit: { command: request.afterExit.command, ...(request.afterExit.env ? { env: request.afterExit.env } : {}) } } : {}),
     })
     if (result.state !== 'ok') return actionOf(result) as TerminalCreateResult<PtyRuntimeRef>
     // Recorded here, before any other await: an exit that overtook this reply is released by the client
@@ -519,6 +521,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
       ...(request.expectedHeldToken ? { expectedHeldToken: request.expectedHeldToken } : {}),
       // The host keeps each pane's create env, as tmux keeps its session's: a respawn inherits it, less these.
       ...(request.clearEnv?.length ? { clearEnv: [...request.clearEnv] } : {}),
+      ...(request.afterExit ? { afterExit: { command: request.afterExit.command, ...(request.afterExit.env ? { env: request.afterExit.env } : {}) } } : {}),
     })
     if (result.state === 'ok') {
       // The host absorbs the replaced process's exit; the pane runs again.

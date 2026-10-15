@@ -74,6 +74,7 @@ export function restoreTerminals(options: RestoreTerminalsOptions): RestoreTermi
         command: launch.argv,
         ...control,
         ...(launch.env ? { env: launch.env } : {}),
+        ...launch.paneLaunch,
       })
       return created.state === 'succeeded' ? { ok: true, runtime: created.runtime } : { ok: false, reason: created.reason }
     },
@@ -83,6 +84,7 @@ export function restoreTerminals(options: RestoreTerminalsOptions): RestoreTermi
         ...control,
         cwd: options.cwd,
         ...(launch.env ? { env: launch.env } : {}),
+        ...launch.paneLaunch,
       })
       return result.state === 'succeeded' ? { ok: true } : { ok: false, reason: result.reason }
     },

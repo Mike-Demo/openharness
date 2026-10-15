@@ -68,9 +68,9 @@ export async function captureLaunchExecutable(engine: AgentEngine, shell?: strin
   if (entries.length === 0 || listed.length > 256) return held('Waiting for a bounded, absolute engine search path.')
   const recipe = override ? undefined : engineInstallRecipe(engine)
   const names = [...new Set([command, ...(recipe?.executable.names ?? [])])]
-  const candidates = command.includes('/') ? [resolve(command)] : names.flatMap(name => entries.map(path => join(path, name)))
+  const candidates = command.includes('/') || isAbsolute(command) ? [resolve(command)] : names.flatMap(name => entries.map(path => join(path, name)))
   if (recipe) candidates.push(...engineInstallPaths(recipe, environment.HOME))
-  for (const path of [...new Set(candidates)]) {
+  for (const path of [...new Set(candidates.flatMap(windowsPrograms))]) {
     try {
       const info = statSync(path)
       if (!info.isFile()) return held('Waiting for the selected engine path to name an executable file.')
@@ -95,6 +95,18 @@ export async function captureLaunchExecutable(engine: AgentEngine, shell?: strin
     return { state: 'ready', executable, environment: withNodeForScript(path, environment) }
   }
   return recipe ? { state: 'install', recipe, environment: environment as Record<string, string> } : held('Waiting for the configured engine executable to become available.')
+}
+
+/**
+ * The files a Windows launch can run for [path], in the order CreateProcess and npm's shims make them: its `.exe`, then
+ * its `.cmd`, `.bat` or `.com` (an npm shim, run as its script: lib/windows/launch.ts). Not the extensionless sh script
+ * npm also writes, which nothing on Windows runs, nor a `.ps1`. Claude Code's native install is `claude.exe` alone, and
+ * with only the bare name looked for, every launch of it read as not installed (Windows 11 VM, 2026-10-15). A path
+ * that names a program already, and every path elsewhere, is itself.
+ */
+function windowsPrograms(path: string): string[] {
+  if (process.platform !== 'win32' || /\.(?:exe|cmd|bat|com)$/i.test(path)) return [path]
+  return ['.exe', '.cmd', '.bat', '.com'].map(extension => path + extension)
 }
 
 /**

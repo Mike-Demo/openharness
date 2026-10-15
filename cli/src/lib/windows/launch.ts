@@ -21,7 +21,11 @@ const BATCH = /\.(?:cmd|bat)$/i
 /** What cmd.exe reads in a command line: Rust's std refuses these in a batch file's arguments (BatBadBut). */
 const CMD_METACHARACTERS = /[%"&|<>^()!`\r\n]/
 
-export class WindowsBatchLaunchRefused extends Error {
+/** A launch Windows cannot make as asked, refused before any pane opens, its message the person's to read
+ *  (`windowsLaunchRefusal`). */
+export class WindowsLaunchRefused extends Error {}
+
+export class WindowsBatchLaunchRefused extends WindowsLaunchRefused {
   constructor(readonly engine: string, readonly program: string) {
     super(`Harness cannot start ${engine} on Windows with these arguments: ${program} is a batch file, and cmd.exe would `
       + 'read characters in them (such as % " & | < > ^ ( ) ! or a line break) as commands. Install it as a program (an .exe) '
@@ -98,9 +102,9 @@ export function windowsEngineArgv(engine: string, argv: readonly string[], optio
   return [program, ...args]
 }
 
-/** A create's or fork's answer for [error] when it is a refused batch launch (shown to the person as its detail);
- *  any other error is thrown on. */
+/** A create's or fork's answer for [error] when it is a refused Windows launch, a batch file's or an unverified
+ *  startup's (lib/windows/engineStart.ts), shown to the person as its detail; any other error is thrown on. */
 export function windowsLaunchRefusal(error: unknown): { ok: false; error: 'ENGINE_LAUNCH_REFUSED'; detail: string } {
-  if (error instanceof WindowsBatchLaunchRefused) return { ok: false, error: 'ENGINE_LAUNCH_REFUSED', detail: error.message }
+  if (error instanceof WindowsLaunchRefused) return { ok: false, error: 'ENGINE_LAUNCH_REFUSED', detail: error.message }
   throw error
 }
