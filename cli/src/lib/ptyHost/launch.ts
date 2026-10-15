@@ -12,6 +12,10 @@ import { env } from '../../config/env.js'
 import { scrubTerminalContext } from '../terminalEnvironment.js'
 import { PtyHostClient, type PtyHostDiscovery } from './client.js'
 import { PTY_PROTOCOL, SUPPORTED_PTY_PROTOCOLS } from './protocol.js'
+import { pidAlive, recordedProcessDead, startMarkerMs, type HostLiveness, type HostProcessRow } from '../processProof.js'
+
+// Moved to ../processProof.ts with the daemon's own record; still exported from here for the pty host's callers.
+export { pidAlive, startMarkerMs, type HostLiveness, type HostProcessRow }
 
 const BINARY = process.platform === 'win32' ? 'harness-pty.exe' : 'harness-pty'
 /** How long a host we started has to publish its discovery file. */
@@ -113,41 +117,7 @@ export function discoverHosts(home: string): PtyHostDiscovery[] {
   return SUPPORTED_PTY_PROTOCOLS.flatMap((protocol) => readDiscovery(home, protocol) ?? [])
 }
 
-/** Whether process [pid] exists (EPERM is one that does, another user's). */
-export function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
-  }
-}
-
-/** A process table row, as far as the liveness proof reads it (processTable.ts `ProcessRow`). */
-export interface HostProcessRow { pid: number; executable: string; startMarker: string }
-
-/**
- * How a discovery file's host is proven dead before its endpoint is dialled (`discoveredHostDead`): whether its pid
- * runs, and (optional) the process table. The backend passes the table on Windows only (ptyHostBackend.ts).
- */
-export interface HostLiveness {
-  alive(pid: number): boolean
-  rows?: () => Promise<readonly HostProcessRow[] | null>
-}
-
 const DEFAULT_LIVENESS: HostLiveness = { alive: (pid) => pidAlive(pid) }
-
-/** When a process started, in ms since the epoch, from its start marker (`w:<FILETIME>`, or a C-locale `lstart`). */
-export function startMarkerMs(marker: string): number | null {
-  const windows = /^w:(\d+)$/.exec(marker)
-  // FILETIME: 100 ns intervals since 1601-01-01.
-  if (windows) return Number(BigInt(windows[1]!) / 10_000n) - 11_644_473_600_000
-  const parsed = Date.parse(marker)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-/** A marker read to the second (`lstart`) may be up to this much early; a FILETIME is exact. */
-const START_SLACK_MS = 2_000
 
 /**
  * Whether the host [discovery] names is proven dead, so nothing should dial its endpoint: a Windows host that died
@@ -162,20 +132,7 @@ export async function discoveredHostDead(
   discovery: Pick<PtyHostDiscovery, 'protocol' | 'pid'>,
   liveness: HostLiveness = DEFAULT_LIVENESS,
 ): Promise<boolean> {
-  if (!liveness.alive(discovery.pid)) return true
-  if (!liveness.rows) return false
-  const rows = await liveness.rows().catch(() => null)
-  if (!rows) return false
-  const row = rows.find((candidate) => candidate.pid === discovery.pid)
-  if (!row) return true
-  let written: number
-  try {
-    written = statSync(path.join(home, 'run', `pty-host-${discovery.protocol}.json`)).mtimeMs
-  } catch {
-    return false
-  }
-  const started = startMarkerMs(row.startMarker)
-  return started !== null && started > written + START_SLACK_MS
+  return recordedProcessDead(path.join(home, 'run', `pty-host-${discovery.protocol}.json`), discovery.pid, liveness)
 }
 
 export type PtyHostUnavailable = { unavailable: string; code: 'PTY_HOST_UNAVAILABLE' }
