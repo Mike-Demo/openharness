@@ -1348,6 +1348,10 @@ class AppNotifier extends ChangeNotifier {
   }
 
   List<Machine> machines = [];
+
+  /// Machines other accounts share with this one's domain, not added yet: Add machine lists them, and
+  /// [addSharedMachine] adds one.
+  List<Machine> machinesToAdd = const [];
   final Map<String, MachineState> machineStates = {};
   final Set<String> expandedMachines = {};
   String? selectedMachineId;
@@ -7008,6 +7012,69 @@ class AppNotifier extends ChangeNotifier {
   /// machines", which an empty list alone cannot say.
   bool machinesLoading = false;
 
+  /// This machine's sharing with other accounts (CLI services/sharedMachines.ts), asked of [machineId]
+  /// itself: the policy lives on the machine. `{emails, sameDomain, domain, members}`, or `{error,
+  /// message}`.
+  Future<Map<String, dynamic>> machineSharing(String machineId) =>
+      _sharedMachines(machineId, {'action': 'get'});
+
+  /// Share [machineId] with these addresses and, when [sameDomain], everyone at its owner's domain.
+  Future<Map<String, dynamic>> setMachineSharing(
+    String machineId,
+    List<String> emails, {
+    required bool sameDomain,
+  }) => _sharedMachines(machineId, {
+    'action': 'set',
+    'emails': emails,
+    'sameDomain': sameDomain,
+  });
+
+  /// Add a machine shared with this account's domain to its machines, or take one back out
+  /// ([remove]). Asked of this computer's daemon, which pins the machine's key; null when done, else
+  /// what went wrong.
+  Future<String?> addSharedMachine(
+    String machineId, {
+    bool remove = false,
+  }) async {
+    final here = machineStates.values
+        .where(
+          (state) => state.isLocalMachine && !state.machine.isSharedMachine,
+        )
+        .firstOrNull;
+    if (here == null) return 'This computer’s Harness is not running.';
+    try {
+      final answer = await _sharedMachines(here.machine.machineId, {
+        'action': remove ? 'remove' : 'add',
+        'machineId': machineId,
+      });
+      if (answer['error'] != null) {
+        return answer['message'] as String? ??
+            'Could not ${remove ? 'remove' : 'add'} it: ${answer['error']}.';
+      }
+    } catch (error) {
+      return 'Could not ${remove ? 'remove' : 'add'} it: $error';
+    }
+    await refreshMachines();
+    return null;
+  }
+
+  /// A refusal is an answer (`{error, message}`), shown in the machine's own words: only a request that
+  /// never got one is "could not reach".
+  Future<Map<String, dynamic>> _sharedMachines(
+    String machineId,
+    Map<String, dynamic> payload,
+  ) async {
+    try {
+      return await _conn(machineId).request(
+        'shared_machines',
+        payload: payload,
+        timeout: const Duration(seconds: 30),
+      );
+    } on WsRequestFailure catch (failure) {
+      return {...failure.payload, 'error': failure.code};
+    }
+  }
+
   Future<Map<String, dynamic>> manageHarnessShares(
     String machineId,
     String agentId,
@@ -7331,6 +7398,7 @@ class AppNotifier extends ChangeNotifier {
     if (!_machineInventoryCurrent(revision, request)) return;
     _machineInventoryLoaded = true;
     machinesAreStale = stale;
+    if (list is MachineInventory) machinesToAdd = list.toAdd;
     final localEndpoint = probed;
     if (localEndpoint != null) {
       _noteBackendOnline(localEndpoint.backendOnline, refetch: false);
@@ -7619,7 +7687,8 @@ class AppNotifier extends ChangeNotifier {
   ) async {
     final revision = _authRevision;
     bool current() =>
-        _authWorkCurrent(revision) && identical(machineStates[machineId], state);
+        _authWorkCurrent(revision) &&
+        identical(machineStates[machineId], state);
     final finishConnection = productConnections.manual(machineId);
     final done = Completer<bool>();
     var dialed = false;
@@ -9304,10 +9373,8 @@ class AppNotifier extends ChangeNotifier {
   ///
   /// Never throws — a machine whose daemon is too old to know the RPC, one with no grid, and one
   /// that timed out are all "nothing to offer", which is what the picker shows.
-  Future<GridModels> gridModels(
-    String machineId, {
-    bool userAction = false,
-  }) => _askGridModels(machineId, {
+  Future<GridModels> gridModels(String machineId, {bool userAction = false}) =>
+      _askGridModels(machineId, {
         'rowState': true,
         if (userAction) 'userAction': true,
       });
@@ -12874,6 +12941,9 @@ class AppNotifier extends ChangeNotifier {
     if (machine == null) return Future.value('Machine not found');
     if (machine.machine.isShared) {
       return Future.value('Shared machines are view-only.');
+    }
+    if (machine.machine.isSharedMachine) {
+      return Future.value('Only its owner can rename or remove this machine.');
     }
     if (name == null && machine.isLocalMachine) {
       return Future.value('This computer cannot be deleted here.');

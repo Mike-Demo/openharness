@@ -17,9 +17,17 @@ import 'bearer_auth_interceptor.dart';
 
 /// Rows and freshness from one response, even when requests overlap.
 class MachineInventory extends UnmodifiableListView<Machine> {
-  MachineInventory(super.source, {required this.isStale});
+  MachineInventory(
+    super.source, {
+    required this.isStale,
+    this.toAdd = const [],
+  });
 
   final bool isStale;
+
+  /// Machines shared with this account's domain and not added yet: listed under Add machine, where one
+  /// click adds it (backend routes/machineShares.ts).
+  final List<Machine> toAdd;
 }
 
 /// Control-plane REST client.
@@ -587,6 +595,12 @@ class ApiClient {
     final owned = list
         .map((e) => Machine.fromJson(e as Map<String, dynamic>))
         .toList();
+    // Whole machines other accounts share with this one: those named for it and those it added are its
+    // machines too; those shared with its domain and not added wait under Add machine.
+    final sharedWhole = [
+      for (final row in data['sharedMachines'] as List? ?? const [])
+        Machine.fromJson(Map<String, dynamic>.from(row as Map)),
+    ].where((m) => !owned.any((own) => own.machineId == m.machineId)).toList();
     var sharedMachines = _sharedMachines;
     try {
       final shared = await _dio.get('/api/harness-shares');
@@ -609,12 +623,20 @@ class ApiClient {
       _sharedMachines = sharedMachines;
       lastMachinesStale = stale;
     }
-    return MachineInventory([
+    final usable = [
       ...owned,
-      ...sharedMachines.where(
-        (shared) => !owned.any((own) => own.machineId == shared.machineId),
-      ),
-    ], isStale: stale);
+      ...sharedWhole.where((m) => m.machineShare?.added == true),
+    ];
+    return MachineInventory(
+      [
+        ...usable,
+        ...sharedMachines.where(
+          (shared) => !usable.any((own) => own.machineId == shared.machineId),
+        ),
+      ],
+      isStale: stale,
+      toAdd: sharedWhole.where((m) => m.machineShare?.added != true).toList(),
+    );
   }
 
   Future<String?> renameMachine({

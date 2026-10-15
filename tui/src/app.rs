@@ -1340,7 +1340,11 @@ impl App {
         self.spawn(async move { http_json(port, "GET", "/api/machines", None).await }, move |app, reply| {
             if app.account_epoch != epoch || request != app.machines_request { return }
             let Ok(reply) = reply else { return };
-            let Some(rows) = reply.get("machines").and_then(Value::as_array) else { return };
+            let Some(owned) = reply.get("machines").and_then(Value::as_array) else { return };
+            // Whole machines other accounts share with this one: those named for it and those it added
+            // are its machines too; one shared with its domain waits to be added. A list that could not
+            // say (no `sharedMachines`) keeps the ones it had.
+            let rows = &app.fleet.take_shared(owned, reply.get("sharedMachines").and_then(Value::as_array));
             let local = app.fleet.local_id.clone();
             // Only a fresh response is authoritative for removals. Outage caches may
             // predate a connected computer, so their omissions must retain its views.
