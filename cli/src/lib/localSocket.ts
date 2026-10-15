@@ -39,6 +39,9 @@ export function isLocalSocketName(name: string): boolean {
  *  created under a name 4 bytes longer (see [listenLocalSocket]) and must fit too. */
 const MAX_SOCKET_PATH_BYTES = 96
 
+/** The shortest daemon token a pipe accepts (the token is 32 random bytes). */
+const MIN_TOKEN_BYTES = 32
+
 const trustedSockets = new WeakSet<Socket>()
 /** Requests over the daemon's pipe whose auth checked out, and the proof each answer to them carries. */
 const pipeProofs = new WeakMap<IncomingMessage, string>()
@@ -87,6 +90,8 @@ export interface LocalSocketServer {
  */
 export async function listenLocalSocket(handler: http.RequestListener, path: string, options: ListenLocalSocketOptions = {}): Promise<LocalSocketServer> {
   if (options.token) return listenAuthenticated(handler, path, options.token)
+  // A Harness pipe, or any endpoint on Windows, is never trusted by reachability: it needs the daemon's token.
+  if (pipeIdOf(path) || process.platform === 'win32') throw new Error(`${path} needs the daemon's token: reaching a pipe is no credential`)
   // A TCP collision can now move this user to another port. Holding a TCP port no longer proves
   // an existing Unix socket is stale: never unlink a live daemon belonging to this user.
   await refuseLiveSocket(path)
@@ -145,6 +150,7 @@ export async function listenLocalSocket(handler: http.RequestListener, path: str
  * each start (localSocketListenPath), and a pipe goes with its last handle.
  */
 function listenAuthenticated(handler: http.RequestListener, path: string, token: Buffer): Promise<LocalSocketServer> {
+  if (token.length < MIN_TOKEN_BYTES) return Promise.reject(new Error(`The daemon's token must be at least ${MIN_TOKEN_BYTES} bytes`))
   const pipeId = pipeIdOf(path)
   if (!pipeId) return Promise.reject(new Error(`${path} is not a Harness pipe name`))
   const seen = new NonceWindow()
@@ -163,6 +169,7 @@ function listenAuthenticated(handler: http.RequestListener, path: string, token:
     res.setHeader(PIPE_PROOF_HEADER, pipeProofs.get(req)!)
     handler(req, res)
   })
+  // Must stay the first 'upgrade' listener: it drops an unauthenticated upgrade before any other listener sees it.
   server.prependListener('upgrade', (req: IncomingMessage, socket: Duplex) => {
     // Alone, this listener would leave an upgrade nobody takes hanging: nothing serves upgrades here yet.
     if (!admit(req) || server.listenerCount('upgrade') === 1) socket.destroy()

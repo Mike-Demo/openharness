@@ -103,4 +103,40 @@ describe('the daemon pipe', () => {
       await expect(listenLocalSocket((_req, res) => res.end(), name, { token: randomBytes(32) })).rejects.toThrow(/not a Harness pipe name/)
     }
   })
+
+  it('rejects a call without a token on a Harness pipe name, and a token shorter than 32 bytes', async () => {
+    await expect(listenLocalSocket((_req, res) => res.end(), endpoint())).rejects.toThrow(/token/)
+    await expect(listenLocalSocket((_req, res) => res.end(), endpoint(), { token: randomBytes(31) })).rejects.toThrow(/32 bytes/)
+  })
+
+  it('keeps the proof when the handler writes its own head', async () => {
+    const path = endpoint(), token = randomBytes(32)
+    opened.push(await listenLocalSocket((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}') }, path, { token }))
+    const nonce = newPipeNonce(path)
+    const reply = await raw(path, { [PIPE_AUTH_HEADER]: pipeAuthValue(token, nonce) })
+    expect(reply.status).toBe(200)
+    expect(reply.headers[PIPE_PROOF_HEADER]).toBe(pipeProofValue(token, nonce))
+  })
+
+  it('over one kept-alive connection, serves an authenticated request and refuses the next without auth', async () => {
+    const path = endpoint(), token = randomBytes(32)
+    let served = 0
+    opened.push(await listenLocalSocket((_req, res) => { served++; res.end('hi') }, path, { token }))
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 })
+    const get = (headers: Record<string, string>): Promise<number> => new Promise((resolve, reject) => {
+      const request = http.request({ socketPath: path, path: '/x', headers, agent }, (response) => {
+        response.resume()
+        response.on('end', () => resolve(response.statusCode ?? 0))
+      })
+      request.on('error', reject)
+      request.end()
+    })
+    try {
+      expect(await get({ [PIPE_AUTH_HEADER]: pipeAuthValue(token, newPipeNonce(path)) })).toBe(200)
+      expect(await get({})).toBe(401)
+      expect(served).toBe(1)
+    } finally {
+      agent.destroy()
+    }
+  })
 })
