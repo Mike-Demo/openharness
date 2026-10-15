@@ -477,7 +477,7 @@ const wantsJson = (argv: readonly string[]): boolean => argv.includes('--json')
 
 // ── ps ─────────────────────────────────────────────────────────────────────────────────────────────
 
-export function formatRows(rows: Row[], caller: Caller | null, now: number, on = 'this machine'): string {
+export function formatRows(rows: Row[], now: number, on = 'this machine'): string {
   if (!rows.length) return `No harnesses on ${on}.`
   const width = Math.min(32, Math.max(4, ...rows.map((r) => r.name.length)))
   const head = `${'NAME'.padEnd(width)}  ${'AGENT'.padEnd(11)}  ${'STATE'.padEnd(11)}  ${'STARTED BY'.padEnd(12)}  ${'ACTIVE'.padEnd(6)}  FOLDER`
@@ -487,8 +487,7 @@ export function formatRows(rows: Row[], caller: Caller | null, now: number, on =
     const about = r.about ?? (r.asks?.length ? `asked: ${r.asks[0]}` : '')
     return about ? `${line}\n${' '.repeat(2)}${clip(about.replace(/\s+/g, ' '), 200)}` : line
   })
-  const you = !caller ? null : caller.outside ? `You are ${caller.name}, outside Harness.` : `You are "${caller.name}" (${caller.agentId.slice(0, 8)}).`
-  return [you, head, ...lines].filter((l) => l !== null).join('\n')
+  return [head, ...lines].join('\n')
 }
 
 export function psCommand(argv: readonly string[], deps: ClientDeps = {}): Promise<number> {
@@ -524,8 +523,11 @@ export function psCommand(argv: readonly string[], deps: ClientDeps = {}): Promi
         folder: null, branch: null, startedBy: 'you', yours: true, self: false, lastActive: new Date(a.row.at).toISOString(), about: askedLine(s.env, a, away),
       })))
       const note = o.caller ? openNote(s.env, rows) : null
-      s.out(flags.has('--json') ? JSON.stringify({ you: o.caller ? o.caller.name : null, machine: on.machine, harnesses: rows }, null, 1)
-        : [formatRows(rows, o.caller, s.now(), away ? away.label : undefined), note].filter(Boolean).join('\n'))
+      // An agent is told where it is and what it may do before the list; a person's ps is as it was.
+      const context = await contextFor(s, o)
+      const block = o.caller || o.orphan ? formatContext(context) : null
+      s.out(flags.has('--json') ? JSON.stringify({ you: o.caller ? o.caller.name : null, machine: on.machine, context, harnesses: rows }, null, 1)
+        : [block, formatRows(rows, s.now(), away ? away.label : undefined), note].filter(Boolean).join('\n'))
       return EXIT.ok
     } finally { line?.close(); o.daemon.close() }
   })

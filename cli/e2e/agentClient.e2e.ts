@@ -119,7 +119,7 @@ describe('Harness for agents, end to end', () => {
     // It sees itself.
     const ps = await run('ps')
     expect(ps.code, ps.err).toBe(0)
-    expect(ps.out).toMatch(/^You are "lead" \(/)
+    expect(ps.out).toMatch(/^You: Claude Code "lead" \(/)
     expect(ps.out).toMatch(/\nlead +Claude Code +\w+ +person \(you\)/)
 
     // A terminal is the person's: no verb here lists one, so the agent could never read or close it. Refused, none made.
@@ -317,7 +317,7 @@ describe('Harness for agents, end to end', () => {
 
     const ps = await run('ps')
     expect(ps.code, ps.err).toBe(0)
-    expect(ps.out.split('\n')[0]).toBe('You are Claude Code, outside Harness.')
+    expect(ps.out.split('\n')[0]).toMatch(/^You: Claude Code, outside Harness, on .+\. Nothing can message you here\.$/)
     const started = await run('new', 'claude', 'helper', '--name', 'helper', '--', 'check it')
     expect(started.code, started.out + started.err).toBe(0)
     // Nothing can message an agent with no pane: no `send` in what to do next.
@@ -423,7 +423,7 @@ describe('Harness for agents, end to end', () => {
     expect(read.text).toContain('asked: [from Cursor outside Harness · ')
     expect(read.text).toContain('hello from mcp')
     const listed = await server.call('harness_list', {})
-    expect(listed.text.split('\n')[0]).toBe('You are Cursor, outside Harness.')
+    expect(listed.text.split('\n')[0]).toMatch(/^You: Cursor, outside Harness, on .+\. Nothing can message you here\.$/)
     expect(listed.text).toMatch(/\nmcpkid +Claude Code +\w+ +you /)
     const refused = await server.call('harness_close', { name: 'theirs' })
     expect(refused).toEqual({ text: 'You did not start theirs, so you may not close it. Only the person can.', isError: true })

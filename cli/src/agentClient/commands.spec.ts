@@ -96,7 +96,7 @@ describe('harness ps', () => {
     started(h.ledger, 'lead', 'kid')
     expect(await psCommand([], h.deps)).toBe(EXIT.ok)
     const text = h.out.join('\n')
-    expect(text).toMatch(/^You are "lead" \(lead\)\.\nNAME +AGENT +STATE +STARTED BY +ACTIVE +FOLDER/)
+    expect(text).toMatch(/^You: Claude Code "lead" \(lead\), inside Harness, on studio\.\nCan start harnesses: yes\.\nYours: 1 open of 4 · 1 of 20 starts in the last 10 minutes\nNAME +AGENT +STATE +STARTED BY +ACTIVE +FOLDER/)
     expect(text).toMatch(/kid +Codex +working +you +1m +\/work\/kid \(main\)\n  kid recap/)
     expect(text).toMatch(/lead +Claude Code +idle +person \(you\)/)
     expect(text).not.toContain('sh ')
@@ -131,8 +131,21 @@ describe('harness ps', () => {
     const h = harness(d, { pane: undefined, env: { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 'S1' } })
     h.ledger.append({ at: NOW, depth: 1, by: { machineId: 'm', agentId: 'claude-code:S1', name: 'Claude Code', engine: 'claude' }, child: { machineId: 'm', agentId: 'kid', name: 'kid' } })
     expect(await psCommand([], h.deps)).toBe(EXIT.ok)
-    expect(h.out[0].split('\n')[0]).toBe('You are Claude Code, outside Harness.')
+    expect(h.out[0].split('\n')[0]).toBe('You: Claude Code, outside Harness, on studio. Nothing can message you here.')
     expect(h.out[0]).toMatch(/\nkid +Codex +\w+ +you /)
+  })
+
+  it('gives the context in its JSON, and leaves a person\'s ps as it was', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' }), frame('theirs')]
+    const h = harness(d)
+    expect(await psCommand(['--json'], h.deps)).toBe(EXIT.ok)
+    const listed = JSON.parse(h.out.join('\n'))
+    expect(listed.context.caller).toMatchObject({ kind: 'agent', name: 'lead', machine: 'studio' })
+    expect(listed.you).toBe('lead')
+    const person = harness(d, { pane: undefined })
+    expect(await psCommand([], person.deps)).toBe(EXIT.ok)
+    expect(person.out.join('\n')).toMatch(/^NAME +AGENT/)
   })
 
   it('prints JSON for programs, and asks for stopped ones with --all', async () => {
