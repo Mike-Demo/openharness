@@ -15,12 +15,11 @@ import '../tty.dart';
 import '../tty_controls.dart';
 import 'connect_code.dart';
 
-/// Where Add Phone… is on the computer, for somebody who has never opened it — under Connect your
-/// computer's "Click Add Phone" (`set_up_computer.dart`). The Mac keeps it in the Harness menu; the
-/// desktop app's Linux menu strip has no row for it, so there it is the command palette's
-/// (`navigation.commands`, Ctrl+Shift+P, finds the "Add phone" command). A line each: one line
-/// wrapped in the middle of the Linux half.
-const kAddPhoneWhere = 'Mac: Harness menu\nLinux: Ctrl+Shift+P → add phone';
+/// Where Add Phone is on the computer, for somebody who has never opened it — under the camera's
+/// "Click "Add Phone"" (`set_up_computer.dart`): the Mac's menu path, Harness menu → Add Phone…
+/// (owner, 2026-10-12). Linux has no Harness menu; there it is the phone icon in the window's tab
+/// row, top right (desktop #1257), and the command palette.
+const kAddPhoneWhere = 'Harness menu → Add Phone';
 
 /// **Connect computer**: the camera, reading the code the desktop app shows in Add Phone
 /// ([ConnectCode]). The scan signs the phone in; [signingIn] says so while it does.
@@ -30,33 +29,39 @@ const kAddPhoneWhere = 'Mac: Harness menu\nLinux: Ctrl+Shift+P → add phone';
 /// ┌──────────────────────────────┐
 /// │        [ camera view ]       │
 /// └──────────────────────────────┘
-///        Scan the code on your computer
+///   How to get the QR code                    ([steps]; "Signing in…" over them while it does)
+///   (1) Go to autonomous.ai/go
+///       Download and install on your computer
+///   (2) Sign in
+///   (3) Click "Add Phone"
+///       Harness menu → Add Phone
 ///
-///      Can’t scan? Sign in another way        ([fallbackLabel])
+///           Use email instead                 ([fallbackLabel]; none without [onUseEmail])
 /// ```
 ///
 /// ⚠️ **Only the scan here (owner, 2026-10-08).** What has to happen on the computer first — get
-/// Harness, open it, sign in, open Add Phone, and where that is — is the page this one is opened
-/// from (`set_up_computer.dart`, Connect your computer): the camera at the top and its title are the
-/// page. Centred in the room left, the camera had put every word at the foot of the screen under an
-/// empty band.
+/// Harness, open it, sign in, open Add Phone, and where that is — is said by the page this one is
+/// opened from, or under the camera ([steps]): the camera at the top and the words under it are the
+/// page. Centred in the room left, the camera had put every word at the foot of the screen under
+/// an empty band.
 ///
 /// The camera runs only while this page is up. A code that is not ours is ignored, so a stray QR
 /// in frame does nothing. A camera refused says where to turn it on, with a link to this app's
 /// Settings, and the camera comes up on the way back; no camera at all says so. Either way the
-/// button under the square is the way in without one.
+/// button under the square is the way in without one — or, where there is none (the welcome's,
+/// which offers Continue with email beside QR code), back.
 class ScanToConnectPage extends StatefulWidget {
   const ScanToConnectPage({
     super.key,
     required this.onCode,
-    required this.onUseEmail,
+    this.onUseEmail,
     required this.onBack,
     this.signingIn = false,
     this.fallbackLabel = 'Use email instead',
     this.camera,
     this.onSignInCode,
     this.acceptConnectCodes = true,
-    this.title = 'Scan the code on your computer',
+    this.title,
     this.step,
     this.steps,
   });
@@ -69,19 +74,25 @@ class ScanToConnectPage extends StatefulWidget {
   /// Whether an Add Phone QR ([ConnectCode]) is one this page takes.
   final bool acceptConnectCodes;
 
-  final String title;
+  /// Under the camera. Null leaves it to [steps] (owner, 2026-10-12): the camera itself says to
+  /// scan, and the steps say where the code is. With no steps either — a page that has said them
+  /// already (Unlock, pairing) — it reads "Scan the code on your computer". "Signing in…" takes its
+  /// place while a scan signs in.
+  final String? title;
 
   /// Under the title, quieter: where the code is on the computer, when the page it is opened from
   /// has not said so already. Null says nothing more.
   final String? step;
 
   /// Under the title, from the page's edge: the steps on the computer that bring the code up —
-  /// `ComputerSteps`, Set up another computer's own — for a camera opened where nothing has said
-  /// them (Computers' Connect computer). The square shrinks on a short screen to keep them on it,
+  /// `ComputerSteps` — for a camera opened where nothing has said them (Computers' "Or scan the QR
+  /// code on your computer"). The square shrinks on a short screen to keep them on it,
   /// and the page scrolls where even that is not enough.
   final Widget? steps;
 
-  final VoidCallback onUseEmail;
+  /// [fallbackLabel] pressed. Null shows no way out under the camera but back: the welcome's
+  /// (owner, 2026-10-14), whose Continue with email sits right beside QR code.
+  final VoidCallback? onUseEmail;
   final VoidCallback onBack;
 
   /// A code was read and the phone is signing in with it.
@@ -98,8 +109,17 @@ class ScanToConnectPage extends StatefulWidget {
   State<ScanToConnectPage> createState() => _ScanToConnectPageState();
 }
 
+/// What stands under the camera when nothing else says what to do: no title, and no steps.
+const _scanTitle = 'Scan the code on your computer';
+
 class _ScanToConnectPageState extends State<ScanToConnectPage>
     with WidgetsBindingObserver {
+  /// The line under the camera: "Signing in…" while a scan signs in; else the caller's title; else,
+  /// with no steps to say what to do, [_scanTitle]. Null draws none — the steps lead.
+  String? get _heading => widget.signingIn
+      ? 'Signing in…'
+      : widget.title ?? (widget.steps == null ? _scanTitle : null);
+
   /// Set once a code of ours is read: the camera keeps reporting it every frame.
   bool _done = false;
 
@@ -279,14 +299,15 @@ class _ScanToConnectPageState extends State<ScanToConnectPage>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              Text(
-                                widget.signingIn ? 'Signing in…' : widget.title,
-                                textAlign: TextAlign.center,
-                                style: tty.style(
-                                  size: TtySize.title,
-                                  weight: FontWeight.w600,
+                              if (_heading case final title?)
+                                Text(
+                                  title,
+                                  textAlign: TextAlign.center,
+                                  style: tty.style(
+                                    size: TtySize.title,
+                                    weight: FontWeight.w600,
+                                  ),
                                 ),
-                              ),
                               if (widget.step case final step?) ...[
                                 const SizedBox(height: 6),
                                 Text(
@@ -297,25 +318,25 @@ class _ScanToConnectPageState extends State<ScanToConnectPage>
                                 ),
                               ],
                               if (widget.steps case final steps?) ...[
-                                const SizedBox(height: 24),
+                                if (_heading != null) const SizedBox(height: 24),
                                 steps,
                               ],
                             ],
                           ),
                         ),
                         const Spacer(),
-                        const SizedBox(height: 20),
-                        Center(
-                          child: TtyTextButton(
-                            label: widget.fallbackLabel,
-                            color: tty.faint,
-                            // Not while the scan signs in: the other way would start a second.
-                            onPressed: widget.signingIn
-                                ? null
-                                : widget.onUseEmail,
+                        if (widget.onUseEmail case final onUseEmail?) ...[
+                          const SizedBox(height: 20),
+                          Center(
+                            child: TtyTextButton(
+                              label: widget.fallbackLabel,
+                              color: tty.faint,
+                              // Not while the scan signs in: the other way would start a second.
+                              onPressed: widget.signingIn ? null : onUseEmail,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 12),
+                          const SizedBox(height: 12),
+                        ],
                       ],
                     ),
                   ),
@@ -455,6 +476,9 @@ Future<ConnectCode?> scanForCode(
 
 /// The camera over the current page, for a computer's sign-in QR only — Settings ▸ Sign in a
 /// computer. Null when the person went back.
+///
+/// The steps name the terminal's way only: the desktop app signs in on its own page and no longer
+/// shows a QR, so this is for a server or a computer without the app, `harness login --qr`.
 Future<SignInCode?> scanForSignIn(BuildContext context, {Widget? camera}) async {
   SignInCode? scanned;
   await Navigator.of(context).push(
@@ -464,8 +488,8 @@ Future<SignInCode?> scanForSignIn(BuildContext context, {Widget? camera}) async 
         body: SafeArea(
           child: ScanToConnectPage(
             camera: camera,
-            title: 'Scan the code on the computer',
-            step: 'On the computer: Sign in ▸ Scan with your phone',
+            title: 'Scan the code in the terminal',
+            step: 'On a server, run harness login --qr',
             fallbackLabel: 'Not now',
             acceptConnectCodes: false,
             onCode: (_) {},

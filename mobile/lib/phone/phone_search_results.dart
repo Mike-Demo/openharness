@@ -605,27 +605,22 @@ class PhoneSearchResultsState extends State<PhoneSearchResults> {
   ) {
     final machine = row.machine;
     if (machine == null) return null;
-    return switch (phoneMachineStatusOf(machine)) {
-      PhoneMachineStatus.ready => (
-        word: 'online',
-        color: tty.green,
-        asks: false,
-      ),
+    final status = phoneMachineStatusOf(machine);
+    // Computers' word for the same state ([phoneMachineWord]), so a computer reads the same here.
+    final word = phoneMachineWord(status);
+    return switch (status) {
+      PhoneMachineStatus.ready => (word: word, color: tty.green, asks: false),
       PhoneMachineStatus.needsPassword => (
-        word: 'locked',
+        word: word,
         color: tty.yellow,
         asks: true,
       ),
       PhoneMachineStatus.connecting => (
-        word: 'connecting',
+        word: word,
         color: tty.faint,
         asks: false,
       ),
-      PhoneMachineStatus.offline => (
-        word: 'offline',
-        color: tty.faint,
-        asks: false,
-      ),
+      PhoneMachineStatus.offline => (word: word, color: tty.faint, asks: false),
     };
   }
 

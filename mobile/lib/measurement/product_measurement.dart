@@ -3,21 +3,33 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+/// Mirrors `PRODUCT_USAGE_FLOWS` in backend/src/types/productUsage.ts; a wire name the backend
+/// does not list rejects the whole report. Everything up to [signIn] can happen before an account.
 enum ProductFlow {
   setup('setup'),
   setupHarness('setup_harness'),
   setupTmux('setup_tmux'),
   setupClipboard('setup_clipboard'),
+  signInScan('sign_in_scan'),
+  signInGoogle('sign_in_google'),
+  signInApple('sign_in_apple'),
+  signInEmail('sign_in_email'),
   signIn('sign_in'),
   workspaceConnect('workspace_connect'),
   computerLink('computer_link'),
   remoteConnect('remote_connect'),
   viewerOpen('viewer_open'),
   updateCheck('update_check'),
-  updateStage('update_stage');
+  updateStage('update_stage'),
+  computerWait('computer_wait'),
+  sessionOpen('session_open'),
+  firstMessage('first_message'),
+  notifyPermission('notify_permission');
 
   const ProductFlow(this.wire);
   final String wire;
+
+  /// Whether a signed-out session that opted in may count it.
   bool get beforeSignIn => index <= ProductFlow.signIn.index;
 }
 
@@ -127,7 +139,11 @@ class ProductMeasurement extends ChangeNotifier {
     _active.removeWhere((_, value) => value == channel);
   }
 
-  void Function(ProductOutcome) begin(ProductFlow flow) {
+  /// [elapsed] is time the flow already ran before it could be counted; it lands in the duration.
+  void Function(ProductOutcome) begin(
+    ProductFlow flow, {
+    Duration elapsed = Duration.zero,
+  }) {
     final channel = sharing
         ? 'ui'
         : flow.beforeSignIn && _setupAllowed
@@ -155,7 +171,7 @@ class ProductMeasurement extends ChangeNotifier {
         return;
       }
       _count(channel, day, '$prefix${outcome.name}');
-      final ms = watch.elapsedMilliseconds;
+      final ms = watch.elapsedMilliseconds + elapsed.inMilliseconds;
       _count(
         channel,
         day,
@@ -167,6 +183,16 @@ class ProductMeasurement extends ChangeNotifier {
             ? '10s_to_1m'
             : 'over_1m'}',
       );
+    };
+  }
+
+  /// One attempt counted under several flows at once — `sign_in` and the button that started it.
+  void Function(ProductOutcome) beginEach(List<ProductFlow> flows) {
+    final finishers = [for (final flow in flows) begin(flow)];
+    return (outcome) {
+      for (final finish in finishers) {
+        finish(outcome);
+      }
     };
   }
 

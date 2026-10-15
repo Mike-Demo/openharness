@@ -33,7 +33,17 @@ import 'terminal_pane_badges.dart';
 /// A run of output rows drawn and pressed as one — [TerminalPanel.lineBands]. [first] and [last]
 /// are absolute buffer lines, inclusive; [key] is the host's own name for it, and [label] is what a
 /// screen reader says.
-typedef TerminalLineBand = ({String key, int first, int last, String label});
+///
+/// [columns] narrows the band to cells `start` (inclusive) to `end` (exclusive) of its rows, for
+/// answers drawn side by side on one line — Claude Code's `❯ Accept    Decline`. Null spans the
+/// full width, as an answer on rows of its own does.
+typedef TerminalLineBand = ({
+  String key,
+  int first,
+  int last,
+  String label,
+  ({int start, int end})? columns,
+});
 
 /// One agent's terminal: xterm, its input, its scrollback and its links.
 ///
@@ -521,7 +531,14 @@ class _TerminalPanelState extends State<TerminalPanel>
       }
     }
     _followTail = atEnd;
-    _afterTerminalMounted(scrollToEnd: atEnd);
+    // ⚠️ **The keyboard is claimed only by a view that does not hold the focus.** One that does kept
+    // its input connection across the swap (`keepsInputAcrossTerminals`), so claiming it again can
+    // only `show()` the keyboard — and the keyboard Back had just put away was up again within
+    // 66–239ms, the resize keyframe that answered its rising landing as it slid down, while the page
+    // still read it as up (a Galaxy S23, 6 of 19 dismissals, 2026-10-14; each bounce one more resize,
+    // a full reprint by Codex and a 165 KB keyframe). A view without the focus still claims it, as
+    // before: a claim that found no laid-out view gets its second chance here.
+    _afterTerminalMounted(scrollToEnd: atEnd, claimFocus: !_focusNode.hasFocus);
   }
 
   void _handleFocusChange() {
@@ -1405,7 +1422,7 @@ class _TerminalPanelState extends State<TerminalPanel>
     _inputTapClaimed = false;
     if (_onLinkTapDown(details, cell)) return true;
     if (_controller.selection != null) return false;
-    final band = _bandAt(cell.y);
+    final band = _bandAt(cell);
     if (band == null && widget.onInputTap == null) return false;
     _pressedBand.value = band?.key;
     if (band != null && !_bandReleaseRouted) {
@@ -1437,7 +1454,7 @@ class _TerminalPanelState extends State<TerminalPanel>
     _inputTapClaimed = false;
     _pressedBand.value = null;
     // Read again, not remembered from the press: what is under the finger now is what it meant.
-    if (_bandAt(cell.y) case final band?) {
+    if (_bandAt(cell) case final band?) {
       widget.onBandTap?.call(band);
       return;
     }
@@ -1447,7 +1464,9 @@ class _TerminalPanelState extends State<TerminalPanel>
         (widget.onLineTap?.call(buffer.lines[cell.y].getText()) ?? false)) {
       return;
     }
-    if (!isPromptTap(buffer, cell.y)) return;
+    // A dialog whose answers are bands keeps the taps beside them for reading; any other dialog
+    // takes a tap anywhere on it as asking for the keys it needs — see [isPromptTap].
+    if (!isPromptTap(buffer, cell.y, wholeDialog: _bands().isEmpty)) return;
     widget.onInputTap?.call();
   }
 
@@ -1457,16 +1476,23 @@ class _TerminalPanelState extends State<TerminalPanel>
     return widget.lineBands?.call(_viewTerminal) ?? const [];
   }
 
-  /// The band drawn across buffer line [line], if any.
-  TerminalLineBand? _bandAt(int line) {
+  /// The band drawn over [cell], if any.
+  TerminalLineBand? _bandAt(CellOffset cell) {
     for (final band in _bands()) {
-      if (line >= band.first && line <= band.last) return band;
+      if (cell.y < band.first || cell.y > band.last) continue;
+      final columns = band.columns;
+      if (columns != null && (cell.x < columns.start || cell.x >= columns.end)) {
+        continue;
+      }
+      return band;
     }
     return null;
   }
 
-  /// Where [band] is drawn, in the bands' own box: the full width, its rows' height less a point
-  /// top and bottom, so two answers on adjacent rows read as two. Null before layout.
+  /// Where [band] is drawn, in the bands' own box: the full width — or its [TerminalLineBand
+  /// .columns], less a point each side so two answers on one line read as two — and its rows'
+  /// height less a point top and bottom, so two answers on adjacent rows read as two. Null before
+  /// layout.
   ///
   /// Measured through the terminal's render box rather than worked out from the line height, so
   /// the scroll offset and xterm's own padding are counted exactly as its text is.
@@ -1479,10 +1505,19 @@ class _TerminalPanelState extends State<TerminalPanel>
     final top = render.getOffset(CellOffset(0, band.first)).dy;
     final bottom =
         render.getOffset(CellOffset(0, band.last)).dy + render.lineHeight;
+    final columns = band.columns;
     return Rect.fromLTRB(
-      0,
+      columns == null
+          ? 0
+          : origin.dx +
+                render.getOffset(CellOffset(columns.start, band.first)).dx +
+                1,
       origin.dy + top + 1,
-      box.size.width,
+      columns == null
+          ? box.size.width
+          : origin.dx +
+                render.getOffset(CellOffset(columns.end, band.first)).dx -
+                1,
       origin.dy + bottom - 1,
     );
   }

@@ -134,6 +134,17 @@ class EdgeConn extends WsConn {
   /// Every request's payload, by type, in order.
   final Map<String, List<Map<String, dynamic>>> payloads = {};
 
+  /// Whether the socket counts as handshaken, as one that just answered a request is. Off, a
+  /// `terminal_open` waits out the handshake it never gets — fifteen seconds
+  /// (`AppNotifier._sendTerminalFrame`) — so a harness that is created, or resumed, and then
+  /// attached reaches its page that much later. On for a test that waits for that page.
+  bool handshaken = false;
+
+  @override
+  Future<void> waitUntilReady({required Duration timeout}) => handshaken
+      ? Future<void>.value()
+      : super.waitUntilReady(timeout: timeout);
+
   /// How many times a terminal was asked to open.
   int get opens => frames.where((frame) => frame.$1 == 'terminal_open').length;
 

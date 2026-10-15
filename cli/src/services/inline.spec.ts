@@ -18,6 +18,7 @@ import { startModels } from './models.js'
 import { startMessagesInCore } from './messages.js'
 import { startMonitor } from './monitor.js'
 import { startOrchestrator } from './orchestrator.js'
+import { startOsDevice } from './osDevice.js'
 import { startProjects } from './projects.js'
 import { startRecaps } from './recaps.js'
 import { startRouter } from './router.js'
@@ -34,6 +35,6 @@ import { startWorkspaces } from './workspaces.js'
 
 describe('the services the core runs in its own process only when they do not run in theirs', () => {
   it('are their own starts, unchanged: the same services either way', () => {
-    expect({ ...inline }).toEqual({ engineTranscriptFor, liveFor, runtimeFor, screenFor, submissionFor, nativeControlFor, modelControlFor, questionControlFor, startAgentCleanup, startCloud, startConnectors, startDevices, startHandoff, startGateway, startMemory, startModels, startMonitor, startOrchestrator, startProjects, startRecaps, startRouter, startSearch, startSharing, startShell, startStoreInCore, startMessagesInCore, startUsageInCore, startViewers, startWifi, startWindowNames, startWorkspaces })
+    expect({ ...inline }).toEqual({ engineTranscriptFor, liveFor, runtimeFor, screenFor, submissionFor, nativeControlFor, modelControlFor, questionControlFor, startAgentCleanup, startCloud, startConnectors, startDevices, startHandoff, startGateway, startMemory, startModels, startMonitor, startOrchestrator, startOsDevice, startProjects, startRecaps, startRouter, startSearch, startSharing, startShell, startStoreInCore, startMessagesInCore, startUsageInCore, startViewers, startWifi, startWindowNames, startWorkspaces })
   })
 })

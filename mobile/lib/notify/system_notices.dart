@@ -23,8 +23,9 @@ typedef AgentNoticeMessage = ({
 /// [SilentSystemNotices].
 abstract interface class SystemNotices {
   /// Asks the person, once, whether the phone may notify them. The OS
-  /// remembers the answer; asking again is a no-op.
-  Future<void> requestPermission();
+  /// remembers the answer; asking again is a no-op. True when allowed, false
+  /// when refused, null when nothing could say.
+  Future<bool?> requestPermission();
 
   Future<void> show(AgentNoticeMessage message);
 
@@ -54,7 +55,7 @@ class SilentSystemNotices implements SystemNotices {
   final openedDevice = ValueNotifier<String?>(null);
 
   @override
-  Future<void> requestPermission() async {}
+  Future<bool?> requestPermission() async => null;
 
   @override
   Future<void> show(AgentNoticeMessage message) async {}
@@ -75,6 +76,16 @@ Future<bool?> noticesEnabled(SystemNotices notices) =>
     notices is LocalSystemNotices
     ? notices.enabled()
     : Future<bool?>.value(null);
+
+/// What the phone's notices are about, in the words Settings ▸ Notifications and Focus's tips use —
+/// one source, so the two never promise different things.
+///
+/// ⚠️ **Not "when a harness needs you"** (2026-10-14). That notice ([NoticeKind.question]) is fed
+/// by `commander_question`, which the daemon sends only to the dial and to its own computer
+/// (`cli/src/core/questions.ts`: `sendCommander`, `sendLocal`) — never to a phone over the relay.
+/// What does reach one is a turn's end and a device joining the account. Say questions again here
+/// once that frame is carried to phones.
+const noticesWhen = 'a harness finishes, or a new device joins your account';
 
 /// What a device notice's payload starts with; the device's key follows. An agent notice's payload
 /// is `machine\nagent`, so the two never read as each other.
@@ -155,21 +166,23 @@ class LocalSystemNotices implements SystemNotices {
   }
 
   @override
-  Future<void> requestPermission() async {
+  Future<bool?> requestPermission() async {
     try {
       await _init();
-      await _plugin
+      final ios = await _plugin
           .resolvePlatformSpecificImplementation<
             IOSFlutterLocalNotificationsPlugin
           >()
           ?.requestPermissions(alert: true, sound: true);
-      await _plugin
+      final android = await _plugin
           .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin
           >()
           ?.requestNotificationsPermission();
+      return ios ?? android;
     } catch (error) {
       appLog.warn('notify', 'permission request failed', error: error);
+      return null;
     }
   }
 

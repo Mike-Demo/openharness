@@ -15,8 +15,9 @@ String machineProfileLabel(AppNotifier notifier) {
   return notifier.stateOf(id)?.machine.displayName ?? 'One computer';
 }
 
-/// Settings ▸ Profile: show every computer's tabs, or only one computer's — the desktop's Profiles
-/// section (`desktop/lib/settings/sections/profiles_section.dart`) as a phone sheet.
+/// Settings ▸ Profile: show every computer's tabs, or only one computer's — the desktop's "Show in
+/// this window" at the top of its Machines picker (`MachineWindowChoice`,
+/// `desktop/lib/widgets/machine_picker_extras.dart`) as a phone sheet.
 ///
 /// One sign-in, one desk: picking a computer hides the other computers' tabs on THIS phone only
 /// ([AppNotifier.setMachineProfile]). A tab is that computer's when every harness on it runs there.
@@ -60,12 +61,9 @@ PhoneSheetAction _choice(
   final picked = id == chosen;
   final status = phoneMachineStatusOf(machine);
   // The words the Computers page uses for the same states, so a row reads the same in both places.
-  final unavailable = switch (status) {
-    PhoneMachineStatus.ready => null,
-    PhoneMachineStatus.connecting => 'connecting',
-    PhoneMachineStatus.needsPassword => 'locked',
-    PhoneMachineStatus.offline => 'asleep',
-  };
+  final unavailable = status == PhoneMachineStatus.ready
+      ? null
+      : phoneMachineWord(status);
   return PhoneSheetAction(
     icon: picked ? LucideIcons.check300 : LucideIcons.laptopMinimal300,
     label: machine.machine.displayName,

@@ -4,6 +4,7 @@ import 'package:lucide_icons_flutter/lucide_icons.dart';
 
 import 'package:harness_mobile/shared/theme/app_theme.dart';
 
+import 'phone_status.dart' show PhoneMachineStatus, phoneMachineWord;
 import 'tty.dart';
 import 'tty_controls.dart';
 
@@ -68,10 +69,14 @@ class TerminalTitle extends StatelessWidget {
   final Widget? daemon;
 
   /// The harness's machine is away (`phoneMachineAway`) and the screen under the title is the last
-  /// one it sent: `computer asleep` at the right end, under [asking] when there is one (see
+  /// one it sent: `computer offline` at the right end, under [asking] when there is one (see
   /// [_notes]). Two words and no more, by the owner's call (2026-10-08) — `reconnects when back`
   /// under it went. Not a button of its own — the page comes back by itself.
   final bool away;
+
+  /// [away]'s two words, in Computers' word for the state ([phoneMachineWord]).
+  static final _awayWords =
+      'computer ${phoneMachineWord(PhoneMachineStatus.offline)}';
 
   /// Four terminal rows: three lines of text and half a row of air above and below.
   static double heightOf(Tty tty) => 4 * tty.row;
@@ -126,11 +131,11 @@ class TerminalTitle extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 if (asking != null) note(asking, tty.yellow),
-                // The app's warning amber, not the terminal's red: a machine asleep is something
+                // The app's warning amber, not the terminal's red: a machine offline is something
                 // to know, not an error — and the 16 ANSI colours have no orange.
                 if (away)
                   note(
-                    'computer asleep',
+                    _awayWords,
                     AppPalette.warn,
                     key: const ValueKey('terminal-title-away'),
                   ),
@@ -143,7 +148,7 @@ class TerminalTitle extends StatelessWidget {
     if (asking == null) return words;
     return Semantics(
       button: true,
-      label: ['$asking — open Find', if (away) 'computer asleep'].join('. '),
+      label: ['$asking — open Find', if (away) _awayWords].join('. '),
       excludeSemantics: true,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,

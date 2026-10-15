@@ -20,6 +20,7 @@ import 'package:harness_mobile/terminal/terminal_font_store.dart';
 import 'package:harness_mobile/terminal/terminal_theme_store.dart';
 
 import 'approve_sign_in.dart';
+import 'connectors_page.dart';
 import 'devices_page.dart';
 import 'machine_profile_picker.dart';
 import 'machines_tab.dart';
@@ -182,7 +183,13 @@ class _Body extends StatelessWidget {
           SettingsRow(
             title: 'Computers',
             onTap: () => Navigator.of(context).push(
-              phoneRoute((_) => MachinesTab(notifier: notifier, large: false)),
+              phoneRoute(
+                (_) => MachinesTab(
+                  notifier: notifier,
+                  large: false,
+                  fromSettings: true,
+                ),
+              ),
             ),
           ),
           // Which computer's tabs this phone shows — the desktop's Profiles. Beside Computers: it
@@ -196,9 +203,17 @@ class _Body extends StatelessWidget {
               onTap: () =>
                   unawaited(showMachineProfilePicker(context, notifier)),
             ),
+          // The services those computers' agents use (Linear, GitHub…), signed in to from here.
+          SettingsRow(
+            key: const Key('settings-connectors'),
+            title: 'Connectors',
+            onTap: () => Navigator.of(context).push(
+              phoneRoute((_) => ConnectorsPage(notifier: notifier)),
+            ),
+          ),
           // Every device signed in to the account — each trusted by the others because of that, so
           // this is where one that is not yours is seen and taken out.
-          // A computer showing its sign-in QR (`harness login`, or the desktop app's "Scan with your
+          // A computer showing its sign-in QR (`harness login --qr`, or the web app's "Scan with your
           // phone"): this phone approves it with its own account.
           SettingsRow(
             key: const Key('settings-sign-in-computer'),
@@ -305,7 +320,7 @@ class _Body extends StatelessWidget {
 }
 
 /// Sign out, asked first — from the account sheet here, and from "Not you? Sign out" on the page a
-/// phone waits for its first computer on (`welcome/connect_computer.dart`).
+/// phone waits for its first computer on (`welcome/your_computer.dart`).
 ///
 /// Asked first, because a sign-out is more than leaving this screen: the phone's key leaves the
 /// account's devices ([AppNotifier.logout]), and signing in again makes a new one — which every
@@ -505,8 +520,8 @@ class _VoiceLanguageRow extends StatelessWidget {
   );
 }
 
-/// Whether this phone may notify — a harness asking something while the app is away, a new device
-/// on the account — and the way to turn it on.
+/// Whether this phone may notify — a harness finishing while the app is away, a new device on the
+/// account ([noticesWhen]) — and the way to turn it on.
 ///
 /// ⚠️ **The way back.** The OS asks once by itself, as the first terminal's tips go
 /// (`terminal_page.dart`). A "Don't Allow" there had no way back from inside the app, and the device
@@ -582,7 +597,7 @@ class _NotificationsRowState extends State<_NotificationsRow>
     return SettingsRow(
       key: const ValueKey('settings-notifications'),
       title: 'Notifications',
-      detail: 'When a harness needs you, or a new device joins your account.',
+      detail: 'When $noticesWhen.',
       value: switch (_on) {
         true => 'On',
         false => 'Off',

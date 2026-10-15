@@ -3,6 +3,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harness_mobile/auth/auth_session.dart';
 import 'package:harness_mobile/core/config.dart';
+import 'package:harness_mobile/phone/machines_tab.dart';
 import 'package:harness_mobile/phone/terminal_page.dart';
 import 'package:harness_mobile/phone/terminal_search.dart';
 import 'package:harness_mobile/phone/voice_input_controller.dart';
@@ -14,7 +15,7 @@ import 'voice_fakes.dart';
 
 /// Focus is Snapchat's camera: a swipe right on the terminal pulls Find in from
 /// the left edge, a tap on the agent's name opens it too, and a swipe left
-/// opens a new agent.
+/// opens Computers. A new harness is Find's `New Harness` now.
 void main() {
   late AppNotifier notifier;
   late TerminalSession session;
@@ -137,20 +138,21 @@ void main() {
     expect(find.byType(TerminalSearchOverlay), findsNothing);
   });
 
-  testWidgets('a swipe left on the terminal opens a new agent', (tester) async {
+  testWidgets('a swipe left on the terminal opens Computers', (tester) async {
     final pushed = await pumpFocus(tester);
 
     await tester.drag(find.byType(TerminalView), const Offset(-200, 0));
 
-    // Pushed, and not pumped further: the new-agent form asks its machine for
-    // folders and engines as it opens, and this fixture has no machine to ask.
     expect(pushed, hasLength(1));
     expect(find.byType(TerminalSearchOverlay), findsNothing);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byType(MachinesTab), findsOneWidget);
   });
 
   group('VoiceOver', () {
     // VoiceOver keeps one-finger swipes for itself, and xterm draws no semantics: the terminal
-    // node is the only way it reaches the agent's words, Find and a new harness.
+    // node is the only way it reaches the agent's words, Find and Computers.
     SemanticsNode terminalNode(WidgetTester tester) =>
         tester.getSemantics(find.bySemanticsLabel(RegExp(r', terminal$')));
 
@@ -171,7 +173,7 @@ void main() {
       final find_ = node.getSemanticsData().customSemanticsActionIds!.map(
         CustomSemanticsAction.getAction,
       );
-      expect(find_.map((a) => a!.label), containsAll(['Find', 'New harness']));
+      expect(find_.map((a) => a!.label), containsAll(['Find', 'Computers']));
       node.owner!.performAction(
         node.id,
         SemanticsAction.customAction,
@@ -185,7 +187,7 @@ void main() {
       handle.dispose();
     });
 
-    testWidgets('New harness is an action, and it opens the form', (
+    testWidgets('Computers is an action, and it opens Computers', (
       tester,
     ) async {
       final handle = tester.ensureSemantics();
@@ -195,10 +197,13 @@ void main() {
         node.id,
         SemanticsAction.customAction,
         CustomSemanticsAction.getIdentifier(
-          const CustomSemanticsAction(label: 'New harness'),
+          const CustomSemanticsAction(label: 'Computers'),
         ),
       );
       expect(pushed, hasLength(1));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byType(MachinesTab), findsOneWidget);
       handle.dispose();
     });
   });

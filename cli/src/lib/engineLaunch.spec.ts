@@ -90,6 +90,8 @@ const BROWSER = browserPrelude()
  *  `engineFallbackPrelude`. `null` tmux: the suite must not depend on what this machine has. */
 const FALLBACK = (engine: AgentEngine, shell: string) => engineFallbackPrelude(engine, shell, null)
 const NO_TMUX = null
+/** The screen Harness runs Codex on (facets/launch.ts `ScreenContract`), ahead of the launch's extra arguments. */
+const CODEX_SCREEN = ['-c', 'tui.fullscreen_transcript=false']
 /** How a plain launch ends: job control on, the binary its command names run at the script's top
  *  level, where a stop is resumed, then the exit handling (`engineRunScript`). */
 const RUN = 'if [ -n "${ZSH_VERSION:-}" ]; then setopt monitor 2>/dev/null || :; else set -m 2>/dev/null || :; fi\n'
@@ -672,7 +674,7 @@ printf '%s %s' "$harness_status" "$resumed"`], { encoding: 'utf8', stdio: ['igno
     expect(buildEngineCommandArgv('claude', { bypassPermission: true }))
       .toEqual([engineBin('claude'), '--permission-mode', 'auto'])
     expect(buildEngineCommandArgv('codex', { bypassPermission: true }))
-      .toEqual([engineBin('codex'), '--approve-for-me'])
+      .toEqual([engineBin('codex'), '--approve-for-me', ...CODEX_SCREEN])
     expect(buildEngineCommandArgv('cursor', { bypassPermission: true }))
       .toEqual([engineBin('cursor'), '--force'])
     expect(buildEngineCommandArgv('opencode', { bypassPermission: true }))
@@ -688,13 +690,13 @@ printf '%s %s' "$harness_status" "$resumed"`], { encoding: 'utf8', stdio: ['igno
     expect(buildEngineCommandArgv('claude', { permissionMode: 'ask', bypassPermission: true }))
       .toEqual([engineBin('claude'), '--permission-mode', 'default'])
     expect(buildEngineCommandArgv('codex', { permissionMode: 'ask', bypassPermission: true }))
-      .toEqual([engineBin('codex')])
+      .toEqual([engineBin('codex'), ...CODEX_SCREEN])
     expect(buildEngineCommandArgv('claude', { permissionMode: 'full' }))
       .toEqual([engineBin('claude'), '--dangerously-skip-permissions'])
     expect(buildEngineCommandArgv('codex', { permissionMode: 'readOnly' }))
-      .toEqual([engineBin('codex'), '--sandbox', 'read-only'])
+      .toEqual([engineBin('codex'), '--sandbox', 'read-only', ...CODEX_SCREEN])
     expect(buildEngineCommandArgv('codex', { permissionMode: 'full' }))
-      .toEqual([engineBin('codex'), '--dangerously-bypass-approvals-and-sandbox'])
+      .toEqual([engineBin('codex'), '--dangerously-bypass-approvals-and-sandbox', ...CODEX_SCREEN])
     // A mode the engine lacks falls back to the yes/no.
     expect(buildEngineCommandArgv('opencode', { permissionMode: 'plan', bypassPermission: true }))
       .toEqual([engineBin('opencode'), '--auto'])
@@ -728,9 +730,9 @@ printf '%s %s' "$harness_status" "$resumed"`], { encoding: 'utf8', stdio: ['igno
 
   it('puts a subcommand-style resume FIRST, ahead of any other flag', () => {
     expect(buildEngineCommandArgv('codex', { resumeSessionId: 'abc-123' }))
-      .toEqual([engineBin('codex'), 'resume', 'abc-123'])
+      .toEqual([engineBin('codex'), 'resume', 'abc-123', ...CODEX_SCREEN])
     expect(buildEngineCommandArgv('codex', { resumeSessionId: 'abc-123', bypassPermission: true }))
-      .toEqual([engineBin('codex'), 'resume', 'abc-123', '--approve-for-me'])
+      .toEqual([engineBin('codex'), 'resume', 'abc-123', '--approve-for-me', ...CODEX_SCREEN])
     expect(buildEngineCommandArgv('amp', { resumeSessionId: 'T-1' }))
       .toEqual([engineBin('amp'), 'threads', 'continue', 'T-1'])
   })
@@ -816,7 +818,7 @@ describe('a first prompt on launch', () => {
 
   it('hands claude and codex the text positionally', () => {
     expect(buildEngineCommandArgv('claude', { firstPrompt: PROMPT })).toEqual([engineBin('claude'), PROMPT])
-    expect(buildEngineCommandArgv('codex', { firstPrompt: PROMPT })).toEqual([engineBin('codex'), PROMPT])
+    expect(buildEngineCommandArgv('codex', { firstPrompt: PROMPT })).toEqual([engineBin('codex'), ...CODEX_SCREEN, PROMPT])
   })
 
   it('hands hermes the text as the first turn of an interactive chat, after a resume', () => {

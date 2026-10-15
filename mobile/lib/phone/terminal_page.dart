@@ -1,3 +1,4 @@
+import '../measurement/product_measurement.dart';
 import '../measurement/task_feedback.dart';
 import 'dart:async';
 import 'dart:ui' as ui;
@@ -28,6 +29,7 @@ import 'package:harness_mobile/terminal/image_transcode.dart';
 import 'package:harness_mobile/terminal/terminal_font_store.dart';
 import 'package:harness_mobile/terminal/terminal_theme.dart';
 import 'package:harness_mobile/terminal/terminal_theme_store.dart';
+import 'package:harness_mobile/terminal/elicitation_press.dart';
 import 'package:harness_mobile/terminal/key_hints.dart';
 import 'package:harness_mobile/terminal/question_pane.dart';
 import 'package:harness_mobile/terminal/question_pane_watcher.dart';
@@ -66,6 +68,7 @@ import 'terminal_title.dart';
 import 'welcome/focus_hints.dart';
 
 import 'package:harness_mobile/demo/sample_mode.dart';
+import 'package:harness_mobile/notify/notifications_ask.dart';
 
 import 'voice_input_controller.dart';
 
@@ -634,9 +637,9 @@ class _TerminalPageState extends State<TerminalPage>
     final view = watcher.view;
     // ⚠️ **A dialog the page can answer raises nothing.** Its answers are a tap on their own lines
     // and words said to the mic (prompt mode); a keyboard would cover both, and a tap on the pane
-    // under it is xterm's. Only a dialog the page cannot answer — multi-select — still asks for
-    // the keyboard's keys.
-    if (view != null && view.answerable && !view.multi) return;
+    // under it is xterm's. Only a dialog the page cannot answer — multi-select, or an MCP form
+    // whose field has the caret — still asks for the keyboard's keys.
+    if (view != null && view.tappable) return;
     if (view != null && view.answerable) {
       final key = view.fingerprint;
       if (_questionRaisedFor == key) return;
@@ -827,6 +830,14 @@ class _TerminalPageState extends State<TerminalPage>
         .paneOfAgent(widget.machineId, widget.agentId)
         ?.session;
     if (session?.voiceDeliver == _deliverVoice) session?.voiceDeliver = null;
+    if (session?.onLineSent == _onLineSent) session?.onLineSent = null;
+    // Said once: leaving the session spends the onboarding's line too.
+    if (_spendFirstSessionLine()) {
+      widget.notifier.onboardingMeasurement.end(
+        ProductFlow.firstMessage,
+        ProductOutcome.cancelled,
+      );
+    }
     _barMessageTimer?.cancel();
     _barMessage.dispose();
     _scrollback.dispose();
@@ -838,6 +849,7 @@ class _TerminalPageState extends State<TerminalPage>
     );
     _questionWatcher?.removeListener(_onQuestionPane);
     _questionWatcher?.dispose();
+    _elicitationPress.cancel();
     _cancelSettle();
     _searchHoldTimer?.cancel();
     _chrome.dispose();
@@ -923,7 +935,8 @@ class _TerminalPageState extends State<TerminalPage>
         break;
       }
     }
-    last ??= (entries..sort(compareMonitorOrder))
+    // Sorted as a copy: [visibleAgents] hands back its memo, unmodifiable.
+    last ??= ([...entries]..sort(compareMonitorOrder))
         .where((entry) => !here(entry) && entry.isOpenable)
         .firstOrNull;
     if (last == null) {
@@ -957,9 +970,8 @@ class _TerminalPageState extends State<TerminalPage>
   }
 
   /// Whether [view]'s answers are each one tap: not a question that takes several answers, nor one
-  /// only partly on screen.
-  static bool _answersTappable(QuestionPaneView view) =>
-      view.answerable && !view.multi;
+  /// only partly on screen, nor an MCP form being filled in — see [QuestionPaneView.tappable].
+  static bool _answersTappable(QuestionPaneView view) => view.tappable;
 
   /// The mic's centre, up from the terminal's foot: where Siri's orb stands, just over the home
   /// strip — where the thumb already is. Fixed in points, not rows: the terminal's size must not
@@ -1028,7 +1040,50 @@ class _TerminalPageState extends State<TerminalPage>
     if (_sampleGuide() case final guide?) {
       return _StatusLine(text: guide, dot: true);
     }
+    // The onboarding's one line, until the first send — see [AppNotifier.firstSessionLine].
+    if (_firstSessionLine() case final line?) {
+      return _StatusLine(key: const ValueKey('first-session-line'), text: line);
+    }
     return null;
+  }
+
+  /// The onboarding's line by the mic, when this page is the session it opened on: "Send it, or say
+  /// anything." Null on every other page, and once spent.
+  String? _firstSessionLine() {
+    final line = widget.notifier.firstSessionLine;
+    if (line == null ||
+        line.machineId != widget.machineId ||
+        line.agentId != widget.agentId) {
+      return null;
+    }
+    return line.text;
+  }
+
+  /// Takes the onboarding's line away, if it is this page's. True when it was.
+  bool _spendFirstSessionLine() {
+    if (_firstSessionLine() == null) return false;
+    widget.notifier.firstSessionLine = null;
+    return true;
+  }
+
+  /// A line sent from this page — a Return typed or tapped, a take that went ([TerminalSession
+  /// .onLineSent]). The first on this phone asks for notifications, a moment later
+  /// ([NotificationsAsk]); and the onboarding's line by the mic has been answered.
+  ///
+  /// Not in the sample: nothing there reaches a harness, and its notices would be for nothing.
+  void _onLineSent() {
+    if (!mounted || SampleMode.maybeOf(context) != null) return;
+    final onboarding = widget.notifier.onboardingMeasurement;
+    unawaited(
+      NotificationsAsk.shared.afterSend(
+        () => onboarding.askNotifications(
+          widget.notifier.agentNotices.system.requestPermission,
+        ),
+      ),
+    );
+    if (!_spendFirstSessionLine()) return;
+    onboarding.end(ProductFlow.firstMessage, ProductOutcome.ok);
+    setState(() {});
   }
 
   /// Whether [session] is a kept screen standing in while its stream attaches — drawn like the live
@@ -1072,6 +1127,7 @@ class _TerminalPageState extends State<TerminalPage>
           first: answer.first,
           last: answer.last,
           label: 'Answer ${answer.number} ${labels[answer.number] ?? ''}',
+          columns: answer.columns,
         ),
     ];
   }
@@ -1093,7 +1149,7 @@ class _TerminalPageState extends State<TerminalPage>
   /// `❯ 1. Yes`, `  2. Yes, and don't ask again` — it presses that answer.
   bool _onLineTap(String line) {
     final view = _questionWatcher?.view;
-    if (view == null || !view.answerable || view.multi) return false;
+    if (view == null || !view.tappable) return false;
     final number = _optionLine.firstMatch(line)?.group(1);
     if (number == null) return false;
     for (final key in questionKeys(view)) {
@@ -1109,15 +1165,38 @@ class _TerminalPageState extends State<TerminalPage>
   static final _optionLine = RegExp(r'^\s*(?:[❯›>]\s*)?(\d{1,2})[.)]\s');
 
   /// Presses an answer: its digit, and Return only where the dialog asks for one (Codex's
-  /// `request_user_input`) — a chosen Return, never a blind one.
+  /// `request_user_input`) — a chosen Return, never a blind one. An MCP server's Accept or Decline
+  /// has no digit: the caret is moved onto it and Enter pressed — see [ElicitationPress].
   void _answer(QuestionPaneView view, QuestionKey key) {
     final session = widget.notifier
         .paneOfAgent(widget.machineId, widget.agentId)
         ?.session;
     if (session == null) return;
+    if (view.kind == QuestionPaneKind.elicitation) {
+      _elicitationPress.press(key.number);
+      return;
+    }
     session.terminal.textInput(key.number);
     if (view.enterSubmits) session.terminal.keyInput(TerminalKey.enter);
   }
+
+  /// Accept or Decline pressed on an MCP server's question, read off and keyed into whichever
+  /// terminal this page's pane holds at the moment — a keyframe replaces it, and a press waiting on
+  /// the caret outlives one.
+  late final _elicitationPress = ElicitationPress(
+    read: () {
+      final session = widget.notifier
+          .paneOfAgent(widget.machineId, widget.agentId)
+          ?.session;
+      if (session == null) return null;
+      return readQuestionPane(session.terminal, QuestionEngine.claude);
+    },
+    send: (key) => widget.notifier
+        .paneOfAgent(widget.machineId, widget.agentId)
+        ?.session
+        ?.terminal
+        .keyInput(key),
+  );
 
   /// Where a voice take goes: to the agent's prompt — or, while the agent's question is open, to
   /// that question, as its answer or not at all. Nothing is echoed when it lands: the words appear
@@ -1155,7 +1234,7 @@ class _TerminalPageState extends State<TerminalPage>
   Future<bool> _answerByVoice(TerminalSession session, String text) async {
     final view = _questionWatcher?.view;
     if (view == null) return session.sendComposerText(text);
-    if (!view.answerable || view.multi) {
+    if (!view.tappable) {
       _flash('✗ answer on screen', error: true);
       return false;
     }
@@ -1852,6 +1931,9 @@ class _TerminalPageState extends State<TerminalPage>
     // While the agent's question is open, a voice take answers it — never a paste and a blind
     // Return into the dialog. See [_answerByVoice].
     session?.voiceDeliver = _deliverVoice;
+    // What this page sends: the first send on the phone asks for notifications, and answers the
+    // onboarding's line by the mic. See [_onLineSent].
+    session?.onLineSent = _onLineSent;
     // Read once: the body reserves it, and search subtracts what the body
     // already took. See [_navigationBar].
     final navigationBar = _navigationBar;
@@ -2377,9 +2459,10 @@ class _TerminalPageState extends State<TerminalPage>
                               setState(() => _showEndCard = false),
                         ),
                       ),
-                    // The first time a terminal is up: what the swipes and the mic do. Once.
-                    // Not in the sample: its guide line teaches the same by having them done, and the
-                    // hints stay unseen for the real first terminal.
+                    // What the swipes and the mic do — only when asked for again, Settings ▸ Show
+                    // the tips again: the first session opens on its own line by the mic instead,
+                    // and nothing else (owner, 2026-10-12; see [FocusHintsSeen]). Not in the sample:
+                    // its guide line teaches the same by having them done.
                     if (session != null &&
                         widget.isActive &&
                         !_keyBarUp &&
@@ -2868,7 +2951,7 @@ class _MachineAway extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    '$name is asleep',
+                    '$name is ${phoneMachineWord(PhoneMachineStatus.offline)}',
                     textAlign: TextAlign.center,
                     style: tty.style(
                       size: TtySize.row,
@@ -3685,7 +3768,12 @@ class _AnchoredTerminalState extends State<_AnchoredTerminal> {
 /// `VoiceNotice`), but not on every phone at every text size — and a warning cut mid-word hid
 /// what to do. Positioned by its foot, a second line grows up over the terminal, off the mic.
 class _StatusLine extends StatelessWidget {
-  const _StatusLine({required this.text, this.color, this.dot = false});
+  const _StatusLine({
+    super.key,
+    required this.text,
+    this.color,
+    this.dot = false,
+  });
 
   final String text;
   final Color? color;

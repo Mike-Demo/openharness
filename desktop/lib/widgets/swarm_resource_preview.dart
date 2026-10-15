@@ -891,6 +891,26 @@ class _SwarmResourcePreviewState extends State<SwarmResourcePreview> {
       final local = model?.local;
       final api = model?.api;
       final owner = model?.controller ?? catalog.manager;
+      if (local != null && owner.downloading(local)) {
+        // A download under way: cancelling it is the one action open while it runs.
+        return [
+          _ResourceAction(
+            'Cancel download',
+            !busy &&
+                    owner.pendingId == null &&
+                    owner.machine?.connectionStatus ==
+                        ConnectionStatus.connected
+                ? () => unawaited(
+                    _run(() async {
+                      await owner.cancelDownload(local);
+                      return owner.error;
+                    }),
+                  )
+                : null,
+            command: 'picker.model_stop',
+          ),
+        ];
+      }
       if (local != null) {
         final enabled =
             !busy &&

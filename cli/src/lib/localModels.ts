@@ -13,6 +13,7 @@ import { displayModelName } from './gridReader.js'
 import { readEnvExports } from './gridWake.js'
 import { MIN_CODING_CONTEXT } from './codingContext.js'
 import type { GpuProcess } from './gpuProcesses.js'
+import { downloadedBytes, removeDownload, unfinishedDownload } from './modelFiles.js'
 import { APP_LABEL, AppStartError, GRID_LABEL, appContext, readAppRecords, writeAppRecords, type AppEngine, type AppEngineOps, type AppEngineRecord, type AppModel } from './appModels.js'
 import { osToken, type OsToken } from './osToken.js'
 
@@ -154,7 +155,11 @@ interface Options {
    * one it takes the host name — so a model started here read `mac.lan` under "On your machines"
    * while Machines called the same computer `M2`. */
   machineName?: () => string | null | undefined
-  run?: (args: string[], output?: (chunk: string) => void, timeout?: number) => Promise<GridFleetResult>
+  run?: (args: string[], output?: (chunk: string) => void, timeout?: number, signal?: AbortSignal) => Promise<GridFleetResult>
+  /** How long a download's files may stop growing before it is called stalled, and how often they are
+   *  looked at ([PULL_STALL_MS], [PULL_WATCH_MS]); a test shortens both. */
+  pullStallMs?: number
+  pullWatchMs?: number
   request?: typeof fetch
   /** Injected, never a `grid engines` call: that read carries the grid credential, and a signed-in read
    * of a sleeping grid WAKES it — once a tick, for as long as the panel is open. */
@@ -175,6 +180,11 @@ interface Options {
    *  picker's own engine holds as the next model's ([LocalModels.withOwnVram]). Absent: not counted. */
   gpuProcesses?: () => Promise<GpuProcess[]>
 }
+
+/** A download whose files have not grown in this long has stalled ([LocalModels.perform]): long enough for a
+ *  slow mirror's pauses, short of the 30 minutes a command may run. Looked at every [PULL_WATCH_MS]. */
+const PULL_STALL_MS = 3 * 60_000
+const PULL_WATCH_MS = 10_000
 
 /** One concrete, machine-fitted version per model. Non-chat and unprobed offline
  * catalog rows are never called compatible. Split GGUF files stay one model.
@@ -347,6 +357,8 @@ export class LocalModels {
   private readonly processEnv: NodeJS.ProcessEnv
   private readonly home: string
   private readonly run: NonNullable<Options['run']>
+  private readonly pullStallMs: number
+  private readonly pullWatchMs: number
   private readonly request: typeof fetch
   private candidates: Candidate[] = []
   private device: Record<string, any> = {}
@@ -358,7 +370,7 @@ export class LocalModels {
   private cached?: { at: number; grid: string; value: LocalModelsSnapshot }
   /** The models the last read of each grid found running — kept past `cached`, which any save clears. */
   private readonly runningAtLastRead = new Map<string, Set<string>>()
-  private active?: { grid: string; operation: ModelOperation; done: Promise<void> }
+  private active?: { grid: string; operation: ModelOperation; done: Promise<void>; pull: AbortController; cancelled: boolean }
   private receipt?: Receipt
   private receiptScope?: string
   private knownByGrid = new Map<string, Candidate[]>()
@@ -375,9 +387,14 @@ export class LocalModels {
     this.processEnv = options.processEnv ?? process.env
     this.home = dirname(gridCredentialsPath(this.processEnv))
     const rpc = new GridFleetRpc(this.processEnv)
-    this.run = options.run ?? ((args, output, timeout = 30_000) =>
-      rpc.run('local-models', randomUUID(), { args, timeoutMs: timeout, thinking: false }, output, 4 * 1024 * 1024))
+    this.run = options.run ?? ((args, output, timeout = 30_000, signal) => {
+      const id = randomUUID()
+      signal?.addEventListener('abort', () => rpc.cancel('local-models', id), { once: true })
+      return rpc.run('local-models', id, { args, timeoutMs: timeout, thinking: false }, output, 4 * 1024 * 1024)
+    })
     this.request = options.request ?? fetch
+    this.pullStallMs = options.pullStallMs ?? PULL_STALL_MS
+    this.pullWatchMs = options.pullWatchMs ?? PULL_WATCH_MS
   }
 
   private async json(args: string[]): Promise<any> {
@@ -474,6 +491,9 @@ export class LocalModels {
 
   private async downloaded(candidate: Candidate): Promise<boolean> {
     if (candidate.appPath) return stat(candidate.appPath).then(s => s.isFile() && s.size === candidate.size, () => false)
+    // A `.part` beside it is a download that did not finish — its projector, say, while its weights did.
+    // Read as downloaded, it could not be got again, and the rest of it was never fetched.
+    if (await unfinishedDownload(join(this.home, 'models'), candidate.file)) return false
     const sizes = await Promise.all(candidate.files.map(file => stat(join(this.home, 'models', file)).then(s => s.isFile() ? s.size : 0).catch(() => 0)))
     return sizes.every(size => size > 0) && sizes.reduce((sum, size) => sum + size, 0) === candidate.size
   }
@@ -937,11 +957,20 @@ export class LocalModels {
    * A different model waits: starts/stops must not race on the machine's budget. */
   async act(grid: string | null, modelId: unknown, action: 'download' | 'start' | 'stop'): Promise<{ operation?: ModelOperation; error?: string }> {
     if (!grid || typeof modelId !== 'string') return { error: 'The model is unavailable. Refresh and try again.' }
+    // Stop on a model that is downloading cancels the download, and what it downloaded goes ([perform]).
+    // Without it, a download that hung (its connection stalled after the disk filled) held the view on
+    // "Downloading 36%" with nothing to press but Wait.
+    const running = this.active
+    if (action === 'stop' && running?.grid === grid && running.operation.modelId === modelId && running.operation.stage === 'downloading') {
+      running.cancelled = true
+      running.pull.abort()
+      return { operation: running.operation }
+    }
     if (this.active) return this.active.grid === grid && this.active.operation.modelId === modelId && this.active.operation.action === action
       ? { operation: this.active.operation } : { error: 'Wait for the current model operation to finish.' }
     const operation: ModelOperation = { id: randomUUID(), modelId, action, stage: action === 'stop' ? 'stopping' : 'checking', phase: 'running', updatedAt: new Date().toISOString() }
     // Reserve before any await; independent RPCs may arrive on separate connections.
-    const active = { grid, operation, done: Promise.resolve() }
+    const active = { grid, operation, done: Promise.resolve(), pull: new AbortController(), cancelled: false }
     this.active = active
     try { await this.save(grid, operation) } catch { this.active = undefined; return { error: 'Setup could not be saved. Try again.' } }
     active.done = this.perform(grid, operation).catch(async error => {
@@ -963,8 +992,8 @@ export class LocalModels {
     const change = async (stage: ModelOperation['stage']) => {
       operation.stage = stage; delete operation.progress; await this.save(grid, operation)
     }
-    const must = async (args: string[], message: string, output?: (chunk: string) => void) => {
-      if (!(await this.run(args, output, 30 * 60_000)).ok) throw new ModelError(message)
+    const must = async (args: string[], message: string, output?: (chunk: string) => void, signal?: AbortSignal) => {
+      if (!(await this.run(args, output, 30 * 60_000, signal)).ok) throw new ModelError(message)
     }
     if (operation.action !== 'stop') await this.loadCatalog()
     if (operation.action === 'start') {
@@ -1022,14 +1051,36 @@ export class LocalModels {
           if (disk.bavail * disk.bsize < candidate.size + GiB) throw new ModelError('Free up disk space, then start again.')
           await change('downloading')
           let last = 0, progressWrites = Promise.resolve()
-          await must(['pull', candidate.pull], 'The download stopped. Start again to resume.', chunk => {
-            const matches = [...chunk.matchAll(/(\d+(?:\.\d+)?)\s*%/g)]
-            const percent = matches.length ? Number(matches.at(-1)![1]) : NaN
-            if (Number.isFinite(percent) && percent >= 0 && percent <= 100 && Date.now() - last > 500) {
-              last = Date.now(); operation.progress = percent / 100
-              progressWrites = progressWrites.then(() => this.save(grid, operation)).catch(() => {})
+          // The pull is watched by what it writes: grid reads its download with no read timeout, so a
+          // connection that stops sending holds it forever — after a full disk on an NVIDIA machine, 30
+          // minutes at 36% with nothing to press. Files that stop growing for [PULL_STALL_MS] end it.
+          const active = this.active!, pull = active.pull
+          let size = -1, grewAt = Date.now(), stalled = false
+          const watch = setInterval(() => void downloadedBytes(join(this.home, 'models'), candidate.file).then(bytes => {
+            if (bytes !== size) { size = bytes; grewAt = Date.now() } else if (Date.now() - grewAt >= this.pullStallMs) { stalled = true; pull.abort() }
+          }), this.pullWatchMs)
+          try {
+            await must(['pull', candidate.pull], 'The download stopped. Start again to resume.', chunk => {
+              const matches = [...chunk.matchAll(/(\d+(?:\.\d+)?)\s*%/g)]
+              const percent = matches.length ? Number(matches.at(-1)![1]) : NaN
+              if (Number.isFinite(percent) && percent >= 0 && percent <= 100 && Date.now() - last > 500) {
+                last = Date.now(); operation.progress = percent / 100
+                progressWrites = progressWrites.then(() => this.save(grid, operation)).catch(() => {})
+              }
+            }, pull.signal)
+          } catch (error) {
+            if (active.cancelled) {
+              await progressWrites
+              // (The model was not on this computer before: a download starts only for one [downloaded] says
+              // is not, so what goes is only what this download wrote.)
+              await removeDownload(join(this.home, 'models'), candidate.file)
+              // A cancel is a stop that finished, not a failure: the row goes back to Get.
+              operation.action = 'stop'; operation.stage = 'stopping'; operation.phase = 'done'; delete operation.progress
+              await this.save(grid, operation)
+              return
             }
-          })
+            throw stalled ? new ModelError('The download stalled. Start again to resume.') : error
+          } finally { clearInterval(watch) }
           await progressWrites
           if (!await this.downloaded(candidate)) throw new ModelError('The download is incomplete. Start again to resume.')
         }
@@ -1190,15 +1241,22 @@ export class LocalModels {
     const { baseUrl, apiKey } = readEnvExports(info.stdout)
     if (!info.ok || !baseUrl || !apiKey) throw new ModelError('The model is starting, but could not be checked. Try again shortly.')
     const deadline = Date.now() + 180_000
+    let maxTokens = 8
     do {
       try {
         const response = await this.request(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
           method: 'POST', headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: 8 }),
-          signal: AbortSignal.timeout(30_000), redirect: 'error',
+          body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with the single word: ok' }], max_tokens: maxTokens }),
+          signal: AbortSignal.timeout(maxTokens === THINKING_TEST_TOKENS ? 90_000 : 30_000), redirect: 'error',
         })
         const body = response.ok ? obj(await response.json()) : {}
-        if (/^\s*ok[.!]?\s*$/i.test(str(obj(rows(body.choices)[0]?.message).content))) return
+        const message = obj(rows(body.choices)[0]?.message)
+        if (/^\s*ok[.!]?\s*$/i.test(str(message.content))) return
+        // A model that thinks first spends a reply this short thinking: Muse-Glimmer-30B (which thinks
+        // whatever --reasoning-budget says) put all 8 tokens in its reasoning, its content stayed empty,
+        // and every start of it failed after 3 minutes of "Testing" while it answered each try. Asked
+        // again with room to finish thinking, it says ok. A real reply is still what passes.
+        if (!str(message.content).trim() && str(message.reasoning_content || message.reasoning).trim()) maxTokens = THINKING_TEST_TOKENS
       } catch { /* registration and first warmup take time; status remains verifying */ }
       await new Promise(resolve => setTimeout(resolve, 1500))
     } while (Date.now() < deadline)
@@ -1206,6 +1264,10 @@ export class LocalModels {
   }
 }
 class ModelError extends Error {}
+
+/** The reply a model that thinks first is given to finish thinking and answer the start's test in
+ *  ([LocalModels.verify]): Muse-Glimmer-30B needed under 200. */
+const THINKING_TEST_TOKENS = 512
 
 /** More names than any one engine advertises: a record past it is cut, never trusted to be small. */
 const MAX_RECORD_IDS = 64

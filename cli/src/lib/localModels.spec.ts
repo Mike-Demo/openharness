@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat, statfs, readlin
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
-import { rmSync, writeFileSync } from 'node:fs'
+import { existsSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import type { GpuProcess } from './gpuProcesses.js'
 import { baseModel, compatibleModels, contextLadder, fitOf, LocalModels, modelBudget, modelFamily, rankForCoding, readRunRecords, type GridInventory } from './localModels.js'
@@ -856,6 +856,21 @@ describe('local model discovery and lifecycle', () => {
     expect(request.mock.calls.some(([url]) => String(url).includes(RELAY_CHAT))).toBe(false)
   })
 
+  it('gives a model that thinks first room to finish, and starts it on its real reply', async () => {
+    // As Muse-Glimmer-30B: 8 tokens are all thinking, its content empty; with room it answers ok.
+    const original = request.getMockImplementation()!
+    const asked: number[] = []
+    request.mockImplementation(async (url, init) => {
+      if (!String(url).includes(RELAY_CHAT)) return original(url, init)
+      const tokens = JSON.parse(String(init?.body)).max_tokens as number
+      asked.push(tokens)
+      return response({ choices: [{ message: tokens < 512 ? { content: '', reasoning_content: 'Reply with the single word' } : { content: 'ok', reasoning_content: 'Probably just ok.' } }] })
+    })
+    await service.act('home', 'org/Small-GGUF', 'start'); await service.settled()
+    expect((await service.list('home')).models[0].operation).toMatchObject({ action: 'start', phase: 'done' })
+    expect(asked).toEqual([8, 512])
+  })
+
   it.each(['reasoning only', 'http error', 'network error'])('requires a real test reply and bounds retries for %s', async scenario => {
     const original = request.getMockImplementation()!
     let attempted!: () => void
@@ -1122,6 +1137,59 @@ describe('a run record its engine did not outlive', () => {
     expect(calls).toContainEqual(['--remote', 'leave', 'home', '--engine', 'Other-Q4.gguf'])
     expect(calls.some(args => args.includes('join'))).toBe(true)
     expect((await service.list('home', true)).models[0].operation).toMatchObject({ phase: 'done' })
+  })
+})
+
+describe('a download that stops, or is cancelled', () => {
+  /** A pull that sends nothing more, as grid's did when its connection stalled (no read timeout): it ends
+   *  only when it is aborted. */
+  const hang = () => {
+    const original = run.getMockImplementation()!
+    run.mockImplementation(async (args: string[], output?: (s: string) => void, _timeout?: number, signal?: AbortSignal) => {
+      if (args[0] !== 'pull') return original(args, output)
+      calls.push(args)
+      await writeFile(join(home, 'models', 'Small-Q4.gguf.part'), Buffer.alloc(24))
+      output?.('36%')
+      return new Promise<GridFleetResult>(resolve => signal?.addEventListener('abort', () => resolve({ ok: false, code: 124, stdout: '', stderr: '', error: 'interrupted' })))
+    })
+  }
+
+  it('is not downloaded while a part of it is unfinished — its projector, say — and can be got again', async () => {
+    await writeFile(join(home, 'models', 'Small-Q4.gguf'), Buffer.alloc(64))
+    await writeFile(join(home, 'models', 'Small-Q4.mmproj.gguf.part'), Buffer.alloc(8))
+    expect((await service.list('home', true)).models[0]).toMatchObject({ id: 'org/Small-GGUF', state: 'available', canStart: true })
+    await rm(join(home, 'models', 'Small-Q4.mmproj.gguf.part'))
+    expect((await service.list('home', true)).models[0]).toMatchObject({ state: 'downloaded' })
+  })
+
+  it('that has stalled is ended, to be started again where it stopped', async () => {
+    hang()
+    service = modelFixture({ stateDir, processEnv: { GRID_HOME: home }, run, request: request as typeof fetch, inventory, pullStallMs: 40, pullWatchMs: 5 })
+    await service.act('home', 'org/Small-GGUF', 'download'); await service.settled()
+    expect((await service.list('home', true)).models[0].operation).toMatchObject({ action: 'download', phase: 'failed', error: 'The download stalled. Start again to resume.' })
+    // What it got is kept: a start again resumes from it.
+    expect(existsSync(join(home, 'models', 'Small-Q4.gguf.part'))).toBe(true)
+  })
+
+  it('is cancelled by a stop, and what it downloaded goes: the row is one to get again, not a failure', async () => {
+    hang()
+    await writeFile(join(home, 'models', 'Small-Q4.mmproj.gguf.part'), Buffer.alloc(8))
+    await writeFile(join(home, 'models', 'Other-Q4.gguf'), Buffer.alloc(8))
+    const started = await service.act('home', 'org/Small-GGUF', 'download')
+    await vi.waitFor(() => expect(calls.some(args => args[0] === 'pull')).toBe(true))
+    const stop = await service.act('home', 'org/Small-GGUF', 'stop')
+    expect(stop.operation?.id).toBe(started.operation?.id)
+    await service.settled()
+    expect((await readdir(join(home, 'models'))).sort()).toEqual(['Other-Q4.gguf'])
+    const [model] = (await service.list('home', true)).models
+    expect(model).toMatchObject({ state: 'available', operation: { action: 'stop', phase: 'done' } })
+    expect(model.operation).not.toHaveProperty('error')
+    // Another model's operation is not cancelled by a stop of this one.
+    hang()
+    await service.act('home', 'org/Small-GGUF', 'download')
+    await vi.waitFor(() => expect(calls.filter(args => args[0] === 'pull')).toHaveLength(2))
+    expect(await service.act('home', 'org/Other-GGUF', 'stop')).toEqual({ error: 'Wait for the current model operation to finish.' })
+    await service.act('home', 'org/Small-GGUF', 'stop'); await service.settled()
   })
 })
 

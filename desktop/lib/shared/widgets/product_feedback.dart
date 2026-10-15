@@ -9,9 +9,17 @@ typedef ProductFeedbackRequest = Future<void> Function(
 
 /// A voluntary, fixed-choice response. It carries no task, account or session context.
 class ProductFeedback extends StatefulWidget {
-  const ProductFeedback({super.key, required this.send, this.outcome = false});
+  const ProductFeedback({
+    super.key,
+    required this.send,
+    this.outcome = false,
+    this.onShown,
+    this.onAnswered,
+    this.onDismissed,
+  });
   final ProductFeedbackRequest send;
   final bool outcome;
+  final VoidCallback? onShown, onAnswered, onDismissed;
   @override
   State<ProductFeedback> createState() => _ProductFeedbackState();
 }
@@ -33,6 +41,20 @@ class _ProductFeedbackState extends State<ProductFeedback> {
   String? _answer, _status;
   bool _busy = false, _sent = false;
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onShown?.call();
+    });
+  }
+
+  @override
+  void dispose() {
+    if (!_sent) widget.onDismissed?.call();
+    super.dispose();
+  }
+
   static String _newReceipt() {
     final random = Random.secure();
     final bytes = List.generate(16, (_) => random.nextInt(256));
@@ -50,6 +72,8 @@ class _ProductFeedbackState extends State<ProductFeedback> {
     });
     try {
       await widget.send(answer, _receipt);
+      if (!mounted) return;
+      if (!_sent) widget.onAnswered?.call();
       if (mounted) {
         setState(() {
           _sent = true;
@@ -73,7 +97,7 @@ class _ProductFeedbackState extends State<ProductFeedback> {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 20),
+    padding: const EdgeInsets.only(top: 24),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -90,7 +114,7 @@ class _ProductFeedbackState extends State<ProductFeedback> {
         const SizedBox(height: 8),
         Wrap(
           spacing: 8,
-          runSpacing: 4,
+          runSpacing: 8,
           children: [
             for (final choice in (widget.outcome ? outcomes : choices).entries)
               OutlinedButton(
@@ -102,7 +126,7 @@ class _ProductFeedbackState extends State<ProductFeedback> {
               ),
           ],
         ),
-        if (_status != null) Text(_status!),
+        if (_status != null) ...[const SizedBox(height: 8), Text(_status!)],
       ],
     ),
   );

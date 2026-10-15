@@ -59,6 +59,17 @@ class QuestionPaneRow {
   final bool checked;
 }
 
+/// How a dialog's answers are pressed.
+enum QuestionPaneKind {
+  /// Numbered rows: an answer is its digit.
+  choice,
+
+  /// Claude Code's MCP elicitation — a server asking mid-tool-call:
+  /// `❯ Accept    Decline` on ONE line, no digits. An answer is the caret moved
+  /// onto it (`←`/`→`) and Enter — see [_parseElicitation].
+  elicitation,
+}
+
 /// A dialog found on the pane.
 class QuestionPaneView {
   const QuestionPaneView({
@@ -67,7 +78,28 @@ class QuestionPaneView {
     required this.multi,
     required this.enterSubmits,
     required this.partial,
+    this.kind = QuestionPaneKind.choice,
+    this.focused,
   });
+
+  final QuestionPaneKind kind;
+
+  /// [QuestionPaneKind.elicitation] only: the [QuestionPaneRow.number] of the
+  /// button the caret is on, or null while one of the form's fields has it.
+  ///
+  /// ⚠️ **As of the read that made this view.** The watcher keeps one view
+  /// across redraws of the same dialog, and the caret moving between the two
+  /// buttons is such a redraw — so whatever acts on the caret reads the pane
+  /// again first ([readQuestionPane]).
+  final String? focused;
+
+  /// Each answer is one tap: open, not several answers at once, and — for an
+  /// MCP form — not while one of its fields has the caret, which only the
+  /// keyboard can fill in.
+  bool get tappable =>
+      answerable &&
+      !multi &&
+      (kind != QuestionPaneKind.elicitation || focused != null);
 
   /// Empty when [partial] — the dialog is open but its question has scrolled
   /// out of the buffer.
@@ -334,6 +366,13 @@ QuestionPaneView? parseQuestionLines(
   List<String> lines,
   QuestionEngine engine,
 ) {
+  // An MCP server's own question has no digits and no `Enter to …`, so nothing below would ever
+  // see it — and with nothing seeing it, the phone had no way to answer it (openharness#1272).
+  if (engine == QuestionEngine.claude) {
+    final elicitation = _parseElicitation(lines);
+    if (elicitation != null) return elicitation;
+  }
+
   // ⚠️ **The review screen paints no footer**, so it has to be found first or
   // not at all. After the last question the dialog becomes "Ready to submit
   // your answers?" over `1. Submit answers` / `2. Cancel` — still open, still
@@ -518,6 +557,112 @@ QuestionPaneView? _parseReview(List<String> lines) {
   );
 }
 
+/// The button row of an MCP elicitation, the caret on Accept (group 1), on
+/// Decline (group 2), or on neither while a field of the form has it.
+///
+/// Claude Code 2.1.299 draws it as `[caret] Accept  [caret] Decline`, an empty
+/// caret slot being a space — `  ❯ Accept    Decline` or `    Accept  ❯ Decline`.
+final RegExp _elicitationButtons = RegExp(
+  r'^\s*([❯›>]\s)?\s*Accept\s+([❯›>]\s)?\s*Decline\s*$',
+);
+
+/// The elicitation's footer — `Esc to cancel · ↑/↓ to navigate`. The keys are
+/// the person's to remap; what they do is not.
+final RegExp _elicitationFooter = RegExp(
+  r'\bto (cancel|navigate)\b',
+  caseSensitive: false,
+);
+
+/// The elicitation's title — `MCP server “claude.ai Supabase” requests your
+/// input` — which a narrow pane wraps after `requests`.
+final RegExp _elicitationTitle = RegExp(
+  r'^MCP server\b.*?\brequests\s+your\s+input',
+  caseSensitive: false,
+);
+
+/// How many lines the elicitation's title may wrap onto.
+const int _maxTitleLines = 3;
+
+/// Claude Code's MCP elicitation — a server asking for confirmation, or a
+/// small form, in the middle of a tool call:
+///
+/// ```
+/// ───────────────────────────────────────────────
+///   MCP server “claude.ai Supabase” requests your input
+///
+///   This SQL includes destructive operations…
+///
+///   ❯ Accept    Decline
+///
+///   Esc to cancel · ↑/↓ to navigate
+/// ```
+///
+/// Measured on a live 47-column pane. It is driven by keys, not digits:
+/// `←`/`→` swap the caret between the two buttons, Enter presses the one it is
+/// on, Esc cancels. With no fields the caret starts on Accept; with fields it
+/// starts on the first field, and the buttons show no caret at all.
+///
+/// Anchored like every other dialog here: to the LOWEST button row, live only
+/// while nothing but its footer is drawn under it, and with its title above it
+/// inside the same frame.
+QuestionPaneView? _parseElicitation(List<String> lines) {
+  final at = lines.lastIndexWhere((l) => _elicitationButtons.hasMatch(l));
+  if (at < 0) return null;
+  var footer = false;
+  for (var i = at + 1; i < lines.length; i++) {
+    final line = lines[i].trim();
+    if (line.isEmpty) continue;
+    if (_elicitationFooter.hasMatch(line)) {
+      footer = true;
+      continue;
+    }
+    if (_trailingChrome.hasMatch(line) || _looksLikeFooterTail(line)) continue;
+    // Anything else under the buttons is the engine having moved on.
+    return null;
+  }
+  if (!footer) return null;
+  final title = _elicitationTitleAbove(lines, at);
+  if (title == null) return null;
+  final caret = _elicitationButtons.firstMatch(lines[at])!;
+  return QuestionPaneView(
+    question: title,
+    rows: const [
+      QuestionPaneRow(number: '1', label: 'Accept', checked: false),
+      QuestionPaneRow(number: '2', label: 'Decline', checked: false),
+    ],
+    multi: false,
+    enterSubmits: false,
+    partial: false,
+    kind: QuestionPaneKind.elicitation,
+    focused: caret.group(1) != null
+        ? '1'
+        : caret.group(2) != null
+        ? '2'
+        : null,
+  );
+}
+
+/// The elicitation's title, its wrapped lines stitched, found walking up from
+/// the button row at [buttons] — but never past the rule over the dialog, where
+/// an answered one in the scrollback would be.
+String? _elicitationTitleAbove(List<String> lines, int buttons) {
+  for (var i = buttons - 1; i >= 0 && buttons - i <= _maxRowScan; i--) {
+    final line = lines[i].trim();
+    if (_ruleTop.hasMatch(line)) return null;
+    if (!line.startsWith('MCP server')) continue;
+    var title = line;
+    for (var j = i + 1; j < buttons && j - i < _maxTitleLines; j++) {
+      if (_elicitationTitle.hasMatch(title)) break;
+      final next = lines[j].trim();
+      if (next.isEmpty) break;
+      title = '$title $next';
+    }
+    final match = _elicitationTitle.firstMatch(title);
+    return match?.group(0);
+  }
+  return null;
+}
+
 /// Is the dialog ending at [footer] the last thing drawn on the pane?
 ///
 /// Everything below it must be blank or the dialog's own trailing chrome.
@@ -558,17 +703,23 @@ const int _maxAnswerLines = 8;
 /// as that answer's label: Claude draws the description there, and a wrapped
 /// label carries on there. A blank line, any other row (`5. Type something.`),
 /// a rule or the footer ends it.
-List<({String number, int first, int last})> questionAnswerLines(
-  Terminal terminal,
-  QuestionPaneView view,
-) {
+///
+/// An MCP elicitation's two answers share one line, so each carries the
+/// [columns] it covers — see [_elicitationAnswerLines]. Null everywhere else:
+/// the answer is its rows' full width.
+List<({String number, int first, int last, ({int start, int end})? columns})>
+questionAnswerLines(Terminal terminal, QuestionPaneView view) {
   final lines = terminal.buffer.lines;
   final total = lines.length;
   if (total == 0 || view.rows.isEmpty) return const [];
   String text(int i) =>
       lines[i].toString().replaceAll('\u00a0', ' ').trimRight();
+  if (view.kind == QuestionPaneKind.elicitation) {
+    return _elicitationAnswerLines(terminal, text);
+  }
   final wanted = {for (final row in view.rows) row.number: row.label};
-  final found = <({String number, int first, int last})>[];
+  final found =
+      <({String number, int first, int last, ({int start, int end})? columns})>[];
   final from = total - _bufferScan < 0 ? 0 : total - _bufferScan;
   for (var i = total - 1; i >= from && wanted.isNotEmpty; i--) {
     final line = text(i);
@@ -595,12 +746,52 @@ List<({String number, int first, int last})> questionAnswerLines(
       if (next.length - next.trimLeft().length < indent) break;
       last = j;
     }
-    found.add((number: number, first: i, last: last));
+    found.add((number: number, first: i, last: last, columns: null));
     // Row 1 is the dialog's top: every other answer is below it.
     if (number == '1') break;
   }
   found.sort((a, b) => a.first.compareTo(b.first));
   return found;
+}
+
+/// Where an MCP elicitation's Accept and Decline are drawn: the lowest button
+/// row, split between the two words.
+///
+/// Each takes its caret's slot and a little either side, and the gap between
+/// them is shared at its middle — a thumb lands near a word, not on it, and a
+/// band no wider than `Accept` would be missed as often as hit. The row's
+/// columns are its string's indices: the caret and the words are all one cell
+/// wide.
+List<({String number, int first, int last, ({int start, int end})? columns})>
+_elicitationAnswerLines(Terminal terminal, String Function(int i) text) {
+  final total = terminal.buffer.lines.length;
+  final from = total - _bufferScan < 0 ? 0 : total - _bufferScan;
+  for (var i = total - 1; i >= from; i--) {
+    final line = text(i);
+    if (!_elicitationButtons.hasMatch(line)) continue;
+    final accept = line.indexOf('Accept');
+    final decline = line.indexOf('Decline', accept);
+    final middle = (accept + 'Accept'.length + decline) ~/ 2;
+    final end = decline + 'Decline'.length + 2;
+    return [
+      (
+        number: '1',
+        first: i,
+        last: i,
+        columns: (start: accept - 2 < 0 ? 0 : accept - 2, end: middle),
+      ),
+      (
+        number: '2',
+        first: i,
+        last: i,
+        columns: (
+          start: middle,
+          end: end > terminal.viewWidth ? terminal.viewWidth : end,
+        ),
+      ),
+    ];
+  }
+  return const [];
 }
 
 QuestionPaneRow? _parseRow(String line, QuestionEngine engine) {

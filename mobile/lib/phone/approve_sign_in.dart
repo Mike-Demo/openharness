@@ -17,7 +17,7 @@ import 'tty.dart';
 import 'welcome/connect_code.dart';
 import 'welcome/scan_to_connect.dart';
 
-/// Settings ▸ Sign in a computer: scan the QR a computer shows (`harness login`, or the desktop
+/// Settings ▸ Sign in a computer: scan the QR a computer shows (`harness login --qr`, or the web
 /// app's "Scan with your phone") and approve its sign-in with this phone's account.
 ///
 /// Approving hands that computer the account's terminals — signing in is what makes the account's
@@ -62,10 +62,11 @@ Future<void> approveComputerSignIn(
     );
     return;
   }
+  final label = asking['label'] is String ? (asking['label'] as String).trim() : '';
   final answer = await showAppDialog<_Answer>(
     context: context,
     builder: (_) => _ApproveDialog(
-      label: (asking['label'] as String?)?.trim().isNotEmpty == true ? asking['label'] as String : 'A computer',
+      label: label.isEmpty ? null : label,
       computer: asking['kind'] == 'computer',
       sameNetwork: asking['sameNetwork'] == true,
       where: [
@@ -144,10 +145,18 @@ class _ApproveDialog extends StatelessWidget {
     required this.where,
   });
 
-  final String label;
+  /// The name it gave itself; null when it gave none.
+  final String? label;
   final bool computer;
   final bool sameNetwork;
   final String where;
+
+  /// Its name when it gave one, else what it is: a name-shaped "A computer" made "Sign in A
+  /// computer?", and said "computer" of an app too.
+  String get _title => switch (label) {
+    final label? => 'Sign in $label?',
+    null => computer ? 'Sign in a computer?' : 'Sign in an app?',
+  };
 
   @override
   Widget build(BuildContext context) {
@@ -183,7 +192,7 @@ class _ApproveDialog extends StatelessWidget {
                   const SizedBox(width: 14),
                   Expanded(
                     child: Text(
-                      'Sign in $label?',
+                      _title,
                       key: const Key('approve-sign-in-title'),
                       style: TextStyle(
                         color: AppPalette.textPrimary,

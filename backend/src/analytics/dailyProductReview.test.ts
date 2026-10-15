@@ -56,6 +56,17 @@ it('keeps feedback denominators and setup coverage separate from daemon particip
   expect(r.flows.find(f => f.channel === 'setup' && f.surface === 'desktop' && f.flow === 'sign_in')).toMatchObject({ started: 5, unmatchedStarts: 3 })
   expect(r.flows.find(f => f.channel === 'ui' && f.flow === 'update_stage')?.started).toBeNull()
 })
+it('shows hn\'s app flows beside the other apps, with no signed-out setup row for it', () => {
+  // hn counts a start when the flow begins and its outcome when it ends, as the Desktop does: one still
+  // open (or ended under another account) is an unmatched start.
+  const r = dailyProductReview([
+    row('2026-10-12', 'ui_tui_workspace_connect_started', 4), row('2026-10-12', 'ui_tui_workspace_connect_ok', 3),
+    row('2026-10-12', 'ui_tui_workspace_connect_under_1s', 3),
+  ], new Date('2026-10-13'))
+  expect(r.flows.find(f => f.channel === 'ui' && f.surface === 'tui' && f.flow === 'workspace_connect'))
+    .toMatchObject({ started: 4, unmatchedStarts: 1, outcomes: { ok: 3, failed: 0 }, durationBuckets: { under_1s: 3, over_1m: 0 } })
+  expect(r.flows.some(f => f.channel === 'setup' && f.surface === 'tui')).toBe(false)
+})
 it('uses complete calendar months rather than adding daily installations into MAU', () => {
   const r = dailyProductReview([
     row('2026-08-12', 'monthly_working_installations', 10), row('2026-09-12', 'monthly_working_installations', 8),
@@ -70,4 +81,27 @@ it('does not turn old collector work into zero D28 retention during rollout', ()
   expect(cohort(rows)).toMatchObject({ measurementAvailable: false, returned: null, percent: null })
   expect(cohort([...rows, row('2026-09-14', 'measurement_v2_installation_days', 10)]))
     .toMatchObject({ measurementAvailable: true, returned: 0, percent: 0 })
+})
+
+it('reports a read the apps make on their own as reliability only, even from clients that still send its reach', () => {
+  const r = dailyProductReview([
+    row('2026-10-12', 'history_requests', 41179), row('2026-10-12', 'history_installation_days', 72),
+    row('2026-10-12', 'history_first_installations', 72), row('2026-10-12', 'search_requests', 86),
+    row('2026-10-12', 'search_installation_days', 19),
+  ], new Date('2026-10-13'))
+  expect(r.features.find(f => f.action === 'history')).toMatchObject({ requests: 41179, automatic: true,
+    installationDays: null, firstMeasuredInstallations: null, repeatInstallationDays: null })
+  expect(r.features.find(f => f.action === 'search')).toMatchObject({ automatic: false, installationDays: 19 })
+})
+
+it('reads Store and model-list reach only from the requests a person opened', () => {
+  const r = dailyProductReview([
+    row('2026-10-12', 'store_list_requests', 1965), row('2026-10-12', 'store_list_installation_days', 22),
+    row('2026-10-12', 'store_list_user_requests', 9), row('2026-10-12', 'store_list_user_installation_days', 4),
+    row('2026-10-12', 'store_list_user_first_installations', 3), row('2026-10-12', 'store_list_user_repeat_installation_days', 1),
+  ], new Date('2026-10-13'))
+  expect(r.features.find(f => f.action === 'store_list')).toMatchObject({ requests: 1965, automatic: true, userRequests: 9,
+    installationDays: 4, firstMeasuredInstallations: 3, repeatInstallationDays: 1 })
+  expect(r.features.find(f => f.action === 'model_list')).toMatchObject({ userRequests: 0, installationDays: null })
+  expect(r.features.find(f => f.action === 'history')).toMatchObject({ userRequests: null, installationDays: null })
 })

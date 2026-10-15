@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:harness_mobile/phone/terminal_input_dock.dart';
 import 'package:harness_mobile/phone/terminal_key_bar.dart';
 import 'package:harness_mobile/terminal/key_hints.dart';
+import 'package:harness_mobile/terminal/terminal_input.dart';
+import 'package:harness_mobile/terminal/terminal_session.dart';
 import 'package:xterm/xterm.dart';
 
 void main() {
@@ -160,6 +163,177 @@ void main() {
     // is the way back to a full screen of output — it works either way.
     await tapKey(tester, 'Hide keyboard');
     expect(dismissals, 1);
+  });
+
+  group('↵ at an engine\'s prompt', () {
+    late Terminal pane;
+
+    setUp(() {
+      // As `TerminalSession` builds a pane's terminal: the bytes ↵ sends are
+      // the ones its input handler gives a hardware ⌥⏎.
+      pane = Terminal(
+        maxLines: 200,
+        platform: TerminalTargetPlatform.macos,
+        inputHandler: harnessInputHandler,
+        reflowEnabled: false,
+      )..resize(80, 12);
+      pane.onOutput = outbound.add;
+    });
+
+    Future<void> pumpPrompt(
+      WidgetTester tester, {
+      double width = 375,
+      bool enabled = true,
+      bool enginePrompt = true,
+      bool questionOpen = false,
+      bool? ctrl,
+      ValueChanged<bool>? armCtrl,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.bottomCenter,
+              child: SizedBox(
+                width: width,
+                child: TerminalKeyBar(
+                  terminal: pane,
+                  enabled: enabled,
+                  enginePrompt: enginePrompt,
+                  questionOpen: questionOpen,
+                  onDismissKeyboard: () => dismissals++,
+                  onPromptEdited: () => edits++,
+                  // Every optional key the row can hold but `paste`, whose
+                  // clipboard poll would outlive the test.
+                  onClearPrompt: () {},
+                  onPickImage: () {},
+                  ctrlArmed: ctrl,
+                  onArmCtrl: armCtrl,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final newline = find.byKey(const ValueKey('terminal-key-Newline'));
+    final enter = find.byKey(const ValueKey('terminal-key-Enter'));
+
+    testWidgets('breaks the line as ⌥⏎ does, and does not submit', (
+      tester,
+    ) async {
+      await pumpPrompt(tester);
+
+      await tester.tap(newline);
+      await tester.pump();
+
+      expect(outbound, ['\x1b\r'], reason: 'ESC + Return, never a bare \\r');
+      expect(edits, 1, reason: 'the keyboard lets go of the line just broken');
+    });
+
+    testWidgets('puts armed modifiers down rather than adding them', (
+      tester,
+    ) async {
+      // The row's own: armed, spent by ↵ unchanged, and gone after it.
+      await pumpPrompt(tester);
+      await tester.tap(find.byKey(const ValueKey('terminal-key-ctrl')));
+      await tester.tap(find.byKey(const ValueKey('terminal-key-shift')));
+      await tester.pump();
+      await tester.tap(newline);
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('terminal-key-Up')));
+      await tester.pump();
+      expect(outbound, ['\x1b\r', '\x1b[A']);
+
+      // The session's ctrl is put down too.
+      final armed = <bool>[];
+      outbound.clear();
+      await pumpPrompt(tester, ctrl: true, armCtrl: armed.add);
+      await tester.tap(newline);
+      await tester.pump();
+      expect(outbound, ['\x1b\r']);
+      expect(armed, [false]);
+    });
+
+    testWidgets(
+      'gives its slot to ⏎ during a question; no ↵ on a plain shell',
+      (tester) async {
+        await pumpPrompt(tester, questionOpen: true);
+        expect(newline, findsNothing);
+        expect(enter, findsOneWidget);
+
+        await pumpPrompt(tester, enginePrompt: false);
+        expect(newline, findsNothing);
+        expect(enter, findsNothing);
+      },
+    );
+
+    testWidgets('dims with the rest of the row while input is not taken', (
+      tester,
+    ) async {
+      await pumpPrompt(tester, enabled: false);
+      await tester.tap(newline);
+      await tester.pump();
+      expect(outbound, isEmpty);
+    });
+
+    testWidgets('the dock offers it to an agent and not to a plain shell', (
+      tester,
+    ) async {
+      for (final (engine, offered) in [('claude', true), ('terminal', false)]) {
+        final session = TerminalSession(
+          machineId: 'm',
+          agentId: 'a',
+          agentName: 'a',
+          engineId: engine,
+          send: (_, _) async => true,
+          sendBinary: (_) async => true,
+        );
+        addTearDown(session.dispose);
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalInputDock(
+                session: session,
+                keyboardUp: true,
+                onDismiss: () {},
+              ),
+            ),
+          ),
+        );
+        expect(
+          newline,
+          offered ? findsOneWidget : findsNothing,
+          reason: engine,
+        );
+      }
+    });
+
+    for (final width in [320.0, 375.0]) {
+      testWidgets('fits a ${width.round()}pt phone at the width a question '
+          'already gives every key', (tester) async {
+        final esc = find.byKey(const ValueKey('terminal-key-esc'));
+        await pumpPrompt(tester, width: width, questionOpen: true);
+        final asked = tester.getSize(esc);
+        await pumpPrompt(tester, width: width);
+        expect(tester.takeException(), isNull);
+        expect(tester.getSize(esc), asked);
+        // Inside the row, before the rule and the two keys past it.
+        final image = find.byKey(const ValueKey('terminal-key-Send image'));
+        expect(
+          tester.getTopRight(newline).dx,
+          lessThan(tester.getTopLeft(image).dx),
+        );
+        expect(newline.hitTestable(), findsOneWidget);
+        expect(
+          find
+              .byKey(const ValueKey('terminal-key-Hide keyboard'))
+              .hitTestable(),
+          findsOneWidget,
+        );
+      });
+    }
   });
 
   // Claude Code's footer offers it on every prompt.

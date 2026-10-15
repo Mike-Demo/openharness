@@ -108,6 +108,7 @@ import '../state/toolbar_notices.dart';
 import '../widgets/machine_actions.dart';
 import '../widgets/rename_agent_dialog.dart';
 import '../widgets/delete_agent_dialog.dart';
+import '../widgets/delete_harness_dialog.dart';
 import '../widgets/fork_agent_dialog.dart';
 import '../widgets/restart_agent_action.dart';
 import '../measurement/task_feedback.dart';
@@ -2802,6 +2803,31 @@ class _SwarmScreenState extends State<SwarmScreen> {
     );
   });
 
+  /// Delete Harness: the focused pane's harness, or the row selected in Open
+  /// Harness, running or stopped. Stop keeps a conversation to reopen; this
+  /// is how one leaves the list.
+  Future<void> _deleteHarness(String machineId, String agentId) => _dialog(
+    () async {
+      final machine = app.stateOf(machineId);
+      final agent = machine?.agents
+          .where((agent) => agent.id == agentId)
+          .firstOrNull;
+      if (agent == null || machine!.machine.isShared) return;
+      if (isTerminalEngine(agent.engine)) {
+        _showPaneActionHint('A terminal keeps no conversation. Stop it instead.');
+        return;
+      }
+      await confirmDeleteHarness(
+        context,
+        app,
+        machineId,
+        agentId,
+        agent.displayName,
+        keymap: _keymap,
+      );
+    },
+  );
+
   /// ⌘⇧E — the focused pane's harness starts again where it is. Same routing
   /// as [_cloneAgent]: gated everywhere but the native menu's fallback path,
   /// which answers rather than doing nothing.
@@ -5392,6 +5418,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
     _onboarding.acknowledge(OnboardingStep.models);
     app.modelManager.setPanelVisible(true);
     unawaited(app.modelManager.dismissIntroduction());
+    app.markModelsOpened();
     unawaited(app.modelManager.refresh());
     unawaited(_modelsMenu!.refresh());
     _modelsOverlay = OverlayEntry(
@@ -6216,6 +6243,10 @@ class _SwarmScreenState extends State<SwarmScreen> {
               onCommands: _showSearchCommands,
               previewControls: _previewControls,
               onRefocus: _focusSearch,
+              onDelete: (row) async {
+                await _deleteHarness(row.machineId!, row.agentId!);
+                _focusSearch();
+              },
               child: FocusScope(node: _searchDialogScope, child: scoped),
             );
             return Stack(
@@ -6810,7 +6841,14 @@ class _SwarmScreenState extends State<SwarmScreen> {
       ),
     ),
     'app.add_phone': () => unawaited(_addPhone()),
-    'app.product_feedback': () => unawaited(showTaskFeedback(context, choice: () => app.api.productUsageSettings(), send: app.api.productUsageFeedback)),
+    'app.product_feedback': () => unawaited(
+      showTaskFeedback(
+        context,
+        choice: () => app.api.productUsageSettings(),
+        send: app.api.productUsageFeedback,
+        measurement: app.productMeasurement,
+      ),
+    ),
     'app.store': _openStore,
     'app.daemon': _openCompanions,
     'app.daemon_talk': _talkToDaemon,
@@ -6822,6 +6860,12 @@ class _SwarmScreenState extends State<SwarmScreen> {
       if (focused != null) await _showSessionWork(focused);
     },
     'agent.stop': () => _editAgent(stop: true),
+    'agent.delete': () {
+      final pane = app.focusedPane;
+      if (pane?.agentId case final agentId?) {
+        unawaited(_deleteHarness(pane!.machineId, agentId));
+      }
+    },
     'agent.fork': _forkAgent,
     'pane.toggle_viewer': _toggleFocusedViewer,
     'pane.toggle_composer': () {
@@ -6885,6 +6929,18 @@ class _SwarmScreenState extends State<SwarmScreen> {
     }
     if (id == 'app.onboarding_review') {
       return app.viewer == null;
+    }
+    if (id == 'agent.delete') {
+      final pane = app.focusedPane;
+      final machine = pane == null ? null : app.stateOf(pane.machineId);
+      final agent = machine?.agents
+          .where((agent) => agent.id == pane!.agentId)
+          .firstOrNull;
+      // A terminal has no conversation to delete: Stop Terminal ends it.
+      return machine != null &&
+          !machine.machine.isShared &&
+          agent != null &&
+          !isTerminalEngine(agent.engine);
     }
     if (id == 'agent.rename' ||
         id == 'agent.stop' ||

@@ -38,6 +38,25 @@ describe('shell model launch', () => {
     expect(run.mock.calls[0][1][1]).toContain(engineInstallRecipe(engine)!.command)
     expect(error).not.toHaveBeenCalled()
   })
+  it('runs Codex typed at a prompt on the screen Harness chose for it, and Claude Code as the person set it up', async () => {
+    const resolve = vi.fn().mockResolvedValue(target), run = vi.fn().mockResolvedValue(0), error = vi.fn()
+    const binaryAt = (call: unknown[]) => (call[1] as string[]).indexOf('harness-shell-agent') + 2
+    await shellLaunch(['codex','--native','--','resume','sess-1'], {resolve,run,error})
+    const native = run.mock.calls[0]
+    expect((native[1] as string[]).slice(binaryAt(native))).toEqual(['-c','tui.fullscreen_transcript=false','resume','sess-1'])
+    await shellLaunch(['codex','test','model','--','hello'], {resolve,run,error})
+    expect((run.mock.calls[1][1] as string[]).slice(-3)).toEqual(['-c','tui.fullscreen_transcript=false','hello'])
+    vi.stubEnv('CLAUDE_CODE_NO_FLICKER', '0')
+    try {
+      await shellLaunch(['claude','--native','--'], {resolve,run,error})
+      await shellLaunch(['claude','test','model','--'], {resolve,run,error})
+    } finally { vi.unstubAllEnvs() }
+    for (const call of run.mock.calls.slice(2)) {
+      expect(call[2]).toMatchObject({ CLAUDE_CODE_NO_FLICKER: '0' })
+      expect(call[2]).not.toHaveProperty('CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN')
+    }
+    expect(error).not.toHaveBeenCalled()
+  })
   it.each(PROCESS_ENGINES.filter(engine => engine !== 'codex' && engine !== 'claude'))('does not silently ignore a selected route for %s', async (engine) => {
     const resolve = vi.fn(), run = vi.fn(), error = vi.fn()
     expect(await shellLaunch([engine,'grid','model','--'],{resolve,run,error})).toBe(2)

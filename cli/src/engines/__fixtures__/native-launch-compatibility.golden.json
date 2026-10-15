@@ -25,26 +25,36 @@
     "literal ; $(first message)"
   ],
   "codex fresh": [
-    "codex"
+    "codex",
+    "-c",
+    "tui.fullscreen_transcript=false"
   ],
   "codex resume": [
     "codex",
     "resume",
-    "fixture-conversation"
+    "fixture-conversation",
+    "-c",
+    "tui.fullscreen_transcript=false"
   ],
   "codex fork": [
     "codex",
     "fork",
-    "fixture-parent"
+    "fixture-parent",
+    "-c",
+    "tui.fullscreen_transcript=false"
   ],
   "codex permission": [
     "codex",
     "--approve-for-me",
+    "-c",
+    "tui.fullscreen_transcript=false",
     "--model",
     "fixture/model"
   ],
   "codex first": [
     "codex",
+    "-c",
+    "tui.fullscreen_transcript=false",
     "literal ; $(first message)"
   ],
   "cursor fresh": [

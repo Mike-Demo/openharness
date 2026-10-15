@@ -133,6 +133,9 @@ class _TerminalInputDockState extends State<TerminalInputDock>
         onPickImage: widget.onPickImage,
         onTakePhoto: widget.onTakePhoto,
         questionOpen: widget.questionOpen,
+        // An agent's prompt takes `↵`; a plain shell does not — see
+        // [TerminalKeyBar.enginePrompt].
+        enginePrompt: widget.session.engineId != 'terminal',
         hints: widget.hints,
         ctrlArmed: widget.session.controlArmed,
         onArmCtrl: widget.session.armControl,

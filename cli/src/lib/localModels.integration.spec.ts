@@ -97,3 +97,48 @@ else process.exitCode = 2;
     await rm(root, { recursive: true, force: true })
   }
 }, 20_000)
+
+it('cancels a download that hangs: the real grid process ends, and what it wrote goes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'models-cancel-'))
+  const gridHome = join(root, 'grid-home'), stateDir = join(root, 'state')
+  const modelId = 'fixture/Tiny-GGUF'
+  const server = createServer(async (req, res) => {
+    for await (const _ of req) { /* drain */ }
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ models: [{ repo_id: modelId, runnable: true, task: 'text-generation', format: 'GGUF',
+      fit: { version: 'Q4', ctx: 131072 }, versions: [{ version: 'Q4', size_bytes: 64, pull_spec: `${modelId}:tiny.gguf` }] }] }))
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
+  let service: LocalModels | undefined
+  try {
+    await mkdir(join(gridHome, 'models'), { recursive: true })
+    await writeFile(join(gridHome, 'credentials.toml'), `session_token = 'catalog-fixture'\napi_url = '${base}'\n`)
+    const executable = join(root, 'grid.mjs')
+    // `grid pull` as it hung when its connection stopped sending: a `.part` written, then nothing, forever.
+    await writeFile(executable, `#!${process.execPath}
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const home = process.env.GRID_HOME, args = process.argv.slice(2);
+if (args[0] === 'device-info') console.log(JSON.stringify({ usable_bytes: 16 * 1024 ** 3, device_class: 'cpu', backend: 'cpu', memory: { total_gb: 16 } }));
+else if (args.includes('ls')) console.log(JSON.stringify([{ grid: 'home', id: 'fixture-grid' }]));
+else if (args[0] === 'pull') { writeFileSync(join(home, 'models', 'tiny.gguf.part'), Buffer.alloc(24)); writeFileSync(join(home, 'pulling'), String(process.pid)); setInterval(() => {}, 1000); }
+else process.exitCode = 2;
+`, { mode: 0o700 })
+    const inventory = async () => ({ state: 'awake' as const, status: 'running', nodes: [] })
+    service = new LocalModels({ stateDir, processEnv: { GRID_HOME: gridHome, HARNESS_GRID_BIN: executable, PATH: root }, inventory })
+    await service.act('home', modelId, 'download')
+    const pulling = join(gridHome, 'pulling')
+    for (let i = 0; i < 100 && !existsSync(pulling); i++) await new Promise(resolve => setTimeout(resolve, 50))
+    const pid = Number(await readFile(pulling, 'utf8'))
+    await service.act('home', modelId, 'stop'); await service.settled()
+    expect(() => process.kill(pid, 0)).toThrow()
+    expect(existsSync(join(gridHome, 'models', 'tiny.gguf.part'))).toBe(false)
+    expect((await service.list('home', true)).models[0]).toMatchObject({ state: 'available', operation: { action: 'stop', phase: 'done' } })
+  } finally {
+    await service?.settled()
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+    await rm(root, { recursive: true, force: true })
+  }
+}, 20_000)

@@ -32,18 +32,22 @@ import 'tty.dart';
 /// phone keyboard cannot produce, or buries, and a pane is driven by:
 ///
 /// ```
-/// esc ^C tab clear paste ⇧ ctrl ← ↑ ↓ →  │  img ▾
+/// esc ^C tab clear paste ⇧ ctrl ← ↑ ↓ → ↵  │  img ▾
 /// ```
 ///
 /// Every key stays in the same place every time; this strip is used while
 /// looking at the TERMINAL, not at the strip.
 ///
-/// ⚠️ **One exception: `/` becomes `⏎` while an agent is asking something.**
+/// `↵` is a new line in an engine's prompt, without sending the turn: the
+/// keyboard's own `return` submits, and nothing else a phone has can break a
+/// line. See [TerminalKeyBar.enginePrompt].
+///
+/// ⚠️ **One exception: `↵` becomes `⏎` while an agent is asking something.**
 /// A question dialog is driven by the arrows and Enter, and Enter is the one
 /// the strip did not have — the keyboard's own `return` sends it, but nothing
 /// on screen says so, and on a dialog that reads "enter to submit answer" a
-/// strip of every other key it names reads as "Enter is missing". `/` is the
-/// slot to give up: a dialog has no prompt to start a command in.
+/// strip of every other key it names reads as "Enter is missing". `↵` is the
+/// slot to give up: a dialog has no prompt to add a line to.
 ///
 /// ⚠️ **The other exception: the pane's own keys — [hints] — join the row, and
 /// only then does it scroll.** They are what Codex offers on this screen and
@@ -69,6 +73,7 @@ class TerminalKeyBar extends StatefulWidget {
     this.onPickImage,
     this.onTakePhoto,
     this.questionOpen = false,
+    this.enginePrompt = false,
     this.hints = const [],
     this.ctrlArmed,
     this.onArmCtrl,
@@ -82,9 +87,17 @@ class TerminalKeyBar extends StatefulWidget {
   final bool? ctrlArmed;
   final ValueChanged<bool>? onArmCtrl;
 
-  /// An agent's question dialog is on the pane: `/` gives its slot to `⏎` —
+  /// An agent's question dialog is on the pane: `↵` gives its slot to `⏎` —
   /// see the class docblock.
   final bool questionOpen;
+
+  /// The pane runs an engine, whose prompt takes `↵`: what a hardware ⌥⏎
+  /// sends — ESC, then the Return bytes — which Claude Code, Codex and every
+  /// other Ink/readline prompt read as "add a line, do not send this turn yet"
+  /// (`MetaEnterInputHandler`). Sent through the pane's own input handler,
+  /// so the two cannot differ. Not on a plain shell, the `terminal` engine,
+  /// where ESC + Return is no newline: false leaves the key out.
+  final bool enginePrompt;
 
   /// The keys the pane's chrome offers and a phone cannot press — see
   /// [parseKeyHints]. Each is drawn as the key and Codex's own word for what
@@ -385,6 +398,25 @@ class _TerminalKeyBarState extends State<TerminalKeyBar>
           // Sent as the key, not as text: the keyboard's buffer holds nothing
           // a dialog cares about, and Return is `\r` to every TUI here.
           onTap: () => _sendKey(TerminalKey.enter),
+        )
+      // The same slot at a prompt: a new line, not a submit — see
+      // [TerminalKeyBar.enginePrompt]. In the slot `⏎` takes rather than one
+      // of its own, so the row is never more keys than a question already
+      // makes it.
+      else if (widget.enginePrompt)
+        _key(
+          label: '↵',
+          semanticLabel: 'Newline',
+          onTap: () {
+            // ⌥⏎ is the whole chord: an armed `ctrl` would make it ⌃⌥⏎, which
+            // the prompt does not read as a line, so like `^C` this puts the
+            // modifiers down rather than adding them.
+            _disarm();
+            widget.terminal.keyInput(TerminalKey.enter, alt: true);
+            // The keyboard's buffer still holds the line just broken — as
+            // after a hardware Return, which empties it too.
+            widget.onPromptEdited?.call();
+          },
         ),
     ];
     // ⚠️ **Neither of these sends a byte anywhere**, and that is why they sit

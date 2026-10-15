@@ -50,7 +50,7 @@ bool phoneAccountSaysOnline(String? status) =>
 /// agrees.
 ///
 /// ⚠️ **Both, because the socket alone flaps.** One that drops while it is still being dialled
-/// marks the node offline for a moment, for a machine that answers seconds later — saying "asleep"
+/// marks the node offline for a moment, for a machine that answers seconds later — saying "offline"
 /// over that would flash a wrong word at every redial. A machine the account also lists as down is
 /// one with nothing on the way: switched off, or Harness not running there yet (a computer just
 /// restarted was measured taking 70s to reach the relay).
@@ -87,22 +87,39 @@ bool phoneMachineListsAgents(MachineState machine) =>
       PhoneMachineStatus.needsPassword || PhoneMachineStatus.offline => false,
     };
 
-PhoneSummary phoneMachineSummary(MachineState machine) =>
-    switch (phoneMachineStatusOf(machine)) {
-      PhoneMachineStatus.needsPassword => (
-        label: 'Needs its password',
-        tone: PhoneTone.attention,
-      ),
-      PhoneMachineStatus.offline => (label: 'Offline', tone: PhoneTone.bad),
-      PhoneMachineStatus.connecting => (
-        label: 'Connecting…',
-        tone: PhoneTone.busy,
-      ),
-      PhoneMachineStatus.ready => (
-        label: _agentCount(machine.agents.length),
-        tone: PhoneTone.good,
-      ),
-    };
+/// What a computer in [status] is called — one word, the same on every phone screen that names it:
+/// Computers, Find, Settings ▸ Profile, a harness whose computer is away, and (capitalised, by
+/// [phoneMachineSummary]) the New form's computer and a computer's own page.
+///
+/// ⚠️ **One word per state.** Computers and Profile said "asleep" and "locked" while the New form
+/// and a computer's page said "Offline" and "Needs its password": one computer, two names a screen
+/// apart. "offline" is the desktop's word. "locked" is kept over the desktop's "Link required"
+/// because the phone's way in is Unlock — the row's "tap to unlock", the sheet's "Unlock…", the
+/// Unlock page — and its first way is a scanned code, not a password.
+String phoneMachineWord(PhoneMachineStatus status) => switch (status) {
+  PhoneMachineStatus.ready => 'ready',
+  PhoneMachineStatus.connecting => 'connecting',
+  PhoneMachineStatus.needsPassword => 'locked',
+  PhoneMachineStatus.offline => 'offline',
+};
+
+PhoneSummary phoneMachineSummary(MachineState machine) {
+  final status = phoneMachineStatusOf(machine);
+  final word = phoneMachineWord(status);
+  final label = '${word[0].toUpperCase()}${word.substring(1)}';
+  return switch (status) {
+    PhoneMachineStatus.needsPassword => (
+      label: label,
+      tone: PhoneTone.attention,
+    ),
+    PhoneMachineStatus.offline => (label: label, tone: PhoneTone.bad),
+    PhoneMachineStatus.connecting => (label: '$label…', tone: PhoneTone.busy),
+    PhoneMachineStatus.ready => (
+      label: _agentCount(machine.agents.length),
+      tone: PhoneTone.good,
+    ),
+  };
+}
 
 String _agentCount(int count) => switch (count) {
   0 => 'No harnesses yet',

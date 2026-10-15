@@ -129,6 +129,33 @@ void main() {
     await close(tester, app);
   });
 
+  // ⚠️ A phone over the relay never hears a question — `commander_question` goes to the dial and the
+  // computer's own window only — so the row promises what does reach it, and nothing else.
+  testWidgets('Notifications: a harness finishing, a new device — never "needs you"', (
+    tester,
+  ) async {
+    final app = await openSettings(tester);
+    final row = find.byKey(const ValueKey('settings-notifications'));
+    if (row.evaluate().isEmpty) {
+      await tester.scrollUntilVisible(
+        row,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+    }
+    expect(
+      find.descendant(
+        of: row,
+        matching: find.text(
+          'When a harness finishes, or a new device joins your account.',
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(find.textContaining('needs you'), findsNothing);
+    await close(tester, app);
+  });
+
   testWidgets('an account whose name is only an email, or nothing at all', (
     tester,
   ) async {

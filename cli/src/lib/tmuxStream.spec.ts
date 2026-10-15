@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   ControlCommandQueue,
   decodeTmuxControlData,
+  dropOldestHistoryRows,
   literalKeyCommands,
   normalizeTmuxHistoryLines,
   normalizeTmuxCaptureLines,
   parseTmuxControlOutput,
+  printInProgress,
   quoteForOldTmux,
   synthesizeTmuxSnapshot,
   tuiScrollPageCount,
@@ -240,6 +242,16 @@ describe('tmux snapshot row normalization', () => {
       '\u001b[2mone \u001b[0m\r\n\u001b[2mtwo\u001b[0m\u001b[0m\r\nthree\u001b[0m\r\n',
     )
   })
+
+  it('sheds the oldest whole history rows, each still restoring the style carried into it', () => {
+    const rows = normalizeTmuxHistoryLines(Buffer.from('\u001b[2mone \ntwo\u001b[0m\nthree\n'))
+    const first = '\u001b[2mone \u001b[0m\r\n'
+    expect(dropOldestHistoryRows(rows, 0)).toBe(rows)
+    expect(Buffer.from(dropOldestHistoryRows(rows, 1)).toString()).toBe('\u001b[2mtwo\u001b[0m\u001b[0m\r\nthree\u001b[0m\r\n')
+    expect(Buffer.from(dropOldestHistoryRows(rows, Buffer.byteLength(first))).toString()).toBe('\u001b[2mtwo\u001b[0m\u001b[0m\r\nthree\u001b[0m\r\n')
+    expect(Buffer.from(dropOldestHistoryRows(rows, Buffer.byteLength(first) + 1)).toString()).toBe('three\u001b[0m\r\n')
+    expect(dropOldestHistoryRows(rows, rows.length).length).toBe(0)
+  })
 })
 
 describe('ControlCommandQueue', () => {
@@ -357,5 +369,73 @@ describe('ControlCommandQueue', () => {
     reject()
     expect((await queue.run('display-message -p one')).ok).toBe(false)
     expect(queue.idle).toBe(true)
+  })
+
+  // A conversation's three history captures must read one history: written one per line, the pane's output was read
+  // between them in 28 of 500 tries (tmux 3.7c, 2026-10-14).
+  it('writes commands run together in one write, and still pairs each with its own reply', async () => {
+    const { queue, written } = harness()
+    const ended: string[] = []
+    const [plain, joined, seam] = queue.runTogether([
+      { command: 'capture-pane -p -S -2000 -E -1', onEnd: () => ended.push('plain') },
+      { command: 'capture-pane -p -J -S -2000 -E -1' },
+      { command: 'capture-pane -p -J -S -1 -E 0', onEnd: () => ended.push('seam') },
+    ])
+    expect(written).toEqual(['capture-pane -p -S -2000 -E -1\ncapture-pane -p -J -S -2000 -E -1\ncapture-pane -p -J -S -1 -E 0\n'])
+
+    queue.handleBegin('70')
+    queue.appendResponseLine(Buffer.from('PLAIN'))
+    queue.handleCompleted('end', '70')
+    queue.handleBegin('71')
+    queue.handleCompleted('error', '71')
+    queue.handleBegin('72')
+    queue.appendResponseLine(Buffer.from('SEAM'))
+    queue.handleCompleted('end', '72')
+
+    expect((await plain).stdout.toString()).toBe('PLAIN\n')
+    expect((await joined).ok).toBe(false)
+    expect((await seam).stdout.toString()).toBe('SEAM\n')
+    expect(ended).toEqual(['plain', 'seam'])
+    expect(queue.idle).toBe(true)
+  })
+
+  it('fails every command of a write the pipe refused', async () => {
+    const { queue, reject } = harness()
+    reject()
+    const results = await Promise.all(queue.runTogether([{ command: 'display-message -p a' }, { command: 'display-message -p b' }]))
+    expect(results.map((result) => result.ok)).toEqual([false, false])
+    expect(queue.idle).toBe(true)
+  })
+
+  it('writes what waited for the attach in one write once it answers', async () => {
+    const written: string[] = []
+    const queue = new ControlCommandQueue({ write: (line) => { written.push(line); return true }, onFatal: () => {} })
+    void queue.run('display-message -p one')
+    void queue.run('send-keys -t %1 -H 61')
+    expect(written).toEqual([])
+    queue.markReady()
+    expect(written).toEqual(['display-message -p one\nsend-keys -t %1 -H 61\n'])
+    queue.failAll()
+  })
+})
+
+// Codex in its scrollback answers a resize by clearing the screen and printing its transcript again in one
+// synchronized update. A capture cut while that print was under way held a cleared or half-printed screen.
+describe('printInProgress', () => {
+  const print = { clears: '\u001b[3J', ends: '\u001b[?2026l' }
+  const read = (...chunks: string[]) => printInProgress(chunks.map((chunk) => Buffer.from(chunk, 'latin1')), print)
+
+  it('reads a print begun and not yet ended as under way', () => {
+    expect(read('\u001b[?2026l\u001b[2J\u001b[3J\u001b[H\u001b[?2026htranscript')).toBe(true)
+    // Its clear split between two notifications.
+    expect(read('working\u001b[2J\u001b[', '3J\u001b[?2026hhalf')).toBe(true)
+    // Ended, then begun again: the second is under way.
+    expect(read('\u001b[3Jfirst\u001b[?2026l', 'more \u001b[3Jsecond')).toBe(true)
+  })
+
+  it('reads a print that ended, or none at all, as nothing under way', () => {
+    expect(read()).toBe(false)
+    expect(read('\u001b[?2026hworking 1\u001b[?2026l')).toBe(false)
+    expect(read('\u001b[3J\u001b[?2026htranscript', '\u001b[?2026', 'l')).toBe(false)
   })
 })

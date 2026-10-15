@@ -6,16 +6,26 @@ import 'package:flutter/services.dart';
 
 import 'package:harness_mobile/core/harness_file_store.dart';
 import 'package:harness_mobile/core/local_key_value_store.dart';
+import 'package:harness_mobile/notify/system_notices.dart' show noticesWhen;
 
 import '../tty.dart';
 import '../tty_controls.dart';
 
-/// Whether Focus's first-time hints have been seen — once per install.
+/// Whether Focus's hints are put away — which, since the onboarding of 2026-10-12, they are unless
+/// asked for again (Settings ▸ Show the tips again).
+///
+/// ⚠️ **No tips before the first look** (owner, 2026-10-12): the first session opens on one line by
+/// the mic and nothing else, where four tips and then the notification prompt used to come over it
+/// (`docs/research/2026-10-11-phone-onboarding`, appendix). So nothing stored reads as put away, and
+/// only [forget] — the person asking — brings them up, once.
 class FocusHintsSeen {
   FocusHintsSeen({LocalKeyValueStore? storage})
     : _storage = storage ?? HarnessFileStore.shared;
 
   static const _key = 'phone_focus_hints_v1';
+
+  /// Stored under [_key] by [forget]: asked for again, to come up on the next Focus.
+  static const _again = 'again';
   final LocalKeyValueStore _storage;
 
   /// Shared by every Focus page, so a second page opened before the first read lands does not
@@ -33,7 +43,7 @@ class FocusHintsSeen {
       return _seen = true;
     }
     try {
-      _seen = await _storage.read(_key) == 'yes';
+      _seen = await _storage.read(_key) != _again;
     } on Exception {
       _seen = true; // No memory: never nag.
     }
@@ -44,7 +54,7 @@ class FocusHintsSeen {
   Future<void> forget() async {
     _seen = false;
     try {
-      await _storage.delete(_key);
+      await _storage.write(_key, _again);
     } on Exception {
       // Back for this run at least.
     }
@@ -204,8 +214,7 @@ class _FocusHintsState extends State<FocusHints> {
                       if (widget.onDone != null) ...[
                         const SizedBox(height: 28),
                         Text(
-                          'Notifications tell you when a harness needs you, '
-                          'and when a new device joins your account.',
+                          'Notifications tell you when $noticesWhen.',
                           textAlign: TextAlign.center,
                           style: tty.style(
                             size: TtySize.meta,

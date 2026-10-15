@@ -89,6 +89,35 @@ export interface StartupContract {
 }
 
 /**
+ * The screen Harness runs an engine's TUI on: the terminal's own scrollback, or a full-screen alternate screen of
+ * the engine's. Every launch Harness makes applies it (kit/launchScreen.ts), whatever the person's own settings say,
+ * so one engine looks the same on every computer. An engine that declares none runs as the person set it up.
+ *
+ * Why: one pane is driven by a desktop window and a phone in turn, and each takeover resizes it. In the scrollback
+ * the history is the viewer's own and scrolls natively, and Find, selection and the phone's long-press reach all of
+ * it; full screen, the engine pins its prompt to the foot of the pane and owns scrolling. The scrollback serves an
+ * engine that lays its history out again cleanly when the pane narrows: Codex does, so Harness runs it there
+ * (codex/launch.ts). Claude Code does not (it printed part of its conversation twice), and Harness leaves its screen
+ * to the person's own setting. The keyframe re-wraps a history kept in the scrollback by word (lib/historyRewrap.ts).
+ */
+export interface ScreenContract {
+  /** Argv given to every launch, ahead of the launch's own extra arguments. */
+  args?: readonly string[]
+  /** Variables exported after the person's rc files, so neither their shell nor their profile can undo them. */
+  environment?: Readonly<Record<string, string>>
+  /** Variables removed after the person's rc files: those that would choose the other screen. */
+  clearEnvironment?: readonly string[]
+  /**
+   * How the engine answers a resize in the scrollback, where it does so by printing its transcript again: within
+   * `withinMs` of the resize it writes `clears` (it has cleared the screen and the scrollback), then the transcript,
+   * which the first `ends` after the clear closes. A keyframe taken right after a resize waits for that print to end,
+   * so a viewer never draws the cleared screen in between (lib/tmuxStream.ts `snapshot`). The end is read off the
+   * output, not inferred from a pause in it: an engine at work animates its status line without one.
+   */
+  resizeRepaint?: { clears: string; ends: string; withinMs: number }
+}
+
+/**
  * Where an engine keeps its own settings for a launch made now. `setting`: the folder a daemon setting names,
  * unless the person's shell moves it, unless the agent has a profile of its own (Codex's CODEX_HOME).
  * `variable`: the folder a variable the person's shell sets names, else their home folder, or `folder` in it
@@ -214,6 +243,8 @@ export interface EngineLaunch {
   sharedServer?: SharedServerContract
   ownProvider?: OwnProviderContract
   startup?: StartupContract
+  /** The screen the engine's TUI runs on, where Harness chooses it; applied to every launch (kit/launchScreen.ts). */
+  screen?: ScreenContract
   /** The instruction file Harness writes its own notes into (a harness's bootstrap, the saved APIs); else AGENTS.md. */
   instructionFile?: string
   /** The line, in that file, that has the engine read `file` too (Claude Code's `@AGENTS.md` import). */

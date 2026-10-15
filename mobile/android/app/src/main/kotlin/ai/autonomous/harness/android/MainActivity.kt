@@ -7,12 +7,16 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import java.io.ByteArrayOutputStream
+import io.flutter.FlutterInjector
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -98,6 +102,44 @@ class MainActivity : FlutterActivity() {
           else -> result.notImplemented()
         }
       }
+
+    // `harness/chime` — a short sound the app plays of its own (Dart: `lib/core/chime.dart`): the
+    // two glass notes when a computer joins during the onboarding. `play` takes the Flutter asset's
+    // name and answers whether it played.
+    MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "harness/chime")
+      .setMethodCallHandler { call, result ->
+        if (call.method != "play") { result.notImplemented(); return@setMethodCallHandler }
+        val asset = call.arguments as? String
+        result.success(asset != null && playChime(asset))
+      }
+  }
+
+  /** Plays the Flutter asset [asset] once, as a sonification — the system's own sounds' stream —
+   *  and only while the ringer is on: muted means silent, and the haptic Dart plays beside it is
+   *  felt either way. False when it did not play. The player lets itself go when it finishes. */
+  private fun playChime(asset: String): Boolean {
+    val audio = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+    if (audio.ringerMode != AudioManager.RINGER_MODE_NORMAL) return false
+    val key = FlutterInjector.instance().flutterLoader().getLookupKeyForAsset(asset)
+    val player = MediaPlayer()
+    return try {
+      player.setAudioAttributes(
+        AudioAttributes.Builder()
+          .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+          .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+          .build()
+      )
+      // A WAV is stored uncompressed in the APK, so it opens as a descriptor into it.
+      assets.openFd(key).use { fd -> player.setDataSource(fd.fileDescriptor, fd.startOffset, fd.length) }
+      player.setOnCompletionListener { it.release() }
+      player.setOnErrorListener { failed, _, _ -> failed.release(); true }
+      player.prepare()
+      player.start()
+      true
+    } catch (e: Exception) {
+      player.release()
+      false
+    }
   }
 
   /** Whether the clipboard holds an image, from its description alone — the clip is never opened. */

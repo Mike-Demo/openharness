@@ -26,6 +26,29 @@ const totals = () => {
   return result
 }
 
+it('keeps upgrade backlogs unattributed and fences explicit-work intent on unavailable consent', async () => {
+  await usage.stop()
+  const context = { surface: 'cli', release: '0.3.95', platform: 'macos', channel: 'production' } as const
+  usage = createProductUsage({ file, now: () => now, request, context })
+  await usage.sync()
+  usage.launch({ id: 'PRIVATE_USER_INTENT', phase: 'work_requested', origin: 'interactive' })
+  usage.observe('turn_started', 'PRIVATE_USER_INTENT', false)
+  usage.observe('turn_ended', 'PRIVATE_USER_INTENT', false)
+  await usage.stop()
+  usage = createProductUsage({ file, now: () => now, request, context: { ...context, release: '0.3.96' } })
+  await usage.sync(); await usage.sync()
+  const workReport = (sent as { counters: Record<string, number>; context: typeof context }[]).find(r => r.counters.health_cli_interactive_work_days)
+  expect(workReport?.context.release).toBe('unknown')
+  expect(totals().health_cli_first_interactive_work).toBe(1)
+  usage.launch({ id: 'PRIVATE_STALE_INTENT', phase: 'work_requested', origin: 'interactive' })
+  request.mockResolvedValueOnce({ status: 503, body: {} })
+  await usage.sync(); await usage.sync()
+  usage.observe('turn_started', 'PRIVATE_STALE_INTENT', false); await usage.sync()
+  expect(totals().health_cli_unclassified_turns_started).toBe(1)
+  expect(JSON.stringify(sent)).not.toContain('PRIVATE')
+  expect(readFileSync(file, 'utf8')).not.toContain('PRIVATE')
+})
+
 it('keeps first-launch 24-hour value counts on their original cohort day across restart, without an identity', async () => {
   await usage.sync()
   now = Date.parse('2026-10-12T23:30:00Z')
@@ -61,6 +84,107 @@ it('collects nothing before it can check the preference, and respects off', asyn
   usage.observe('turn_started', 'private-agent', false)
   usage.opened('desktop'); await usage.sync()
   expect(sent).toEqual([])
+})
+
+it('discards a permanently invalid packet so later reports and loss counts can recover', async () => {
+  await usage.sync(); usage.counter('search_requests')
+  request.mockImplementationOnce(async () => ({ status: 200, body: { data: { enabled: true, revision: 0 } } }))
+    .mockImplementationOnce(async () => ({ status: 400, body: {} }))
+  await usage.sync()
+  expect(JSON.parse(readFileSync(file, 'utf8')).pending).toBeNull()
+  await usage.sync()
+  expect(totals().health_cli_report_rejected).toBe(1)
+  expect(totals().health_cli_report_failure_invalid).toBe(1)
+})
+
+it('sends hn\'s counters alone, so a backend from before `tui` refuses only them', async () => {
+  const tui = (metric: string) => metric.startsWith('ui_tui_') || metric.startsWith('health_tui_')
+  await usage.sync()
+  usage.counter('ui_tui_sign_in_started'); usage.counter('search_requests'); usage.counter('health_tui_funnel_first_work')
+  usage.counter('ui_desktop_sign_in_ok'); usage.counter('ui_tui_sign_in_ok'); usage.counter('tui_opens')
+  // That backend's strict vocabulary: one unknown name makes the whole report invalid.
+  const accepted: Record<string, number>[] = []
+  request.mockImplementation(async (method: string, _path: string, body?: unknown) => {
+    if (method === 'GET') return { status: 200, body: { data: { enabled: true, revision: 0 } } }
+    const counters = (body as { counters: Record<string, number> }).counters
+    sent.push(structuredClone(body))
+    if (Object.keys(counters).some(tui)) return { status: 400, body: { error: { code: 'INVALID_USAGE_REPORT' } } }
+    accepted.push(counters)
+    return { status: 200, body: { data: { accepted: true } } }
+  })
+  for (let i = 0; i < 4; i++) await usage.sync()
+  for (const report of sent as { counters: Record<string, number> }[]) {
+    const names = Object.keys(report.counters)
+    expect(names.every(tui) || !names.some(tui), names.join()).toBe(true)
+  }
+  const kept = Object.assign({}, ...accepted)
+  expect(kept).toMatchObject({ search_requests: 1, ui_desktop_sign_in_ok: 1, tui_opens: 1 })
+  expect(Object.keys(kept).some(tui)).toBe(false)
+  // Its refusal is hn's alone: no delivery failure is counted for it.
+  expect(kept.health_cli_report_rejected).toBeUndefined()
+  expect(kept.health_cli_report_failure_invalid).toBeUndefined()
+  expect(JSON.parse(readFileSync(file, 'utf8'))).toMatchObject({ pending: null, days: {} })
+  // Refused for the rest of the UTC day: hn's counts are dropped, not sent again or kept to age.
+  const refusals = () => (sent as { counters: Record<string, number> }[]).filter(r => Object.keys(r.counters).some(tui)).length
+  expect(refusals()).toBe(1)
+  usage.counter('ui_tui_viewer_open_started'); usage.counter('search_requests')
+  for (let i = 0; i < 3; i++) await usage.sync()
+  expect(refusals()).toBe(1)
+  expect(JSON.stringify(JSON.parse(readFileSync(file, 'utf8')).days)).not.toContain('_tui_')
+  // The next UTC day (an updated backend, say) takes them again.
+  now += 86_400_000
+  request.mockImplementation(async (method: string, _path: string, body?: unknown) => {
+    if (method === 'GET') return { status: 200, body: { data: { enabled: true, revision: 0 } } }
+    sent.push(structuredClone(body))
+    return { status: 200, body: { data: { accepted: true } } }
+  })
+  usage.counter('ui_tui_viewer_open_started')
+  for (let i = 0; i < 3; i++) await usage.sync()
+  expect(totals().ui_tui_viewer_open_started).toBe(1)
+})
+
+it('holds hn\'s observations until the first choice read: counted when sharing is on, discarded when off', async () => {
+  usage.counter('ui_tui_remote_connect_started'); usage.counter('health_tui_funnel_first_work'); usage.counter('search_requests')
+  await usage.sync(); await usage.sync()
+  expect(totals()).toMatchObject({ ui_tui_remote_connect_started: 1, health_tui_funnel_first_work: 1 })
+  expect(totals().search_requests).toBeUndefined()
+
+  await usage.stop(); sent = []; enabled = false
+  rmSync(file, { force: true })
+  usage = createProductUsage({ file, now: () => now, request })
+  for (let i = 0; i < 70; i++) usage.counter('ui_tui_remote_connect_started')
+  await usage.sync()
+  enabled = true
+  await usage.sync(); await usage.sync()
+  expect(totals().ui_tui_remote_connect_started).toBeUndefined()
+})
+
+it('keeps holding hn\'s observations through a failed choice read, bounded, and counts them once sharing is known on', async () => {
+  request.mockResolvedValueOnce({ status: 503, body: {} })
+  for (let i = 0; i < 70; i++) usage.counter('ui_tui_remote_connect_started')
+  await usage.sync()
+  expect(sent).toEqual([])
+  await usage.sync(); await usage.sync(); await usage.sync()
+  expect(totals().ui_tui_remote_connect_started).toBe(64)
+})
+
+it.each([
+  [503, 'USAGE_WRITE_CONFLICT', 'write_conflict'], [503, 'USAGE_TRANSACTION_FAILED', 'transaction'],
+  [504, 'BACKEND_TIMEOUT', 'timeout'], [502, 'BACKEND_UNREACHABLE', 'unreachable'],
+  [429, 'PRIVATE_CANARY', 'rate_limited'], [502, 'AUTH_UNAVAILABLE', 'auth'],
+])('retains an immutable report on %i and queues only its fixed %s category', async (status, code, category) => {
+  await usage.sync(); usage.counter('search_requests')
+  request.mockResolvedValueOnce({ status: 200, body: { data: { enabled: true, revision: 0 } } })
+    .mockResolvedValueOnce({ status: status as number, body: { error: { code, message: 'PRIVATE_CANARY' } } })
+  await usage.sync()
+  const pending = JSON.parse(readFileSync(file, 'utf8')).pending
+  expect(pending.counters.search_requests).toBe(1)
+  await usage.sync(); await usage.sync()
+  expect(sent[0]).toEqual(pending)
+  expect(totals()[`health_cli_report_failure_${category}`]).toBe(1)
+  expect(totals().health_cli_report_rejected).toBe(1)
+  expect(JSON.stringify(sent)).not.toContain('PRIVATE_CANARY')
+  expect(readFileSync(file, 'utf8')).not.toContain('PRIVATE_CANARY')
 })
 
 it('reduces turns locally, excludes replay, and never persists or uploads agent identity', async () => {
@@ -179,6 +303,35 @@ it('accepts only known scalar counters and stops diagnostics with the privacy ch
   await usage.sync(); usage.counter('create_requests'); usage.counter('PRIVATE_CANARY' as never); await usage.sync()
   enabled = false; await usage.sync(); usage.counter('create_failed'); await usage.sync()
   expect(totals()).toEqual({ create_requests: 1, create_installation_days: 1, create_first_installations: 1, measurement_v2_installation_days: 1 })
+})
+
+it('counts a read the apps make on their own for reliability only, never as a feature someone used', async () => {
+  // agent_recent after every agent update, dsh_list on every connect, the pickers' model lists and
+  // session previews: prod's first day read 41,179 "history" requests across 72 "history"
+  // installation-days, almost every active one, without anyone opening a history.
+  await usage.sync()
+  for (const metric of ['history_requests', 'history_ok', 'history_under_1s', 'history_page_requests',
+    'store_list_requests', 'model_list_requests', 'model_list_failed'] as const) usage.counter(metric)
+  usage.counter('search_requests')
+  await usage.sync()
+  expect(totals()).toEqual({ measurement_v2_installation_days: 1,
+    history_requests: 1, history_ok: 1, history_under_1s: 1, history_page_requests: 1,
+    store_list_requests: 1, model_list_requests: 1, model_list_failed: 1,
+    search_requests: 1, search_installation_days: 1, search_first_installations: 1 })
+})
+
+it('counts the Store or a model list as used only when a person opened it, once a day', async () => {
+  await usage.sync()
+  usage.counter('store_list_requests'); usage.counter('store_list_user_requests'); usage.counter('store_list_user_requests')
+  await usage.sync()
+  expect(totals()).toEqual({ measurement_v2_installation_days: 1, store_list_requests: 1, store_list_user_requests: 2,
+    store_list_user_installation_days: 1, store_list_user_first_installations: 1 })
+  now += 86400000; await usage.stop(); usage = createProductUsage({ file, now: () => now, request }); await usage.sync()
+  usage.counter('store_list_user_requests'); usage.counter('model_list_user_requests')
+  await usage.sync()
+  expect(totals()).toMatchObject({ store_list_user_installation_days: 2, store_list_user_repeat_installation_days: 1,
+    store_list_user_first_installations: 1, model_list_user_first_installations: 1 })
+  expect(totals()).not.toHaveProperty('store_list_installation_days')
 })
 
 it('tracks a durable launch through polls without persisting its receipt or counting polls as attempts', async () => {

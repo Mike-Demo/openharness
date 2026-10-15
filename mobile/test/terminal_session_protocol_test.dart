@@ -1008,16 +1008,22 @@ void main() {
     });
 
     test(
-      'clearing the prompt is ctrl-E then ctrl-U, and the keyboard\'s buffer',
+      'clearing the prompt is ctrl-K then ctrl-U, and the keyboard\'s buffer',
       () async {
-        final (s, _) = await live();
+        // A prompt two rows from the foot of the screen, its footer under it
+        // and the cursor back in it, as Claude Code draws one.
+        final (s, _) = await live(
+          screen: '${'\r\n' * 22}❯ fix it\r\n  ? for shortcuts\x1b[23;9H',
+        );
         final viewport = _Viewport();
         s.attachViewport(viewport);
 
         s.clearPrompt();
-        await until(() => _typed(wire).length == 2);
+        await until(() => _typed(wire).length == 8);
 
-        expect(_typed(wire), '\x05\x15');
+        // One kill is one row as wrapped, and a kill past the prompt's ends
+        // does nothing — so two each way for each of its two rows.
+        expect(_typed(wire), '${'\x0b' * 4}${'\x15' * 4}');
         expect(viewport.cleared, 1);
         s.detachViewport(_Viewport());
         s.resetInputBuffer();
@@ -1084,6 +1090,38 @@ void main() {
 
       expect(await s.sendComposerText('hi'), isFalse);
       expect(await s.pasteText('hi'), isFalse);
+    });
+
+    test('a line sent — a Return, or a message that went — is said, once each', () async {
+      final (s, _) = await live();
+      var sent = 0;
+      s.onLineSent = () => sent++;
+
+      s.terminal.textInput('l');
+      s.terminal.textInput('s');
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(sent, 0, reason: 'keys typed are not a line sent');
+      s.terminal.textInput('\r');
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(sent, 1);
+
+      expect(await s.sendComposerText('  '), isFalse);
+      expect(sent, 1, reason: 'nothing went');
+      expect(await s.sendComposerText('fix it'), isTrue);
+      expect(sent, 2);
+    });
+
+    test('a line that cannot go is not said', () async {
+      final s = session();
+      await s.open();
+      await ready(s, readOnly: true);
+      var sent = 0;
+      s.onLineSent = () => sent++;
+
+      s.terminal.textInput('ls\r');
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(await s.sendComposerText('hi'), isFalse);
+      expect(sent, 0);
     });
 
     test(

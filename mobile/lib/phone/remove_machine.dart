@@ -10,9 +10,10 @@ import 'phone_sheet.dart';
 /// irreversible act, and one way of reporting that it failed.
 ///
 /// ⚠️ **Not "Unlink this phone", and the sentence has to say so.** Unlinking drops this phone's own
-/// pin and leaves the computer as it was. This takes the computer off the ACCOUNT: the backend
-/// signs Harness out there (`AppNotifier.deleteMachine`), on every device at once. What it does not
-/// touch is the computer's disk — the projects stay — and signing in there again brings it back.
+/// pin and leaves the computer as it was. This takes the computer off the ACCOUNT
+/// (`AppNotifier.deleteMachine`): its key leaves Your devices, so no device of the account trusts it
+/// any more, and its machine record goes, which signs Harness out there. What it does not touch is
+/// the computer's disk — the projects stay — and signing in there again adds it back as a new device.
 ///
 /// Says something only when it fails: the row leaving the list is the report that it worked.
 Future<void> confirmRemoveMachine(
@@ -33,8 +34,8 @@ Future<void> confirmRemoveMachine(
     // renamed alike are still told apart at the one step that removes one.
     detail: hostname.isEmpty || hostname == name ? null : hostname,
     message:
-        'It leaves your account, and Harness on that computer is signed out. '
-        'Its projects stay there. Sign in on it again to bring it back.',
+        'It leaves your account and Your devices, and Harness on that computer is signed out. '
+        'Its projects stay there. Signing in on it again adds it back as a new device.',
     confirmLabel: 'Remove',
   );
   if (!confirmed || !context.mounted) return;
@@ -44,7 +45,7 @@ Future<void> confirmRemoveMachine(
       ?.showSnackBar(SnackBar(content: Text(error)));
 }
 
-/// "Try again" on a computer that reads asleep or is stuck connecting — see
+/// "Try again" on a computer that reads offline or is stuck connecting — see
 /// [AppNotifier.retryMachine]. The row's own word moves with the answer, so this says something only
 /// when the account itself could not be read.
 Future<void> retryComputer(

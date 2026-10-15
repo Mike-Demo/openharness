@@ -1,4 +1,4 @@
-import { productUsageLaunch, productUsageRequest } from './lib/productUsageSignals.js'
+import { productObservation, productUsageIntent, productUsageLaunch, productUsageRequest } from './lib/productUsageSignals.js'
 import { isLocalOnly, withoutUpdate } from './lib/cardUpdate.js'
 import type { PurgeAgentService } from './lib/purgeAgentService.js'
 import { MESSAGES_REQUESTS, SHARE_REQUESTS, type Asker, type LocalWindows, type WindowSurface, type BackendNotice, type GatewayEvents, type GatewayPort, type ModelsPort, type RemoteClient, type RemoteRole, type RemoteTransport } from './core/api.js'
@@ -617,13 +617,18 @@ export class BackendSocket {
   /** Attach one authenticated loopback desktop client to the same RPC and event plane as cloud web. */
   registerLocalClient(connId: string, sink: LocalClientSink, opts: { tool?: boolean; surface?: WindowSurface } = {}): boolean {
     if (!isLocalClientId(connId) || this.localClients.has(connId)) return false
+    const surface = opts.surface ?? 'desktop'
+    // The app holds a connection per machine and dials again on every reconnect and link retry:
+    // an open is its surface going from no window to one, not each connection (5,675 "desktop opens"
+    // across 68 active installations on the first measured day).
+    const firstOfSurface = !opts.tool && this.localWindows()[surface] === 0
     this.localClients.set(connId, sink)
     if (opts.tool) this.toolClients.add(connId)
     else if (opts.surface === 'tui') this.tuiClients.add(connId)
     this.gatewayPort?.localClients(this.localWindows())
     if (opts.tool) return true
     // The window is the person's session: the backend counts it, now or when the link next comes up.
-    this.gatewayPort?.windowOpened(opts.surface ?? 'desktop')
+    if (firstOfSurface) this.gatewayPort?.windowOpened(surface)
     this.onLocalClient?.(connId, true)
     return true
   }
@@ -636,6 +641,14 @@ export class BackendSocket {
 
   /** The windows attached right now — for a listener that arrives after some of them did. */
   localClientIds(): string[] { return [...this.localClients.keys()].filter((connId) => !this.toolClients.has(connId)) }
+
+  /** hn's own measurement of its flows (`product_observe`, consumed by localWsServer.ts): counted only
+   *  for a connection that selected this computer as hn, into the gateway's product-usage queue, which
+   *  counts nothing while it has none (signed out) or the account's choice is off. Never answered. */
+  observeProduct(connId: string, payload: unknown): void {
+    if (!this.tuiClients.has(connId)) return
+    for (const metric of productObservation(payload)) this.toGateway('usage', (gateway) => gateway.usageCounter?.(metric))
+  }
 
   /** Routes a request to the service that answers it, in its own process (core/serviceLinks.ts) or in
    *  this one (core/serviceHost.ts): false when none does and the socket answers it itself. */
@@ -757,7 +770,7 @@ export class BackendSocket {
   private emitReply(connId: string, type: string, requestId: unknown, payload: Record<string, unknown>): void {
     const resultType = rpcResultType(type)
     // Before the E2EE wrap: an RPC reply is only readable here.
-    if (env.LOG_FRAMES && !MESSAGE_REQUESTS.has(type) && !ROUTE_COMMAND_TYPES.has(type) && !type.startsWith('viewer_') && type !== 'phone_pair' && type !== 'api_connections' && type !== 'connectors' && type !== 'browser_open' && type !== 'browser_callback' && type !== 'orchestrator' && !type.startsWith('grid_fleet_') && type !== 'agent_read_file' && type !== 'project_preview' && type !== 'git_project_info' && type !== 'scm_project_info' && type !== 'git_pull_request' && type !== 'agent_handoff_prepare' && !SHARE_REQUEST_TYPES.has(type) && !type.startsWith('pair')) logFrame('→', connId ? `conn:${sid(connId)}` : 'backend', { type: resultType, payload: { requestId, ...payload } })
+    if (env.LOG_FRAMES && !MESSAGE_REQUESTS.has(type) && !ROUTE_COMMAND_TYPES.has(type) && !type.startsWith('viewer_') && type !== 'phone_pair' && type !== 'api_connections' && type !== 'connectors' && type !== 'os_device' && type !== 'browser_open' && type !== 'browser_callback' && type !== 'orchestrator' && !type.startsWith('grid_fleet_') && type !== 'agent_read_file' && type !== 'project_preview' && type !== 'git_project_info' && type !== 'scm_project_info' && type !== 'git_pull_request' && type !== 'agent_handoff_prepare' && !SHARE_REQUEST_TYPES.has(type) && !type.startsWith('pair')) logFrame('→', connId ? `conn:${sid(connId)}` : 'backend', { type: resultType, payload: { requestId, ...payload } })
     if (this.localClients.has(connId)) {
       this.sendTo(connId, { type: resultType, payload: { requestId, ...payload } })
       return
@@ -816,12 +829,17 @@ export class BackendSocket {
     // actually asked for rather than as an opaque __e2e envelope.
     // Terminal frames contain raw keystrokes, paste text and screen bytes after
     // unwrap. Never pass them to the frame logger, even in diagnostic mode.
-    if (env.LOG_FRAMES && !MESSAGE_REQUESTS.has(type) && !ROUTE_COMMAND_TYPES.has(type) && !type.startsWith('terminal_') && !type.startsWith('viewer_') && !type.startsWith('grid_fleet_') && type !== 'agent_read_file' && type !== 'project_preview' && type !== 'git_project_info' && type !== 'scm_project_info' && type !== 'git_pull_request' && type !== 'agent_handoff_prepare' && type !== 'orchestrator' && type !== 'api_connections' && type !== 'connectors' && type !== 'browser_open' && type !== 'browser_callback' && type !== 'phone_pair' && !SHARE_REQUEST_TYPES.has(type) && !type.startsWith('pair')) {
+    if (env.LOG_FRAMES && !MESSAGE_REQUESTS.has(type) && !ROUTE_COMMAND_TYPES.has(type) && !type.startsWith('terminal_') && !type.startsWith('viewer_') && !type.startsWith('grid_fleet_') && type !== 'agent_read_file' && type !== 'project_preview' && type !== 'git_project_info' && type !== 'scm_project_info' && type !== 'git_pull_request' && type !== 'agent_handoff_prepare' && type !== 'orchestrator' && type !== 'api_connections' && type !== 'connectors' && type !== 'os_device' && type !== 'browser_open' && type !== 'browser_callback' && type !== 'phone_pair' && !SHARE_REQUEST_TYPES.has(type) && !type.startsWith('pair')) {
       logFrame('←', connId ? `conn:${sid(connId)}` : 'backend', frame)
     }
     const launchMeasured = productUsageLaunch(type, (frame.payload as { creationId?: unknown } | undefined)?.creationId,
       signal => this.toGateway('usage', gateway => gateway.usageLaunch?.(signal)))
-    const measured = productUsageRequest(type, (metric) => this.toGateway('usage', (gateway) => gateway.usageCounter?.(metric)))
+    const usageSource = local && connId && this.toolClients.has(connId) ? 'tool' : local || role === 'web' ? 'app' : 'unknown'
+    const measured = productUsageRequest(type, (metric) => this.toGateway('usage', (gateway) => gateway.usageCounter?.(metric)), Date.now, usageSource,
+      (frame.payload as { userAction?: unknown } | undefined)?.userAction === true)
+    productUsageIntent(type, (frame.payload as { usageIntent?: unknown } | undefined)?.usageIntent,
+      (frame.payload as { agentId?: unknown } | undefined)?.agentId, usageSource,
+      signal => this.toGateway('usage', gateway => gateway.usageLaunch?.(signal)))
     const reply = (t: string, rid: unknown, p: Record<string, unknown>): void => {
       if (t === type) {
         measured(p.error ?? (p.failure as { code?: unknown } | undefined)?.code, p.state, !!p.agent, p.ok)

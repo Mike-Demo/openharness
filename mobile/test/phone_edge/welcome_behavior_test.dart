@@ -5,13 +5,13 @@ import 'package:harness_mobile/phone/new_agent_page.dart';
 import 'package:harness_mobile/phone/tty_controls.dart';
 import 'package:harness_mobile/phone/phone_shell_scope.dart';
 import 'package:harness_mobile/phone/welcome/connect_code.dart';
-import 'package:harness_mobile/phone/welcome/connect_computer.dart';
 import 'package:harness_mobile/phone/welcome/focus_hints.dart';
+import 'package:harness_mobile/phone/welcome/onboarding_copy.dart';
 import 'package:harness_mobile/phone/welcome/phone_welcome.dart';
 import 'package:harness_mobile/phone/welcome/pick_up_page.dart';
 import 'package:harness_mobile/phone/welcome/scan_to_connect.dart';
-import 'package:harness_mobile/phone/welcome/set_up_computer.dart';
 import 'package:harness_mobile/phone/welcome/unlock_computer.dart';
+import 'package:harness_mobile/phone/welcome/your_computer.dart';
 import 'package:harness_mobile/core/local_key_value_store.dart';
 import 'package:harness_mobile/core/models.dart';
 import 'package:harness_mobile/state/app_state.dart';
@@ -20,9 +20,9 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../voice_fakes.dart';
 import 'edge_fixture.dart';
 
-/// The first-run flow as somebody walks it: wrong email, short code, Back, a scanned code that
-/// signs in and one that has expired, a password that fails and one that works, the hints over a
-/// first terminal, and the ways to a first harness.
+/// The first-run flow as somebody walks it: wrong email, short code, Back, the address sent to the
+/// computer, a password that fails and one that works, the hints only when asked for, and the
+/// ways to a first harness.
 ///
 /// ⚠️ The camera, the share sheet, Mail and the account service are all answered here — no screen
 /// under test reaches the real one.
@@ -66,49 +66,37 @@ void main() {
   }
 
   group('signing in', () {
-    Future<({AppNotifier app, List<String> sent, List<String> scans})> welcome(
-      WidgetTester tester, {
-      Object? sample,
-      bool scanFails = false,
-    }) async {
+    Future<({AppNotifier app, List<String> sent})> welcome(
+      WidgetTester tester,
+    ) async {
       setPhone(tester, largePhone);
       final app = edgeApp(noMachines: true);
       final sent = <String>[];
-      final scans = <String>[];
       await tester.pumpWidget(
         phoneApp(
           PhoneWelcome(
             notifier: app,
-            onTrySample: (_) async => sample,
             sendCode: (email) async => sent.add(email),
             signIn: (_, code) async {
               if (code != '4242') throw Exception('That code is not right.');
             },
-            signInWithScan: (code) async {
-              scans.add(code);
-              if (scanFails) throw StateError('expired');
-            },
-            scanCamera: const SizedBox(),
+            scanCamera: const SizedBox.expand(),
           ),
         ),
       );
       await frames(tester);
-      return (app: app, sent: sent, scans: scans);
+      return (app: app, sent: sent);
     }
 
-    /// Connect computer, then the camera's "Can’t scan?" sheet, then its email.
+    /// The emailed code's way in: Continue with email, under the accounts.
     Future<void> toEmail(WidgetTester tester) async {
-      await tester.tap(find.byKey(const ValueKey('set-up-scan')));
-      await frames(tester);
-      await tester.tap(find.text('Can’t scan? Sign in another way'));
-      await frames(tester);
-      await tester.tap(find.text('Continue with email'));
+      await tester.tap(find.byKey(const ValueKey('welcome-continue-email')));
       await frames(tester);
     }
 
     testWidgets('a wrong email, then a short code, then a wrong one, then the '
         'right one', (tester) async {
-      final (:app, :sent, scans: _) = await welcome(tester);
+      final (:app, :sent) = await welcome(tester);
       await toEmail(tester);
 
       await tester.enterText(find.byType(TextField), 'not-an-email');
@@ -143,24 +131,20 @@ void main() {
       await frames(tester);
       expect(sent, hasLength(2));
 
-      // Change email, then Back all the way out: the camera the email was chosen over, then the
-      // first screen.
+      // Change email, then Back: the welcome it was chosen on.
       await tester.tap(find.text('Change email'));
       await frames(tester);
       expect(find.text('Your email'), findsOneWidget);
       await tester.binding.handlePopRoute();
       await frames(tester);
-      expect(find.text('Scan the code on your computer'), findsOneWidget);
-      await tester.binding.handlePopRoute();
-      await frames(tester);
-      expect(find.text('Your agents\nin your pocket.'), findsOneWidget);
+      expect(find.text(OnboardingCopy.welcome), findsOneWidget);
       await close(tester, app);
     });
 
     testWidgets('Back from the code goes to the email, not out', (
       tester,
     ) async {
-      final (:app, sent: _, scans: _) = await welcome(tester);
+      final (:app, sent: _) = await welcome(tester);
       await toEmail(tester);
       await tester.enterText(find.byType(TextField), 'ada@example.com');
       await tester.testTextInput.receiveAction(TextInputAction.go);
@@ -168,37 +152,6 @@ void main() {
       await tester.binding.handlePopRoute();
       await frames(tester);
       expect(find.text('Your email'), findsOneWidget);
-      await close(tester, app);
-    });
-
-    testWidgets('Get it first, then Connect computer from there, then back', (
-      tester,
-    ) async {
-      final (:app, sent: _, scans: _) = await welcome(tester);
-      await tapInView(tester, find.byKey(const ValueKey('set-up-get-it')));
-      await frames(tester);
-      await tapInView(tester, find.byKey(const ValueKey('get-it-pair')));
-      await frames(tester);
-      expect(find.text('Scan the code on your computer'), findsOneWidget);
-      // Back from the camera is Get it, where it was opened, and back from that the first screen.
-      await tester.tap(find.bySemanticsLabel(RegExp('Back')).first);
-      await frames(tester);
-      expect(find.text('Get Harness\non your computer'), findsOneWidget);
-      await tester.tap(find.bySemanticsLabel(RegExp('Back')).first);
-      await frames(tester);
-      expect(find.text('Your agents\nin your pocket.'), findsOneWidget);
-      await close(tester, app);
-    });
-
-    testWidgets('the sample, on Get it, leads back to Get it', (tester) async {
-      final (:app, sent: _, scans: _) = await welcome(tester, sample: 'set-up');
-      // Not on the first screen: it is for somebody waiting on the computer to install.
-      expect(find.text('Try the sample while you wait'), findsNothing);
-      await tapInView(tester, find.byKey(const ValueKey('set-up-get-it')));
-      await frames(tester);
-      await tapInView(tester, find.text('Try the sample while you wait'));
-      await frames(tester);
-      expect(find.text('Get Harness\non your computer'), findsOneWidget);
       await close(tester, app);
     });
   });
@@ -245,100 +198,19 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       await tester.pump(const Duration(seconds: 3));
     });
-
-    testWidgets('a scanned sign-in code signs in; an expired one sends an '
-        'email code instead', (tester) async {
-      setPhone(tester, largePhone);
-      for (final fails in [false, true]) {
-        final app = edgeApp(noMachines: true);
-        final sent = <String>[];
-        final scans = <String>[];
-        await tester.pumpWidget(
-          phoneApp(
-            PhoneWelcome(
-              notifier: app,
-              sendCode: (email) async => sent.add(email),
-              signIn: (_, _) async {},
-              signInWithScan: (code) async {
-                scans.add(code);
-                if (fails) throw StateError('expired');
-              },
-              scanCamera: const SizedBox(),
-            ),
-          ),
-        );
-        await frames(tester);
-        await tester.tap(find.byKey(const ValueKey('set-up-scan')));
-        await frames(tester);
-        tester
-            .widget<ScanToConnectPage>(find.byType(ScanToConnectPage))
-            .onCode(
-              ConnectCode.parse(
-                ConnectCode.link(
-                  'ada@example.com',
-                  machineId: 'm',
-                  pairCode: '777',
-                  signIn: 'h-1',
-                ),
-              )!,
-            );
-        await frames(tester);
-        expect(scans, ['h-1']);
-        expect(app.pendingPairing, (machineId: 'm', code: '777'));
-        expect(sent, fails ? ['ada@example.com'] : isEmpty);
-        await close(tester, app);
-      }
-    });
   });
 
-  // The old page (email the steps, a Terminal/Mac tab, four commands) is Connect your computer
-  // now, with the sample on Get it — see connect_computer_test.dart for the signed-in half.
-  testWidgets(
-    'set up your computer: Get it, and the sample while you wait',
-    (tester) async {
-      setPhone(tester, largePhone);
-      final app = edgeApp(noMachines: true);
-      var samples = 0;
-      await tester.pumpWidget(
-        phoneApp(
-          ConnectComputerPage(
-            notifier: app,
-            signedIn: false,
-            onTrySample: (_) async => samples++,
-          ),
-        ),
-      );
-      await frames(tester);
-      expect(find.text('Your agents\nin your pocket.'), findsOneWidget);
-      // Not watching: nothing says it is waiting for the computer.
-      expect(find.text('Waiting for your computer…'), findsNothing);
-      expect(find.text('Email me the setup link'), findsNothing);
-      await tapInView(tester, find.byKey(const ValueKey('set-up-get-it')));
-      await frames(tester);
-      await tapInView(tester, find.text('Try the sample while you wait'));
-      await frames(tester);
-      expect(samples, 1);
-      await close(tester, app);
-    },
-  );
-
-  testWidgets('Get it: the download page goes to the share sheet', (
+  testWidgets('On your computer, go to: the address goes to the share sheet', (
     tester,
   ) async {
     setPhone(tester, largePhone);
-    await tester.pumpWidget(
-      phoneApp(
-        Scaffold(
-          body: GetHarnessPage(onBack: () {}, onPair: () {}),
-        ),
-      ),
-    );
+    final app = edgeApp(noMachines: true);
+    await tester.pumpWidget(phoneApp(YourComputerPage(notifier: app)));
     await frames(tester);
-    await tester.tap(find.byKey(const ValueKey('get-it-send')));
+    await tester.tap(find.byKey(const ValueKey('go-address')));
     await frames(tester);
     expect(platformCalls.where((call) => call.contains('share')), hasLength(1));
-    await tester.pumpWidget(const SizedBox());
-    await tester.pump(const Duration(seconds: 3));
+    await close(tester, app);
   });
 
   group('unlocking a computer', () {
@@ -404,42 +276,91 @@ void main() {
     });
   });
 
-  group('the first-time hints', () {
-    testWidgets('shown once: a touch puts them away for good', (tester) async {
-      setPhone(tester, largePhone);
+  group('the hints over Focus', () {
+    testWidgets(
+      'not before the first look: only when asked for again, then once',
+      (tester) async {
+        setPhone(tester, largePhone);
+        final storage = MemoryKeyValueStore();
+        var done = 0;
+        Widget hints() => phoneApp(
+          FocusHints(
+            micBottom: 60,
+            store: FocusHintsSeen(storage: storage),
+            onDone: () => done++,
+          ),
+        );
+        // A first terminal: nothing over it (owner, 2026-10-12).
+        await tester.pumpWidget(hints());
+        await frames(tester);
+        expect(find.text('→ swipe right'), findsNothing);
+
+        // Settings ▸ Show the tips again.
+        await FocusHintsSeen(storage: storage).forget();
+        await tester.pumpWidget(const SizedBox());
+        await tester.pumpWidget(hints());
+        await frames(tester);
+        expect(find.text('→ swipe right'), findsOneWidget);
+        await tester.tapAt(const Offset(200, 400));
+        await tester.pump();
+        expect(find.text('→ swipe right'), findsNothing);
+        expect(done, 1);
+        expect(storage.values.values, contains('yes'));
+
+        // The next Focus, on the same install: nothing.
+        await tester.pumpWidget(const SizedBox());
+        await tester.pumpWidget(hints());
+        await frames(tester);
+        expect(find.text('→ swipe right'), findsNothing);
+      },
+    );
+
+    // ⚠️ The OS's notification prompt follows them, so they say what a notice is for — and only what
+    // reaches a phone: a question never does (`commander_question` goes to the dial and the
+    // computer's own window only).
+    testWidgets(
+      'before the notification prompt: a harness finishing, a new device — never "needs you"',
+      (tester) async {
+        setPhone(tester, largePhone);
+        Widget hints({VoidCallback? onDone}) => phoneApp(
+          FocusHints(
+            micBottom: 60,
+            store: FocusHintsSeen(
+              storage: MemoryKeyValueStore()
+                ..values['phone_focus_hints_v1'] = 'again',
+            ),
+            onDone: onDone,
+          ),
+        );
+        await tester.pumpWidget(hints(onDone: () {}));
+        await frames(tester);
+        expect(find.text('→ swipe right'), findsOneWidget);
+        expect(
+          find.text(
+            'Notifications tell you when a harness finishes, or a new device joins your account.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.textContaining('needs you'), findsNothing);
+
+        // No prompt after them: no line about notices either.
+        await tester.pumpWidget(const SizedBox());
+        await tester.pumpWidget(hints());
+        await frames(tester);
+        expect(find.text('→ swipe right'), findsOneWidget);
+        expect(find.textContaining('Notifications'), findsNothing);
+      },
+    );
+
+    test('nothing stored is put away; asked for, they come back; a store that fails never nags', () async {
       final storage = MemoryKeyValueStore();
-      var done = 0;
-      Widget hints() => phoneApp(
-        FocusHints(
-          micBottom: 60,
-          store: FocusHintsSeen(storage: storage),
-          onDone: () => done++,
-        ),
-      );
-      await tester.pumpWidget(hints());
-      await frames(tester);
-      expect(find.text('→ swipe right'), findsOneWidget);
-      await tester.tapAt(const Offset(200, 400));
-      await tester.pump();
-      expect(find.text('→ swipe right'), findsNothing);
-      expect(done, 1);
-      expect(storage.values.values, contains('yes'));
-
-      // The next Focus, on the same install: nothing.
-      await tester.pumpWidget(const SizedBox());
-      await tester.pumpWidget(hints());
-      await frames(tester);
-      expect(find.text('→ swipe right'), findsNothing);
-    });
-
-    test('forgotten, they come back; a store that fails never nags', () async {
-      final storage = MemoryKeyValueStore()
-        ..values['phone_focus_hints_v1'] = 'yes';
       final seen = FocusHintsSeen(storage: storage);
       expect(await seen.seen(), isTrue);
       await seen.forget();
       expect(await seen.seen(), isFalse);
-      expect(storage.values, isEmpty);
+      expect(storage.values['phone_focus_hints_v1'], 'again');
+      await seen.markSeen();
+      expect(await FocusHintsSeen(storage: storage).seen(), isTrue);
 
       final broken = FocusHintsSeen(storage: _Failing());
       expect(await broken.seen(), isTrue);

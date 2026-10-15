@@ -508,13 +508,22 @@ void main() {
         await capture(tester, 'model-manage-focused');
         await key(tester, LogicalKeyboardKey.space);
         expect(app.downloads, [(machine: 'm', model: 'qwen')]);
-        expect(button('picker.model_download').onPressed, isNull);
+        // While it downloads, the one action is to cancel it.
+        expect(
+          find.byKey(const ValueKey('resource-action:picker.model_download')),
+          findsNothing,
+        );
+        expect(find.text('Cancel download'), findsOneWidget);
         await key(tester, LogicalKeyboardKey.enter);
         expect(app.downloads, hasLength(1));
         expect(app.actions, isEmpty);
         expect(tester.widget<TextField>(field).focusNode!.hasFocus, isTrue);
         expect(controller.query, ':Qwen3.8-27B');
         expect(tester.takeException(), isNull);
+        // (Enter again did not cancel it: only Cancel download does.)
+        await tester.tap(find.text('Cancel download'));
+        await tester.pump();
+        expect(app.actions, [(machine: 'm', model: 'qwen', start: false)]);
       } finally {
         await tester.pumpWidget(const SizedBox());
         app.dispose();

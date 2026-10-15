@@ -152,6 +152,8 @@ void main() {
     tester,
   ) async {
     final (:app, :conn) = await openNew(tester);
+    // The harness's page comes once its terminal is asked for, which waits for the socket.
+    conn.handshaken = true;
     final start = tester.getCenter(find.text('Start'));
     await tester.tapAt(start);
     await tester.pump(const Duration(milliseconds: 40));
@@ -652,6 +654,195 @@ void main() {
     await frames(tester);
     expect(tester.takeException(), isNull);
     await close(tester, app);
+  });
+
+  for (final pickDefault in [false, true]) {
+    testWidgets('the Profile sheet put away keeps the profile'
+        '${pickDefault ? '; Default clears it' : ''}', (tester) async {
+      final (:app, :conn) = await openNew(tester);
+      await choose(tester, 'agent', 'Codex');
+      await tapInView(tester, find.text('options'));
+      await frames(tester);
+      await choose(tester, 'profile', 'work');
+      expect(formRow(tester, 'profile').value, 'work');
+
+      // A tap above the sheet: nothing was picked, so nothing changes. It once came back as
+      // Default, whose value is no profile.
+      await tapInView(tester, find.text('profile'));
+      await frames(tester);
+      expect(find.text('Profile'), findsOneWidget);
+      await tester.tapAt(tester.getCenter(find.byType(ModalBarrier).last));
+      await frames(tester);
+      expect(find.text('Profile'), findsNothing);
+      expect(formRow(tester, 'profile').value, 'work');
+
+      if (pickDefault) {
+        await choose(tester, 'profile', 'Default');
+        expect(formRow(tester, 'profile').value, 'Default');
+      }
+      await tapInView(tester, find.text('Start'));
+      await frames(tester, count: 20);
+      final created = conn.payloads['agent_create']!.single;
+      expect(created['engine'], 'codex');
+      if (pickDefault) {
+        expect(created.containsKey('codexHome'), isFalse);
+      } else {
+        expect(created['codexHome'], '/home/ada/.codex-work');
+      }
+      await close(tester, app);
+    });
+  }
+
+  group('the first task', () {
+    /// The task as the field holds it.
+    String task(WidgetTester tester) =>
+        tester.widget<TextField>(find.byType(TextField)).controller!.text;
+
+    /// Picks [engine] in the agent chooser by searching for it: the list is longer than a screen.
+    Future<void> chooseAgent(WidgetTester tester, String engine) async {
+      await tapInView(tester, find.text('agent'));
+      await frames(tester);
+      await tester.enterText(find.byType(TextField).last, engine);
+      await frames(tester);
+      await tester.tap(find.text(engine, findRichText: true).last);
+      await frames(tester);
+    }
+
+    testWidgets('Hermes starts on its first task', (tester) async {
+      final (:app, :conn) = await openNew(tester);
+      await chooseAgent(tester, 'Hermes');
+      expect(formRow(tester, 'agent').value, 'Hermes');
+      await tester.enterText(
+        find.byType(TextField),
+        'summarise the open issues',
+      );
+      await tapInView(tester, find.text('Start'));
+      await frames(tester, count: 20);
+      final created = conn.payloads['agent_create']!.single;
+      expect(created['engine'], 'hermes');
+      expect(created['prompt'], 'summarise the open issues');
+      await close(tester, app);
+    });
+
+    testWidgets('typed or pasted past the limit: kept whole; Start says so and '
+        'sends nothing, and starts once it fits', (tester) async {
+      final (:app, :conn) = await openNew(tester);
+      await tester.enterText(find.byType(TextField), 'x' * 2001);
+      await tester.pump();
+      expect(task(tester), hasLength(2001));
+      expect(find.text('2001/2000'), findsOneWidget);
+
+      await tapInView(tester, find.text('Start'));
+      await frames(tester, count: 20);
+      expect(conn.payloads['agent_create'], isNull);
+      expect(find.byType(NewAgentPage), findsOneWidget);
+      expect(
+        find.text('✗ A first message can be 2000 characters; this is 2001.'),
+        findsOneWidget,
+      );
+      expect(task(tester), hasLength(2001));
+
+      // The line follows the words: still over, it says how far; once they fit, it goes.
+      await tester.enterText(find.byType(TextField), 'x' * 2005);
+      await tester.pump();
+      expect(
+        find.text('✗ A first message can be 2000 characters; this is 2005.'),
+        findsOneWidget,
+      );
+      // The space around a task is not counted, as the machine does not count it.
+      await tester.enterText(find.byType(TextField), ' ${'x' * 2000}\n');
+      await tester.pump();
+      expect(find.textContaining('A first message can be'), findsNothing);
+
+      await tapInView(tester, find.text('Start'));
+      await frames(tester, count: 20);
+      expect(conn.payloads['agent_create']!.single['prompt'], 'x' * 2000);
+      await close(tester, app);
+    });
+
+    testWidgets('said past the limit: kept whole; Start says so and sends '
+        'nothing', (tester) async {
+      setPhone(tester, largePhone);
+      final conn = EdgeConn(answers, startsAgents);
+      final app = edgeApp(conn: conn);
+      final voice = edgeVoice();
+      voice.stt.replies.add('y' * 20);
+      await tester.pumpWidget(
+        phoneApp(
+          NewAgentPage(notifier: app, machineId: 'm', voice: voice.voice),
+        ),
+      );
+      await frames(tester);
+      await tester.enterText(find.byType(TextField), 'x' * 1990);
+      await tester.tap(find.byType(TtyFieldMic));
+      await frames(tester);
+      await tester.tap(find.byType(TtyFieldMic));
+      await frames(tester);
+      expect(task(tester), '${'x' * 1990} ${'y' * 20}');
+
+      await tapInView(tester, find.text('Start'));
+      await frames(tester, count: 20);
+      expect(conn.payloads['agent_create'], isNull);
+      expect(
+        find.text('✗ A first message can be 2000 characters; this is 2011.'),
+        findsOneWidget,
+      );
+      expect(task(tester), hasLength(2011));
+      await close(tester, app);
+    });
+
+    testWidgets('a task in a folder that exists names the harness after it', (
+      tester,
+    ) async {
+      final (:app, :conn) = await openNew(tester);
+      expect(formRow(tester, 'project').value, 'web');
+      await tester.enterText(
+        find.byType(TextField),
+        'Fix the login redirect loop on Safari\nand say what changed',
+      );
+      await tapInView(tester, find.text('Start'));
+      await frames(tester, count: 20);
+      final created = conn.payloads['agent_create']!.single;
+      expect(
+        created['prompt'],
+        'Fix the login redirect loop on Safari\nand say what changed',
+      );
+      expect(created['name'], 'Fix the login redirect loop on');
+      // The folder is the one chosen: only a New folder is named by the task.
+      expect(created['gitSource'], '/code/web');
+      expect(created.containsKey('projectName'), isFalse);
+      await close(tester, app);
+    });
+
+    testWidgets('no task: no name and no task sent', (tester) async {
+      final (:app, :conn) = await openNew(tester);
+      await tester.enterText(find.byType(TextField), '  \n ');
+      await tapInView(tester, find.text('Start'));
+      await frames(tester, count: 20);
+      final created = conn.payloads['agent_create']!.single;
+      expect(created.containsKey('prompt'), isFalse);
+      expect(created.containsKey('name'), isFalse);
+      await close(tester, app);
+    });
+
+    testWidgets('a New folder is named after its task, and the harness too', (
+      tester,
+    ) async {
+      final (:app, :conn) = await openNew(tester);
+      await choose(tester, 'project', '+ New Folder');
+      await tester.enterText(
+        find.byType(TextField),
+        'Robot nói chuyện với Gemini',
+      );
+      await tapInView(tester, find.text('Start'));
+      await frames(tester, count: 20);
+      final created = conn.payloads['agent_create']!.single;
+      expect(created['projectSource'], 'new');
+      expect(created['projectName'], 'robot-noi-chuyen-voi-gemini');
+      expect(created['name'], 'Robot nói chuyện với Gemini');
+      expect(created['prompt'], 'Robot nói chuyện với Gemini');
+      await close(tester, app);
+    });
   });
 
   group('the computer row', () {

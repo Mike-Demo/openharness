@@ -1,9 +1,13 @@
+import { cleanUsageContext, type ProductUsageContext } from '../lib/productHealthContract.js'
+import { cleanHealthState, createProductHealth, type HealthState } from './productHealth.js'
+import { reportFailure } from './reportFailure.js'
 import { readFileSync, statSync } from 'node:fs'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { ProductUsageLaunchSignal } from '../lib/productUsageSignals.js'
-import { PRODUCT_USAGE_ACTIONS, PRODUCT_USAGE_DAYS, PRODUCT_USAGE_MAX_COUNT, PRODUCT_USAGE_METRICS,
+import { PRODUCT_USAGE_ACTIONS, PRODUCT_USAGE_AUTOMATIC_ACTIONS, PRODUCT_USAGE_DAYS, PRODUCT_USAGE_MAX_COUNT, PRODUCT_USAGE_METRICS,
+  PRODUCT_USAGE_USER_OPENED_ACTIONS,
   type ProductUsageChoice, type ProductUsageMetric, type ProductUsageReport } from '../lib/productUsageContract.js'
 
 const DAY = 86_400_000
@@ -11,19 +15,30 @@ const MAX_QUEUE_BYTES = 256 * 1024
 // A report stays below the server's 8 KiB body bound even with the complete vocabulary.
 const MAX_REPORT_METRICS = 64
 const metricSet = new Set<string>(PRODUCT_USAGE_METRICS)
-const requestActions = new Map(PRODUCT_USAGE_ACTIONS.map(action => [`${action}_requests`, action]))
+// Feature reach is a person's use; the reads the apps make on their own count only their reliability,
+// unless the app says a person opened that list (`<action>_user_requests`, its own first/repeat).
+type Reach = typeof PRODUCT_USAGE_ACTIONS[number] | `${typeof PRODUCT_USAGE_USER_OPENED_ACTIONS[number]}_user`
+const REACHES: readonly Reach[] = [...PRODUCT_USAGE_ACTIONS, ...PRODUCT_USAGE_USER_OPENED_ACTIONS.map(action => `${action}_user` as const)]
+const requestActions = new Map<string, Reach>([
+  ...PRODUCT_USAGE_ACTIONS.filter(action => !PRODUCT_USAGE_AUTOMATIC_ACTIONS.includes(action)).map(action => [`${action}_requests`, action] as const),
+  ...PRODUCT_USAGE_USER_OPENED_ACTIONS.map(action => [`${action}_user_requests`, `${action}_user`] as const),
+])
+const isTuiMetric = (metric: string): boolean => metric.startsWith('ui_tui_') || metric.startsWith('health_tui_')
 const key = (now: number) => new Date(now).toISOString().slice(0, 10)
 const week = (now: number) => { const d = new Date(now); return key(now - ((d.getUTCDay() + 6) % 7) * DAY) }
 type Counters = Partial<Record<ProductUsageMetric, number>>
 interface State {
+  dayContexts: Record<string, ProductUsageContext>
+  health: HealthState
+  healthDay: string | null
   revision: number
   activeDay: string | null
   workDay: string | null
   workWeek: string | null
   workMonth: string | null
   measurementDay: string | null
-  featureDays: Partial<Record<typeof PRODUCT_USAGE_ACTIONS[number], string>>
-  featuresUsed: typeof PRODUCT_USAGE_ACTIONS[number][]
+  featureDays: Partial<Record<Reach, string>>
+  featuresUsed: Reach[]
   workedBefore: boolean
   respondedBefore: boolean
   launchedBefore: boolean
@@ -34,12 +49,14 @@ interface State {
   days: Record<string, Counters>
   pending: ProductUsageReport | null
 }
-const fresh = (revision: number): State => ({ revision, activeDay: null, workDay: null, workWeek: null,
+const fresh = (revision: number): State => ({ dayContexts: {}, health: cleanHealthState(null, Date.now()), healthDay: null, revision, activeDay: null, workDay: null, workWeek: null,
   workMonth: null, measurementDay: null, featureDays: {}, featuresUsed: [],
   workedBefore: false, respondedBefore: false, launchedBefore: false, firstLaunchAt: null,
   launchWorked: false, launchResponded: false, workDays: [], days: {}, pending: null })
 export interface ProductUsageDeps {
   file: string
+  context?: ProductUsageContext
+  sample?: () => { rss: number; cpuPercent?: number }
   request(method: string, path: string, body?: unknown): Promise<{ status: number; body: Record<string, unknown> }>
   now?(): number
   uuid?(): string
@@ -53,9 +70,15 @@ export interface ProductUsageDeps {
  */
 export function createProductUsage(deps: ProductUsageDeps) {
   const now = deps.now ?? Date.now, uuid = deps.uuid ?? randomUUID
+  const context = cleanUsageContext(deps.context)
   let state = fresh(-1), enabled = false, stopped = false, active = false
   let syncing: Promise<void> | null = null, persistTimer: ReturnType<typeof setTimeout> | undefined
   let writing: Promise<boolean> | null = null, writeAgain = false
+  // hn's counters: those it observed before the first choice read, held in RAM until that is known
+  // (hn is often opened at the daemon's start), and the UTC day a backend from before `tui` refused
+  // them. Neither is persisted; a restart tries again.
+  let choiceKnown = false, tuiHeld: ProductUsageMetric[] = [], tuiRefusedDay: string | null = null
+  const tuiRefused = (): boolean => tuiRefusedDay === key(now())
   const running = new Map<string, { started: number; response: boolean; error: boolean; waited: boolean }>()
   const launches = new Map<string, { started: number; done: boolean; waits: Set<string> }>()
   try {
@@ -64,11 +87,13 @@ export function createProductUsage(deps: ProductUsageDeps) {
     const saved = JSON.parse(readFileSync(deps.file, 'utf8')) as State
     if (Number.isSafeInteger(saved.revision) && saved.revision >= 0) {
       state = fresh(saved.revision)
+      state.health = cleanHealthState(saved.health, now())
+      state.healthDay = typeof saved.healthDay === 'string' && validDay(saved.healthDay) ? saved.healthDay : null
       for (const field of ['activeDay', 'workDay', 'workWeek', 'measurementDay'] as const) {
         if (typeof saved[field] === 'string' && validDay(saved[field]!)) state[field] = saved[field]
       }
       if (typeof saved.workMonth === 'string' && /^\d{4}-\d{2}$/.test(saved.workMonth)) state.workMonth = saved.workMonth
-      for (const action of PRODUCT_USAGE_ACTIONS) {
+      for (const action of REACHES) {
         if (validDay(saved.featureDays?.[action] ?? '')) state.featureDays[action] = saved.featureDays![action]
         if (saved.featuresUsed?.includes(action)) state.featuresUsed.push(action)
       }
@@ -80,15 +105,22 @@ export function createProductUsage(deps: ProductUsageDeps) {
       state.launchWorked = saved.launchWorked === true
       state.launchResponded = saved.launchResponded === true
       state.workDays = Array.isArray(saved.workDays) ? [...new Set(saved.workDays.filter(d => typeof d === 'string' && validDay(d)))].slice(-35) : []
-      for (const [day, counters] of Object.entries(saved.days ?? {})) if (validDay(day)) state.days[day] = clean(counters)
+      for (const [day, counters] of Object.entries(saved.days ?? {})) if (validDay(day)) {
+        state.days[day] = clean(counters)
+        const c = cleanUsageContext(saved.dayContexts?.[day])
+        if (c) state.dayContexts[day] = c
+        else if (context) state.dayContexts[day] = { ...context, release: 'unknown', platform: 'other' }
+      }
       const pending = saved.pending
       if (pending && pending.schemaVersion === 1 && pending.revision === state.revision && validDay(pending.day)
           && typeof pending.id === 'string' && /^[a-f0-9-]{36}$/.test(pending.id)) {
-        const restored = { schemaVersion: 1 as const, revision: state.revision, id: pending.id, day: pending.day, counters: clean(pending.counters) }
+        const restored = { schemaVersion: 1 as const, revision: state.revision, id: pending.id, day: pending.day, counters: clean(pending.counters), ...(cleanUsageContext(pending.context) ? { context: cleanUsageContext(pending.context) } : {}) }
         if (Buffer.byteLength(JSON.stringify(restored)) <= 8192) state.pending = restored
       }
     }
   } catch { /* Missing or unreadable telemetry must not affect a session. */ }
+
+  const health = createProductHealth(add, now, state.health)
 
   function validDay(day: string): boolean {
     const stamp = Date.parse(day + 'T00:00:00.000Z'), today = Math.floor(now() / DAY) * DAY
@@ -104,10 +136,12 @@ export function createProductUsage(deps: ProductUsageDeps) {
     return result
   }
   function snapshot(): string {
+    state.health = health.snapshot()
     clearTimeout(persistTimer); persistTimer = undefined
     for (const field of ['activeDay', 'workDay', 'workWeek', 'measurementDay'] as const) if (state[field] && !validDay(state[field]!)) state[field] = null
     for (const day of Object.keys(state.days)) if (!validDay(day)) delete state.days[day]
-    for (const action of PRODUCT_USAGE_ACTIONS) if (!validDay(state.featureDays[action] ?? '')) delete state.featureDays[action]
+    for (const day of Object.keys(state.dayContexts)) if (!state.days[day]) delete state.dayContexts[day]
+    for (const action of REACHES) if (!validDay(state.featureDays[action] ?? '')) delete state.featureDays[action]
     state.workDays = state.workDays.filter(validDay)
     if (state.firstLaunchAt !== null && !validDay(key(state.firstLaunchAt))) state.firstLaunchAt = null
     if (state.pending && !validDay(state.pending.day)) state.pending = null
@@ -154,6 +188,14 @@ export function createProductUsage(deps: ProductUsageDeps) {
       ;(state.days[state.measurementDay] ??= {}).measurement_v2_installation_days = 1
     }
     const counters = state.days[day] ??= {}
+    if (context) {
+      const prior = state.dayContexts[day]
+      state.dayContexts[day] = !prior ? context : { ...context,
+        release: prior.release === context.release ? context.release : 'unknown',
+        platform: prior.platform === context.platform ? context.platform : 'other',
+        channel: prior.channel === 'production' && context.channel === 'production' ? 'production' : 'development' }
+      if ((counters[metric] ?? 0) >= PRODUCT_USAGE_MAX_COUNT) counters.health_cli_queue_capped = 1
+    }
     counters[metric] = Math.min(PRODUCT_USAGE_MAX_COUNT, (counters[metric] ?? 0) + 1)
     dirty()
   }
@@ -171,7 +213,7 @@ export function createProductUsage(deps: ProductUsageDeps) {
   }
   async function choice(value: ProductUsageChoice): Promise<void> {
     if (state.revision !== value.revision || (!value.enabled && (enabled || state.pending || Object.keys(state.days).length))) {
-      state = fresh(value.revision); running.clear(); launches.clear()
+      state = fresh(value.revision); running.clear(); launches.clear(); health.reset()
       enabled = false
       if (!await persist()) return
     }
@@ -183,9 +225,20 @@ export function createProductUsage(deps: ProductUsageDeps) {
       if (stopped) return
       const body = response.body.data as ProductUsageChoice | undefined
       if (response.status !== 200 || typeof body?.enabled !== 'boolean'
-          || !Number.isSafeInteger(body.revision) || body.revision < 0) { enabled = false; running.clear(); launches.clear(); return }
+          || !Number.isSafeInteger(body.revision) || body.revision < 0) { enabled = false; running.clear(); launches.clear(); health.clearObservations(); return }
       await choice(body)
+      if (!choiceKnown) {
+        // Counted only now that sharing is known to be on; discarded when it is off.
+        choiceKnown = true
+        const held = tuiHeld
+        tuiHeld = []
+        if (enabled && !tuiRefused()) for (const metric of held) add(metric)
+      }
       if (!enabled) return
+      if (context) {
+        health.start(context.release); health.checkpoint(); health.sample(deps.sample)
+        if (state.healthDay !== key(now())) { state.healthDay = key(now()); add('health_cli_collector_days') }
+      }
       for (const turn of running.values()) if (!turn.response && !turn.waited && now() - turn.started >= 60_000) {
         turn.waited = true; add('turns_waiting_over_1m')
       }
@@ -194,13 +247,23 @@ export function createProductUsage(deps: ProductUsageDeps) {
         if (now() - launch.started >= 35 * 60_000) launches.delete(id)
       }
       if (active) markActive()
+      // Refused today: hn's counts go, rather than waiting to become a past day's report.
+      if (tuiRefused()) for (const day of Object.keys(state.days)) {
+        for (const metric of Object.keys(state.days[day])) if (isTuiMetric(metric)) delete state.days[day][metric as ProductUsageMetric]
+        if (!Object.keys(state.days[day]).length) { delete state.days[day]; delete state.dayContexts[day] }
+      }
       if (!state.pending) {
         const day = Object.keys(state.days).sort().find(d => validDay(d) && Object.keys(state.days[d]).length)
         if (!day) return
-        const counters = Object.fromEntries(Object.entries(state.days[day]).slice(0, MAX_REPORT_METRICS)) as Counters
-        state.pending = { schemaVersion: 1, revision: state.revision, id: uuid(), day, counters }
+        // hn's counters travel alone: a backend from before `tui` refuses its whole report (400), and
+        // that refusal drops the report, so it must never carry the daemon's or the Desktop's counts.
+        const entries = Object.entries(state.days[day])
+        const own = entries.filter(([metric]) => !isTuiMetric(metric))
+        const counters = Object.fromEntries((own.length ? own : entries).slice(0, MAX_REPORT_METRICS)) as Counters
+        const reportContext = state.dayContexts[day] ?? context
+        state.pending = { schemaVersion: 1, revision: state.revision, id: uuid(), day, counters, ...(reportContext ? { context: reportContext } : {}) }
         for (const metric of Object.keys(counters)) delete state.days[day][metric as ProductUsageMetric]
-        if (!Object.keys(state.days[day]).length) delete state.days[day]
+        if (!Object.keys(state.days[day]).length) { delete state.days[day]; delete state.dayContexts[day] }
       }
       // Persist the immutable receipt before sending. A crash or ambiguous response retries that id.
       if (!await persist() || stopped || !enabled) return
@@ -210,9 +273,23 @@ export function createProductUsage(deps: ProductUsageDeps) {
       if (stopped) return
       const result = answer.body.data as { accepted?: boolean; reason?: string } | undefined
       if (answer.status === 200 && result?.accepted === true) { state.pending = null; await persist() }
-      else if (result?.reason === 'CHOICE_CHANGED') { enabled = false; state = fresh(-1); running.clear(); launches.clear(); await persist() }
-      else if (result?.reason === 'EXPIRED') { state.pending = null; await persist() }
-    } catch { enabled = false; running.clear(); launches.clear() /* No error text or request body in logs. */ }
+      else if (result?.reason === 'CHOICE_CHANGED') { enabled = false; state = fresh(-1); running.clear(); launches.clear(); health.reset(); await persist() }
+      else if (result?.reason === 'EXPIRED') { state.pending = null; add('health_cli_report_expired'); await persist() }
+      else if (answer.status === 400 && Object.keys(report.counters).length && Object.keys(report.counters).every(isTuiMetric)) {
+        // A backend from before `tui` knows none of hn's names. That is not a failed delivery, so it
+        // is not counted as one: the report goes, and hn's counts with it until the next UTC day.
+        state.pending = null; tuiRefusedDay = key(now()); await persist()
+      }
+      else {
+        add('health_cli_report_rejected')
+        add(`health_cli_report_failure_${reportFailure(answer)}`)
+        // A permanently invalid packet must not block every future report behind it.
+        if (answer.status === 400 || answer.status === 413) { state.pending = null; await persist() }
+      }
+    } catch {
+      if (enabled) add('health_cli_report_failed')
+      enabled = false; running.clear(); launches.clear(); health.clearObservations() /* No error text or request body in logs. */
+    }
   }
   const sync = (): Promise<void> => syncing ??= syncOnce().finally(() => { syncing = null })
   const timer = setInterval(() => { void sync() }, 60_000)
@@ -221,7 +298,12 @@ export function createProductUsage(deps: ProductUsageDeps) {
   return {
     sync,
     counter(metric: ProductUsageMetric): void {
-      if (!enabled || stopped || !metricSet.has(metric)) return
+      if (stopped || !metricSet.has(metric)) return
+      if (isTuiMetric(metric)) {
+        if (!enabled) { if (!choiceKnown && tuiHeld.length < 64) tuiHeld.push(metric); return }
+        if (tuiRefused()) return
+      }
+      if (!enabled) return
       add(metric)
       const action = requestActions.get(metric)
       if (action && state.featureDays[action] !== key(now())) {
@@ -232,7 +314,12 @@ export function createProductUsage(deps: ProductUsageDeps) {
       }
     },
     launch(signal: ProductUsageLaunchSignal): void {
-      if (!enabled || stopped || !signal || typeof signal.id !== 'string' || !/^[a-zA-Z0-9_-]{16,96}$/.test(signal.id)) return
+      if (!enabled || stopped || !signal || typeof signal.id !== 'string') return
+      if (signal.phase === 'work_requested') {
+        if (!running.has(signal.id) && signal.id.length > 0 && signal.id.length <= 256 && (signal.origin === 'interactive' || signal.origin === 'tool')) health.intent(signal.id, signal.origin)
+        return
+      }
+      if (!/^[a-zA-Z0-9_-]{16,96}$/.test(signal.id)) return
       if (signal.phase === 'start') {
         if (launches.has(signal.id)) return
         if (!state.launchedBefore) {
@@ -272,7 +359,7 @@ export function createProductUsage(deps: ProductUsageDeps) {
       if (type === 'turn_started') {
         if (running.has(agent)) return
         if (running.size >= 1000) { add('turn_observation_overflow'); return }
-        running.set(agent, { started: now(), response: false, error: false, waited: false }); markActive(); add('turns_started')
+        running.set(agent, { started: now(), response: false, error: false, waited: false }); markActive(); add('turns_started'); if (context) health.work(agent)
         launchValue(false)
         if (state.workDay !== key(now())) {
           if (state.workDay && now() - Date.parse(state.workDay) >= 7 * DAY) add('reactivated_after_7d_installations')
@@ -326,8 +413,8 @@ export function createProductUsage(deps: ProductUsageDeps) {
       }
     },
     stop(discard = false): Promise<boolean> {
-      stopped = true; enabled = false; clearInterval(timer); running.clear(); launches.clear()
-      if (discard) state = fresh(-1)
+      stopped = true; enabled = false; clearInterval(timer); running.clear(); launches.clear(); health.stop(); tuiHeld = []
+      if (discard) { state = fresh(-1); health.reset() }
       return persist()
     },
   }

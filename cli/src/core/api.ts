@@ -523,6 +523,9 @@ export const WINDOW_NAMES_REQUESTS = ['window_name'] as const
 export const HANDOFF_REQUESTS = ['agent_handoff_prepare'] as const
 /** Connected services for every local agent, and their MCP bridge, in the edge host (services/connectors.ts). */
 export const CONNECTORS_REQUESTS = ['connectors'] as const
+/** A Harness OS computer managed from the owner's phone: whether it runs Harness OS, its update, and its Wi-Fi,
+ *  in the edge host (services/osDevice.ts). */
+export const OS_DEVICE_REQUESTS = ['os_device'] as const
 /**
  * Models (services/models.ts).
  *

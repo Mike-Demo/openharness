@@ -3,8 +3,10 @@ import 'dart:async';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 
+import 'package:harness_mobile/demo/sample_mode.dart';
 import 'package:harness_mobile/logging/startup_trace.dart';
 import 'package:harness_mobile/logging/typing_trace.dart';
+import 'package:harness_mobile/measurement/product_measurement.dart';
 import 'package:harness_mobile/shared/theme/app_theme.dart';
 import 'package:harness_mobile/core/models.dart';
 import 'package:harness_mobile/state/app_state.dart';
@@ -21,11 +23,13 @@ import 'phone_navigation.dart' show phoneRoute;
 import 'settings_page.dart' show PhoneSettingsButton;
 import 'tty_controls.dart';
 import 'tty.dart';
-import 'welcome/connect_computer.dart';
+import 'welcome/join_moment.dart';
+import 'welcome/onboarding_copy.dart';
+import 'welcome/onboarding_frame.dart';
+import 'welcome/onboarding_picture.dart';
 import 'welcome/pairing_with_code.dart';
 import 'welcome/pick_up_page.dart';
-
-import 'package:harness_mobile/demo/sample_mode.dart';
+import 'welcome/your_computer.dart';
 
 import 'phone_header.dart';
 import 'phone_status.dart';
@@ -80,7 +84,8 @@ class AgentHome extends StatefulWidget {
   State<AgentHome> createState() => _AgentHomeState();
 }
 
-class _AgentHomeState extends State<AgentHome> {
+class _AgentHomeState extends State<AgentHome>
+    with SingleTickerProviderStateMixin {
   /// The agent the pager is currently built around, or null while nothing can be opened.
   ///
   /// ⚠️ **Held as state rather than recomputed every build, and it is what keeps the screen still.**
@@ -218,6 +223,8 @@ class _AgentHomeState extends State<AgentHome> {
     _slowTimer?.cancel();
     _restoreDeadline?.cancel();
     _terminalWait?.cancel();
+    _firstSessionWait?.cancel();
+    _moment.dispose();
     super.dispose();
   }
 
@@ -246,6 +253,49 @@ class _AgentHomeState extends State<AgentHome> {
   /// The welcome ([PickUpPage]) in place of a guessed session: set when this phone has nothing to
   /// remember, or a computer was just linked; spent the moment a session is picked.
   bool _welcome = false;
+
+  /// The first session has been put on screen since this phone signed in: the onboarding is over,
+  /// and a wait after it is an ordinary one again ([_onboarding]).
+  bool _onboardingDone = false;
+
+  /// This phone has nothing of its own to go back to — no session remembered, no tab — read by
+  /// [_readLast]: it has never reached a session, whenever it signed in.
+  bool _freshPhone = false;
+
+  /// The onboarding is under way: this phone signed in on this run ([AppNotifier.signedInThisRun])
+  /// or has never reached a session ([_freshPhone]), and has not reached one yet. Home's waits are
+  /// then drawn on the onboarding's picture — eased from the welcome's, so signing in reads as one
+  /// screen changing rather than a cut to a spinner — and the computer joining gets its moment
+  /// ([_joinStage]) before its session opens by itself.
+  ///
+  /// ⚠️ **Never in the sample.** Its home is a fresh phone's too — nothing remembered — but it is
+  /// not setting a computer up: it opens on its sessions to pick from, and its guide takes it on.
+  bool get _onboarding =>
+      (widget.notifier.signedInThisRun || _freshPhone) &&
+      !_onboardingDone &&
+      SampleMode.maybeOf(context) == null;
+
+  /// The computer the onboarding is joining, by its name on the account — the last beat before its
+  /// session opens ([_joinStage]). Set once, the first time there is one ([_noticeJoin]).
+  ({String machineId, String name})? _joining;
+
+  /// "On your computer, go to" has been on screen: the next computer on the account is the one the
+  /// person just set up for this phone, not one the account already had.
+  bool _awaitedComputer = false;
+
+  /// The computer joining, before its session opens ([_joinStage]).
+  late final JoinMoment _moment = JoinMoment(
+    vsync: this,
+    onDone: () {
+      if (mounted) setState(() {});
+    },
+  );
+
+  /// How long "… is ready." waits for the computer's first session before it gives way to the
+  /// empty state — the desktop's own tour may still be fetching the agents it starts one with.
+  static const _firstSessionPatience = Duration(seconds: 90);
+  Timer? _firstSessionWait;
+  bool _firstSessionGaveUp = false;
 
   void _onAgentRequested() {
     final requested = widget.openAgent?.value;
@@ -305,6 +355,7 @@ class _AgentHomeState extends State<AgentHome> {
           _neighboursFor == null &&
           _requestedAgent == null) {
         _welcome = true;
+        _freshPhone = true;
       }
     });
     _restoreDeadline = Timer(_restoreTimeout, () {
@@ -450,6 +501,18 @@ class _AgentHomeState extends State<AgentHome> {
       final picked = _entryFor(entries, requested);
       if (picked != null) return picked;
     }
+    // The onboarding's computer, joined: the session used on it last — the one in focus there,
+    // which the desktop marks opened as its pane takes focus — and failing that the account's. The
+    // phone has no say of its own in which (owner, 2026-10-12): the computer decides.
+    final joining = _joining;
+    if (joining != null && _onboarding) {
+      final pick =
+          _lastUsed(
+            entries.where((entry) => entry.machineId == joining.machineId),
+          ) ??
+          _lastUsed(entries);
+      if (pick != null) return pick;
+    }
     // A machine just unlocked outranks what is on screen — see [AgentHome.openMachineId]. Until it
     // has an agent to offer, everything below carries on as usual, so the screen keeps showing
     // something real while the machine dials rather than blanking to a skeleton.
@@ -554,6 +617,30 @@ class _AgentHomeState extends State<AgentHome> {
     for (final entry in entries) {
       if (!entry.agent.terminalAvailable) continue;
       if (best == null || compareMonitorOrder(entry, best) < 0) best = entry;
+    }
+    return best;
+  }
+
+  /// The openable agent used last — the later of its conversation moving and an app opening it
+  /// ([Agent.lastUsedAt]) — for the onboarding's first session only. Everywhere else the phone
+  /// follows the conversation alone ([compareMonitorOrder], owner's call): this one follows the
+  /// desktop, whose focused pane is stamped opened, so the phone opens what the computer is on.
+  static AgentEntry? _lastUsed(Iterable<AgentEntry> entries) {
+    AgentEntry? best;
+    for (final entry in entries) {
+      if (!entry.agent.terminalAvailable) continue;
+      if (best == null) {
+        best = entry;
+        continue;
+      }
+      final used = entry.agent.lastUsedAt, bestUsed = best.agent.lastUsedAt;
+      final later = switch ((used, bestUsed)) {
+        (final a?, final b?) => a.isAfter(b),
+        (_?, null) => true,
+        (null, _?) => false,
+        (null, null) => compareMonitorOrder(entry, best) < 0,
+      };
+      if (later) best = entry;
     }
     return best;
   }
@@ -774,6 +861,7 @@ class _AgentHomeState extends State<AgentHome> {
           );
         }
       }
+      _noticeJoin();
       final entries = visibleAgents(agentIndex(widget.notifier));
       _openNewAgentIfUnlockedMachineIsEmpty(entries);
       _dropPagerIfShownAgentWasDeleted(entries);
@@ -785,6 +873,10 @@ class _AgentHomeState extends State<AgentHome> {
       final target = (_readingLast && !_gaveUpWaiting)
           ? null
           : _target(entries);
+      if (_holdForJoin(target)) {
+        _endLaunchWait();
+        return _joinStage(target);
+      }
       if (target == null) {
         // ⚠️ Still on its way in and actually empty are two different screens, and the difference
         // matters more here than it did on a list. A list could show its own shape greyed out while
@@ -796,6 +888,7 @@ class _AgentHomeState extends State<AgentHome> {
         _traceLoading(loading);
         if (loading != null) {
           _holdLaunchWait();
+          if (_onboarding) return _onboardingWait(loading);
           return _AgentHomeLoading(
             message: loading,
             notifier: widget.notifier,
@@ -826,10 +919,7 @@ class _AgentHomeState extends State<AgentHome> {
             if (_machinesUnreadable) {
               return MachinesTab(notifier: widget.notifier);
             }
-            return ConnectComputerPage(
-              notifier: widget.notifier,
-              onTrySample: openSampleMode,
-            );
+            return _goToYourComputer();
           }
           // The one computer there is, awake and waiting for its phone password: the unlock
           // itself, not a list of one to tap through — the moment setup pays off.
@@ -853,11 +943,28 @@ class _AgentHomeState extends State<AgentHome> {
         return _AgentHomeEmpty(notifier: widget.notifier);
       }
       _endLaunchWait();
-      // Nothing remembered, nothing picked: the sessions, each a tap from its terminal.
-      if (_welcome && _neighboursFor == null && _requestedAgent == null) {
+      // The onboarding handing over to the session it was waiting for: it grows in, once.
+      final handOver = _onboarding && _joining != null;
+      if (handOver) _measureHandOver();
+      // Nothing remembered, nothing picked: the sessions, each a tap from its terminal — but not at
+      // the end of the onboarding, which opens the computer's own session ([_target]).
+      if (!handOver &&
+          _welcome &&
+          _neighboursFor == null &&
+          _requestedAgent == null) {
+        _onboardingDone = true;
         return PickUpPage(notifier: widget.notifier);
       }
+      _onboardingDone = true;
       final chosen = (machineId: target.machineId, agentId: target.agent.id);
+      // Its one line by the mic, for the session's page to say until the first send.
+      if (handOver) {
+        widget.notifier.firstSessionLine = (
+          machineId: chosen.machineId,
+          agentId: chosen.agentId,
+          text: _firstLine(target),
+        );
+      }
       // ⚠️ **A swipe stays inside one tab, and this is where that happens.** The
       // account's tabs are the desk's (`state/phone_desk.dart`); [deskGroups]
       // fills each one with the agents of it this phone can reach, and the tab
@@ -936,28 +1043,246 @@ class _AgentHomeState extends State<AgentHome> {
       //
       // So the key changes only when [_target] picks a DIFFERENT agent than the pager was built for,
       // which happens when the one it opened on can no longer be opened at all.
-      return AgentSwipeHost(
-        // The generation is what lets a pager be REBUILT around the same opening agent — see
-        // [_dropPagerIfShownAgentWasDeleted]; the agent alone would hand Flutter the same key.
-        key: ValueKey(
-          '${opened.machineId}/${opened.agentId}#$_pagerGeneration',
+      // Always under [_GrowIn], growing or not: the pager's place in the tree stays the same, so a
+      // pager already up is never rebuilt for it.
+      return _GrowIn(
+        grow: handOver,
+        child: AgentSwipeHost(
+          // The generation is what lets a pager be REBUILT around the same opening agent — see
+          // [_dropPagerIfShownAgentWasDeleted]; the agent alone would hand Flutter the same key.
+          key: ValueKey(
+            '${opened.machineId}/${opened.agentId}#$_pagerGeneration',
+          ),
+          notifier: widget.notifier,
+          machineId: opened.machineId,
+          agentId: opened.agentId,
+          // ⚠️ **No neighbours: Focus holds ONE agent, and there is no sideways swipe.** The person
+          // moves with Find, the sheet the handle at the foot of the terminal brings up (see
+          // `docs/plans/2026-09-26-001-mobile-zero-questions.md`). A swipe was hidden — nothing said
+          // it was there or what came next — and it fired by accident while scrolling or typing.
+          // [_neighbours] is still taken for the tab, but only to pick where to land when the agent
+          // on screen is deleted.
+          neighbours: null,
+          // Told where it has swiped to, so [_showing] follows the pager rather than the pager
+          // being dragged back to where this screen last put it.
+          onAgentChanged: _onAgentChanged,
         ),
-        notifier: widget.notifier,
-        machineId: opened.machineId,
-        agentId: opened.agentId,
-        // ⚠️ **No neighbours: Focus holds ONE agent, and there is no sideways swipe.** The person
-        // moves with Find, the sheet the handle at the foot of the terminal brings up (see
-        // `docs/plans/2026-09-26-001-mobile-zero-questions.md`). A swipe was hidden — nothing said
-        // it was there or what came next — and it fired by accident while scrolling or typing.
-        // [_neighbours] is still taken for the tab, but only to pick where to land when the agent
-        // on screen is deleted.
-        neighbours: null,
-        // Told where it has swiped to, so [_showing] follows the pager rather than the pager being
-        // dragged back to where this screen last put it.
-        onAgentChanged: _onAgentChanged,
       );
     },
   );
+
+  /// A wait while the onboarding is still under way ([_onboarding]): the picture looking, and the
+  /// step in progress on the line under it — "Looking for your computer" while the account's
+  /// computers are not known yet, the ordinary step after that ("Connecting to your computer").
+  ///
+  /// The same [OnboardingStage] as [_goToYourComputer] and in the same place, so the picture carries
+  /// on from one to the other. Settings, and the computers, once the wait is slow — as on
+  /// [_AgentHomeLoading].
+  Widget _onboardingWait(String step) {
+    final notifier = widget.notifier;
+    final said = notifier.machines.isEmpty
+        ? OnboardingCopy.looking
+        : _withoutEllipsis(step);
+    return OnboardingStage(
+      headline: '',
+      scene: OnboardingScene.looking,
+      enterFrom: notifier.signedInThisRun ? OnboardingScene.welcome : null,
+      status: OnboardingStatus(said),
+      trailing: _loadingSlow ? PhoneSettingsButton(notifier: notifier) : null,
+      actions: _loadingSlow
+          ? Center(
+              child: TtyTextButton(
+                key: const ValueKey('home-wait-computers'),
+                label: 'See your computers ›',
+                size: TtySize.meta,
+                onPressed: () => unawaited(
+                  Navigator.of(context).push(
+                    phoneRoute(
+                      (_) => MachinesTab(notifier: notifier, large: false),
+                    ),
+                  ),
+                ),
+              ),
+            )
+          : null,
+    );
+  }
+
+  /// ② Your computer, at home: an account with no computer yet. "On your computer, go to" and the
+  /// address that sends the download, the picture looking, the account watched every few seconds —
+  /// the computer turning up takes this away by itself (`welcome/your_computer.dart`).
+  ///
+  /// Settings at the top right is the way out (Sign out among it): a "looking" with no way out is
+  /// one of the things the onboarding leaves out on purpose.
+  ///
+  /// ⚠️ **What to do on the computer, said under the link, until the phone adds it itself** —
+  /// download and install Harness, and sign in with this account ([GoToComputer]). The spec's
+  /// computer is added by the waiting phone and never signs in; until that lands (it needs the
+  /// desktop and the backend), the computer signs in on its own — with this account, and it joins,
+  /// and this screen moves on; with one of the person's other Google accounts, and it never does.
+  Widget _goToYourComputer() {
+    final notifier = widget.notifier;
+    if (_onboarding) {
+      _awaitedComputer = true;
+      notifier.onboardingMeasurement.start(ProductFlow.computerWait);
+    }
+    return OnboardingStage(
+      headline: OnboardingCopy.goToHeadline,
+      headlineKey: const ValueKey('home-go-to'),
+      scene: OnboardingScene.looking,
+      enterFrom: notifier.signedInThisRun ? OnboardingScene.welcome : null,
+      underHeadline: ComputerWatch(
+        notifier: notifier,
+        child: GoToComputer(
+          account: notifier.currentUser?.email,
+          notYou: NotYouSignOut(notifier: notifier),
+        ),
+      ),
+      status: const OnboardingStatus(OnboardingCopy.looking),
+      trailing: PhoneSettingsButton(notifier: notifier),
+    );
+  }
+
+  /// A step's words for the status line, whose cursor already says it is still going: the
+  /// ellipsis would say it twice.
+  static String _withoutEllipsis(String step) =>
+      step.endsWith('…') ? step.substring(0, step.length - 1) : step;
+
+  /// Whether the onboarding has a computer to join now, and starts its moment if so. Called from
+  /// build; the moment itself starts after the frame.
+  ///
+  /// Which computer: after "On your computer, go to", the first on the account — the one set up for
+  /// this phone, which is also named to the device log as the person's own
+  /// ([AppNotifier.welcomeMachine]: no "New device" for it). Signed in to an account that already
+  /// had computers, the first of them to answer.
+  void _noticeJoin() {
+    if (_joining != null || !_onboarding) return;
+    final notifier = widget.notifier;
+    if (_awaitedComputer) {
+      final machine = notifier.machines.firstOrNull;
+      if (machine == null) return;
+      _joining = (machineId: machine.machineId, name: machine.displayName);
+      notifier.onboardingMeasurement.end(
+        ProductFlow.computerWait,
+        ProductOutcome.ok,
+      );
+      // After the frame: it may take a "New device" down, which notifies — not during a build.
+      final welcomed = machine.machineId;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) notifier.welcomeMachine(welcomed);
+      });
+    } else {
+      final ready = filterableMachines(notifier)
+          .where(
+            (machine) =>
+                phoneMachineStatusOf(machine) == PhoneMachineStatus.ready,
+          )
+          .firstOrNull;
+      if (ready == null) return;
+      _joining = (
+        machineId: ready.machine.machineId,
+        name: ready.machine.displayName,
+      );
+    }
+    notifier.onboardingMeasurement.start(ProductFlow.sessionOpen);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _moment.start();
+    });
+  }
+
+  /// Whether "… is ready." holds the screen: through the moment, and after it while the computer's
+  /// session is still on its way — the computer connecting, its list loading, or, connected and
+  /// listed, no session on it yet (its own tour starts one) for up to [_firstSessionPatience]. A
+  /// computer that turns out to want a password, or that the account says is down, lets go: what
+  /// home shows for those is what to do about them.
+  bool _holdForJoin(AgentEntry? target) {
+    final joining = _joining;
+    if (joining == null || !_onboarding) return false;
+    // A session picked by hand meanwhile — in Find, from a notice — is a choice the moment does not
+    // stand in front of.
+    if (_requestedAgent != null) return false;
+    if (!_moment.done) return true;
+    if (target != null || _firstSessionGaveUp) return false;
+    final notifier = widget.notifier;
+    final machine = notifier.stateOf(joining.machineId);
+    if (machine == null) return false;
+    return switch (phoneMachineStatusOf(machine)) {
+      PhoneMachineStatus.needsPassword => notifier.deviceTrustSettling,
+      PhoneMachineStatus.offline => phoneAccountSaysOnline(
+        machine.machine.status,
+      ),
+      PhoneMachineStatus.connecting => true,
+      PhoneMachineStatus.ready => _waitForFirstSession(),
+    };
+  }
+
+  /// The onboarding hands over to a session — its computer's own, or one picked meanwhile — and
+  /// the first message there is next.
+  void _measureHandOver() {
+    final onboarding = widget.notifier.onboardingMeasurement;
+    onboarding.end(ProductFlow.sessionOpen, ProductOutcome.ok);
+    onboarding.start(ProductFlow.firstMessage);
+  }
+
+  /// Arms [_firstSessionPatience] on the first frame that waits for it. Called from build: a timer,
+  /// not a rebuild.
+  bool _waitForFirstSession() {
+    _firstSessionWait ??= Timer(_firstSessionPatience, () {
+      widget.notifier.onboardingMeasurement.end(
+        ProductFlow.sessionOpen,
+        ProductOutcome.failed,
+      );
+      if (!mounted) return;
+      setState(() => _firstSessionGaveUp = true);
+    });
+    return true;
+  }
+
+  /// "MacBook Pro is ready." — the computer joining, on the same [OnboardingStage] as the wait and
+  /// "On your computer, go to" before it, so the picture goes on from where it was: the laptop
+  /// draws itself, links to the phone and lights, and the agent about to open types its name on it.
+  /// A tap goes on sooner.
+  ///
+  /// Past the moment, while its session is still on its way, what it waits on is said under the
+  /// picture, and Settings comes back — a wait is never without a way out.
+  Widget _joinStage(AgentEntry? target) {
+    final joining = _joining!;
+    final notifier = widget.notifier;
+    String? waiting;
+    if (_moment.done && target == null) {
+      final step = _loadingMessage() ?? _restoreMessage();
+      waiting = step == null
+          ? OnboardingCopy.waitingForSession
+          : _withoutEllipsis(step);
+    }
+    return OnboardingStage(
+      headline: OnboardingCopy.ready(joining.name),
+      headlineKey: const ValueKey('home-ready'),
+      scene: OnboardingScene.joined,
+      enterFrom: OnboardingScene.looking,
+      agent: target?.agent.engine,
+      join: _moment.picture,
+      status: waiting == null ? null : OnboardingStatus(waiting),
+      trailing: waiting == null
+          ? null
+          : PhoneSettingsButton(notifier: notifier),
+      onTap: _moment.done ? null : _moment.skip,
+    );
+  }
+
+  /// What the phone says by the mic as the onboarding's session opens: one line, by what the
+  /// computer opened (`docs/research/2026-10-11-phone-onboarding`, "Which session the phone opens").
+  String _firstLine(AgentEntry target) {
+    // Harness was already on the computer: whatever is on it, talk to it.
+    if (!_awaitedComputer) return OnboardingCopy.micTalk;
+    final agent = target.agent;
+    // A conversation with a past — Claude Code or Codex resumed where it was left.
+    if (agent.updatedAt != null) return OnboardingCopy.micPickUp;
+    // OpenCode with the desktop's starter task typed into it, not sent.
+    if (agent.engine == 'opencode') return OnboardingCopy.micSendIt;
+    // A fresh session, at an empty prompt.
+    return OnboardingCopy.micSayWhat;
+  }
 
   /// Bumped whenever the pager is thrown away and rebuilt, and part of its key.
   int _pagerGeneration = 0;
@@ -1429,4 +1754,63 @@ class _AgentHomeEmpty extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The session the onboarding hands over to, growing into the screen — the laptop's lit screen
+/// becoming the session, in the spec's words: a 420ms spring from a little smaller, fading in; a
+/// 200ms fade under Reduce Motion. Only when [grow] is set as it first comes up; afterwards, and
+/// for every other pager, it is the child as it is.
+class _GrowIn extends StatefulWidget {
+  const _GrowIn({required this.grow, required this.child});
+
+  final bool grow;
+  final Widget child;
+
+  @override
+  State<_GrowIn> createState() => _GrowInState();
+}
+
+class _GrowInState extends State<_GrowIn> with SingleTickerProviderStateMixin {
+  late final AnimationController _grow = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 420),
+    value: widget.grow ? 0 : 1,
+  );
+  bool _still = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _still = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+    if (_grow.value < 1 && !_grow.isAnimating) {
+      _grow.duration = Duration(milliseconds: _still ? 200 : 420);
+      unawaited(_grow.forward());
+    }
+  }
+
+  @override
+  void dispose() {
+    _grow.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: _grow,
+    child: widget.child,
+    builder: (context, child) {
+      final t = _grow.value;
+      final scale = _still || t >= 1
+          ? 1.0
+          : 0.9 + 0.1 * Curves.easeOutBack.transform(t);
+      // ⚠️ **The same two wrappers at every value, grown included.** Dropped once it had grown,
+      // they changed the pager's place in the tree, and Flutter built the pager — the terminal and
+      // its attach — over again, half a second after it opened. At 1 they cost nothing: an opaque
+      // opacity and an identity scale paint the child as it is.
+      return Opacity(
+        opacity: Curves.easeOut.transform((t * 2).clamp(0.0, 1.0)),
+        child: Transform.scale(scale: scale, child: child),
+      );
+    },
+  );
 }

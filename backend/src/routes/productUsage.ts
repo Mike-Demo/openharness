@@ -2,9 +2,18 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { ingestProductUsage, ingestSetupUsage, productUsageChoice, setProductUsageChoice } from '../lib/productUsage.js'
 import { PRODUCT_FEEDBACK, PRODUCT_USAGE_MAX_COUNT, PRODUCT_USAGE_METRICS, PRODUCT_USAGE_SETUP_METRICS } from '../types/productUsage.js'
+import { releaseBucket } from '../types/productHealthContract.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 
+const contextSchema = z.strictObject({
+  surface: z.enum(['cli', 'desktop']),
+  release: z.string().max(11).refine(v => v === 'unknown' || releaseBucket(v) === v),
+  platform: z.enum(['macos', 'linux', 'windows', 'other']),
+  channel: z.enum(['production', 'development']),
+})
+
 export const productUsageReportSchema = z.strictObject({
+  context: contextSchema.optional(),
   schemaVersion: z.literal(1), revision: z.number().int().nonnegative(), id: z.uuid(),
   day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   counters: z.partialRecord(z.enum(PRODUCT_USAGE_METRICS), z.number().int().min(0).max(PRODUCT_USAGE_MAX_COUNT)),
@@ -67,6 +76,12 @@ export async function productUsageRoutes(app: FastifyInstance): Promise<void> {
     // Never reflect rejected fields, values or raw validation errors into logs or responses.
     if (!parsed.success) return sendError(reply, 'Invalid usage report', 'INVALID_USAGE_REPORT', 400)
     try { return sendSuccess(reply, await ingestProductUsage(req.user.sub, parsed.data)) }
-    catch { return sendError(reply, 'Usage report unavailable', 'USAGE_UNAVAILABLE', 503) }
+    catch (error) {
+      // A fixed category can diagnose delivery without exposing database errors or report contents.
+      const storageCode = (error as { code?: unknown } | null)?.code
+      const code = storageCode === 'P2034' || storageCode === 'P2002' ? 'USAGE_WRITE_CONFLICT'
+        : storageCode === 'P2028' ? 'USAGE_TRANSACTION_FAILED' : 'USAGE_UNAVAILABLE'
+      return sendError(reply, 'Usage report unavailable', code, 503)
+    }
   })
 }

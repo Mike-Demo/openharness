@@ -7,7 +7,11 @@ import type { NativeLaunch } from '../../engines/nativeLaunch.js'
  *
  * Moved verbatim out of `runForeground` (the core boundary, step 10: docs/design/2026-10-03-harnessd.md).
  */
+import { join } from 'node:path'
+import { env } from '../../config/env.js'
 import { prepareResume, repairedItemsName } from '../../engines/launchPrep.js'
+import { bringPiSessionHome } from '../../lib/piSessionHome.js'
+import { gridConfigRoot } from '../../lib/gridConfigDir.js'
 import { dropPermissionFlagIfUnsupported } from '../../lib/engineLaunch.js'
 import { gridUnavailable, type GridLaunchAnswer, type GridLaunchRequest } from '../../lib/gridLaunchWire.js'
 import { buildLaunchOverrides, type LaunchOverrides, type LaunchOverridesDeps, type LaunchOverridesResult, type LaunchSource } from '../../lib/launchOverrides.js'
@@ -112,6 +116,19 @@ export function createLaunchHelpers({ authority, prepareApiTools, launchOverride
   }
 
   const prepareSessionResume = (session: RegisteredSession): void => {
+    if (session.engine === 'pi') {
+      // A Pi an older grid launch moved into the daemon's own folder resumes from its own home now.
+      const roots = [gridConfigRoot(), join(env.ADAPTER_DATA_DIR, 'grid-launch-config')]
+      const sessions = process.env.PI_CODING_AGENT_SESSION_DIR || join(process.env.PI_CODING_AGENT_DIR || join(env.PI_HOME, 'agent'), 'sessions')
+      // Best effort: this runs after the old Pi has stopped, and a copy that cannot be made must not cost the
+      // relaunch. Pi then resumes what it can find, as it did before.
+      try {
+        const home = bringPiSessionHome(session.transcriptPath, roots, sessions)
+        if (home && home !== session.transcriptPath) console.log(`[resume] ${sid(session.agentId)} · pi's conversation brought home · ${home}`)
+      } catch (error) {
+        console.warn(`[resume] ${sid(session.agentId)} · could not bring pi's conversation home · ${error instanceof Error ? error.message : error}`)
+      }
+    }
     const repair = prepareResume(session)
     if (repair.repairedItems) {
       // The rollout we tail was just shrunk in place. Move the tail to the repaired length now, before

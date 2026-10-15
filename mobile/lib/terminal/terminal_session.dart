@@ -1486,15 +1486,23 @@ class TerminalSession extends ChangeNotifier {
   /// blind. Set and cleared by the page; null the rest of the time.
   Future<bool> Function(String text)? voiceDeliver;
 
+  /// Called each time this pane sends a line on the person's behalf: a Return typed or pressed —
+  /// it crosses [_onTerminalOutput] — or a composed message that went ([sendComposerText]). Set by
+  /// the page showing the pane, which asks for notifications after the phone's first send
+  /// (`phone/terminal_page.dart`); null the rest of the time.
+  VoidCallback? onLineSent;
+
   Future<bool> sendComposerText(String text) async {
     if (!acceptsInput) return false;
     final content = text.trimRight();
     if (content.trim().isEmpty) return false;
-    return send('message', {
+    final sent = await send('message', {
       'content': content,
       'agentId': agentId,
       'mode': 'auto',
     });
+    if (sent) onLineSent?.call();
+    return sent;
   }
 
   /// A clipboard paste made directly into this pane, delivered as one atomic unit instead of going
@@ -1696,6 +1704,7 @@ class TerminalSession extends ChangeNotifier {
       );
     }
     if (!acceptsInput || data.isEmpty) return;
+    if (data.contains('\r')) onLineSent?.call();
     data = _spendArmedControl(data);
     final bytes = utf8.encode(data);
     final isBoundary =

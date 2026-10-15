@@ -18,26 +18,21 @@
  * wake a grid (a message, Start, an explicit wake, a prewarm) goes out another way — `gridWake.ts` — on
  * purpose.
  *
- * The values below are cross-repo (the lockstep register; `tests/test_grid_reads_lockstep.py` in the
- * public `grid` repository finds the two literals by these exact quoted spellings).
+ * The paths, the code, the flag and every field name read below come from `gridProtocol.ts`: the wire
+ * contract, generated from its JSON Schemas in the public autonomous-grid repository (`protocol/`) and copied
+ * here whole. Never edit that file by hand; a shape changes there first.
  */
 import { VERSION } from '../version.js'
 import { gridEnvelopes } from './gridEnvelope.js'
 import { gridExec, gridJson } from './gridExec.js'
 import { idKey } from './gridPicture.js'
-
-/** The master's two public reads, under a grid's address. ⚠️ Cross-repo literals (grid-src's routes,
- *  grid-apis' route rules and sleep record, the public CLI's `remote_overview`). */
-export const GRID_OVERVIEW_PATH = '/relay/v1/grid/overview'
-export const GRID_DISCOVER_PATH = '/nodes/discover'
-
-/** The code beside `detail` on a sleeping grid's 503 (grid-apis `grid_proxy.GRID_ASLEEP_CODE`). Compared
- *  for EQUALITY only: any other code, or none, is "not answering" — never asleep, never awake. */
-export const GRID_ASLEEP_CODE = 'grid_asleep'
-
-/** The public CLI's flag that reads without a credential (`grid` ≥ 0.3.49). A `grid` too old for it exits
- *  2 at argparse, before anything is sent — so the fallback below can never turn into a waking read. */
-export const GRID_NO_WAKE_FLAG = '--no-wake'
+import {
+  DISCOVER_PATH, GRID_ASLEEP_CODE, NO_WAKE_FLAG, OVERVIEW_PATH, REFUSAL_STATUS,
+  type DiscoveredCapabilities, type DiscoveredModel, type DiscoveredProvider, type GridAsleep,
+  type GridOverview, type LastKnown as WireLastKnown, type LastKnownNode, type NodeModelCapability,
+  type OverviewModel, type OverviewNode, type ProviderDiscovery,
+} from './gridProtocol.js'
+import type { Unchecked } from './gridUnchecked.js'
 
 /** The owner status of a grid the platform's reaper slept (grid-apis `grid_sleep_state.ASLEEP`), as
  *  `grid info --json` passes it through. Only the grid's owner sees a status at all. */
@@ -157,26 +152,29 @@ async function boundedJson(response: Response): Promise<unknown> {
 
 function readNodes(value: unknown): ReadNode[] {
   if (!Array.isArray(value)) return []
-  return value.filter(isObject).slice(0, MAX_NODES).map((node) => ({
-    name: text(node.name),
-    engine: text(node.engine),
-    models: strings(node.models, MAX_MODELS_PER_NODE),
-    providerEmail: typeof node.provider_email === 'string' && node.provider_email ? node.provider_email : null,
-  }))
+  return value.filter(isObject).slice(0, MAX_NODES).map((raw) => {
+    const node: Unchecked<OverviewNode> = raw
+    return {
+      name: text(node.name),
+      engine: text(node.engine),
+      models: strings(node.models, MAX_MODELS_PER_NODE),
+      providerEmail: typeof node.provider_email === 'string' && node.provider_email ? node.provider_email : null,
+    }
+  })
 }
 
 /** `last_known`, or null when it is absent or not in the shape grid-apis writes. Parsing it sends nothing. */
 export function parseLastKnown(value: unknown): LastKnown | null {
   if (!isObject(value)) return null
-  const age = value.age_seconds
+  const record: Unchecked<WireLastKnown> = value
+  const age = record.age_seconds
   if (typeof age !== 'number' || !Number.isFinite(age) || age < 0) return null
-  if (!Array.isArray(value.nodes)) return null
-  const nodes = value.nodes.filter(isObject).slice(0, MAX_NODES).map((node) => ({
-    name: text(node.name),
-    engine: text(node.engine),
-    models: strings(node.models, MAX_MODELS_PER_NODE),
-  }))
-  return { ageSeconds: age, nodes, ids: strings(value.ids, MAX_IDS) }
+  if (!Array.isArray(record.nodes)) return null
+  const nodes = record.nodes.filter(isObject).slice(0, MAX_NODES).map((raw) => {
+    const node: Unchecked<LastKnownNode> = raw
+    return { name: text(node.name), engine: text(node.engine), models: strings(node.models, MAX_MODELS_PER_NODE) }
+  })
+  return { ageSeconds: age, nodes, ids: strings(record.ids, MAX_IDS) }
 }
 
 /**
@@ -189,22 +187,26 @@ export function parseLastKnown(value: unknown): LastKnown | null {
 export async function readOverview(base: string): Promise<GridRead> {
   let answer: { status: number; body: unknown }
   try {
-    answer = await get(base, GRID_OVERVIEW_PATH, 'read')
+    answer = await get(base, OVERVIEW_PATH, 'read')
   } catch {
     return { kind: 'unreachable' }
   }
   const { status, body } = answer
-  if (status === 503 && isObject(body) && body.code === GRID_ASLEEP_CODE) {
-    return { kind: 'asleep', lastKnown: parseLastKnown(body.last_known) }
+  if (status === REFUSAL_STATUS[GRID_ASLEEP_CODE] && isObject(body)) {
+    const refusal: Unchecked<GridAsleep> = body
+    if (refusal.code === GRID_ASLEEP_CODE) return { kind: 'asleep', lastKnown: parseLastKnown(refusal.last_known) }
   }
   // A 200 that is not an overview (a maintenance page, a proxy's own JSON) is not "awake with nothing":
   // read as that, it would count as an empty answer and start taking models off every list.
-  if (status !== 200 || !isObject(body) || !Array.isArray(body.nodes)) return { kind: 'unanswered' }
-  const curatedIds = Array.isArray(body.models)
-    ? body.models.filter(isObject).map((entry) => text(entry.id)).filter(Boolean).slice(0, MAX_IDS)
+  if (status !== 200 || !isObject(body)) return { kind: 'unanswered' }
+  const overview: Unchecked<GridOverview> = body
+  if (!Array.isArray(overview.nodes)) return { kind: 'unanswered' }
+  const curatedIds = Array.isArray(overview.models)
+    ? overview.models.filter(isObject).map((entry: Unchecked<OverviewModel>) => text(entry.id)).filter(Boolean)
+      .slice(0, MAX_IDS)
     : []
-  const rawNodes = body.nodes.filter(isObject).slice(0, MAX_NODES)
-  return { kind: 'awake', nodes: readNodes(rawNodes), curatedIds, rawNodes, windows: readWindows(body.models, rawNodes) }
+  const rawNodes = overview.nodes.filter(isObject).slice(0, MAX_NODES)
+  return { kind: 'awake', nodes: readNodes(rawNodes), curatedIds, rawNodes, windows: readWindows(overview.models, rawNodes) }
 }
 
 /** No model's window is this large; a number past it is not one. */
@@ -224,11 +226,14 @@ function readWindows(curated: unknown, nodes: Array<Record<string, unknown>>): R
     if (Object.keys(windows).length >= MAX_IDS && !(key in windows)) return
     windows[key] = Math.max(windows[key] ?? 0, value)
   }
-  if (Array.isArray(curated)) for (const entry of curated.filter(isObject)) take(entry.id, entry.context_length)
-  for (const node of nodes) {
+  if (Array.isArray(curated)) {
+    for (const entry of curated.filter(isObject) as Array<Unchecked<OverviewModel>>) take(entry.id, entry.context_length)
+  }
+  for (const raw of nodes) {
+    const node: Unchecked<OverviewNode> = raw
     const capabilities = isObject(node.model_capabilities) ? node.model_capabilities : {}
     for (const [id, cell] of Object.entries(capabilities).slice(0, MAX_MODELS_PER_NODE)) {
-      if (isObject(cell)) take(id, cell.context_length)
+      if (isObject(cell)) take(id, (cell as Unchecked<NodeModelCapability>).context_length)
     }
   }
   return windows
@@ -247,16 +252,18 @@ export function displayModelName(raw: string): string {
  */
 export async function readDiscoveryIds(base: string): Promise<string[]> {
   try {
-    const { status, body } = await get(base, GRID_DISCOVER_PATH, 'read')
-    if (status !== 200 || !isObject(body) || !Array.isArray(body.providers)) return []
+    const { status, body } = await get(base, DISCOVER_PATH, 'read')
+    if (status !== 200 || !isObject(body)) return []
+    const discovery: Unchecked<ProviderDiscovery> = body
+    if (!Array.isArray(discovery.providers)) return []
     const ids: string[] = []
-    for (const provider of body.providers.filter(isObject)) {
-      const capabilities = isObject(provider.capabilities) ? provider.capabilities : {}
+    for (const provider of discovery.providers.filter(isObject) as Array<Unchecked<DiscoveredProvider>>) {
+      const capabilities: Unchecked<DiscoveredCapabilities> = isObject(provider.capabilities) ? provider.capabilities : {}
       const entries = isObject(capabilities.models) ? capabilities.models : {}
       if (!Array.isArray(provider.models)) continue
       for (const route of provider.models) {
         const entry = typeof route === 'string' ? entries[route] : undefined
-        const raw = isObject(entry) ? text(entry.raw_model_id) : ''
+        const raw = isObject(entry) ? text((entry as Unchecked<DiscoveredModel>).raw_model_id) : ''
         if (raw) ids.push(displayModelName(raw))
       }
     }
@@ -296,7 +303,7 @@ function envelopeCode(stderr: string): string | null {
  * "no read" — a stale list, which is the direction every failure here must take.
  */
 export async function readViaCli(gridName: string): Promise<GridRead> {
-  const result = await gridExec(['--remote', 'models', gridName, GRID_NO_WAKE_FLAG, '--json'])
+  const result = await gridExec(['--remote', 'models', gridName, NO_WAKE_FLAG, '--json'])
   if (result.code !== 'OK') {
     return envelopeCode(result.stderr) === GRID_ASLEEP_CODE ? { kind: 'asleep', lastKnown: null } : { kind: 'unanswered' }
   }

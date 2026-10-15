@@ -21,8 +21,9 @@ readers. Hook transport, process binding and event delivery stay with core. Thei
 (`claude/hookContract.ts`, `codex/hookContract.ts`) that core applies in line with `kit/` mechanics, never in a
 worker ([hooks](../../../docs/design/2026-10-08-engine-hooks.md)). So are their launch specifics (`claude/launch.ts`,
 `codex/launch.ts`): Codex's pane startup probe and retry, its own-login provider, the harness context and env
-flags, folder trust and the resume repair, applied by `kit/launchStartup.ts`, `kit/launchArgs.ts`,
-`kit/folderTrust.ts` and `kit/resumeRepair.ts`, and what discovery reads off their processes and transcripts
+flags, folder trust, the resume repair and the screen Codex's TUI runs on (its scrollback), applied by
+`kit/launchStartup.ts`, `kit/launchArgs.ts`, `kit/folderTrust.ts`, `kit/resumeRepair.ts` and `kit/launchScreen.ts`,
+and what discovery reads off their processes and transcripts
 (`claude/discoveryContract.ts`, `codex/discoveryContract.ts`, `kit/processFacts.ts`, `kit/projectFolder.ts`), and
 where they keep their sessions, which the registry, session repair, Stop's capture and the handoff read
 (`claude/sessionStore.ts`, `codex/sessionStore.ts`, `kit/sessionRecords.ts`, `kit/continuation.ts`), with the activity

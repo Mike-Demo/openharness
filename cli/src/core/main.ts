@@ -167,7 +167,7 @@ import { createEngineHooks, installEngineHooks, installOpencodePluginBeforeSpawn
 import { createCursorDiscovery } from './engines/cursorDiscovery.js'
 import { createCursorTaskHooks, loadPendingCursorTasks } from './engines/cursorTasks.js'
 import { databaseHistory, hermesDb } from './transcripts/databaseHistory.js'
-import { CLOUD_FALLBACKS, CLOUD_REQUESTS, type CloudCore, CONNECTORS_REQUESTS, MEMORY_REQUESTS, ROUTER_REQUESTS, createCoreApi, DEVICES_FALLBACKS, DEVICES_REQUESTS, emptyPorts, HANDOFF_REQUESTS, EXPERIMENTS, LONG_ANSWERS, MODELS_FALLBACKS, MODELS_OFF, MODELS_REQUESTS, MONITOR_FALLBACKS, MONITOR_OFF, MONITOR_REQUESTS, ORCHESTRATOR_FALLBACKS, ORCHESTRATOR_REQUESTS, SHARE_REQUESTS, SHARING_FALLBACKS, PROJECTS_REQUESTS, SEARCH_FALLBACKS, SEARCH_REQUESTS, STORE_FALLBACKS, STORE_OFF, STORE_REQUESTS, MESSAGES_FALLBACKS, MESSAGES_REQUESTS, TURN_DELIVERERS, USAGE_FALLBACKS, USAGE_REQUESTS, VIEWERS_FALLBACKS, WIFI_FALLBACKS, WINDOW_NAMES_REQUESTS, WORKSPACES_FALLBACKS, type GatewayAccount, type GatewayOps, type GatewayStatus, type RouteAnswer, type WindowFocus } from './api.js'
+import { CLOUD_FALLBACKS, CLOUD_REQUESTS, type CloudCore, CONNECTORS_REQUESTS, MEMORY_REQUESTS, ROUTER_REQUESTS, createCoreApi, DEVICES_FALLBACKS, DEVICES_REQUESTS, emptyPorts, HANDOFF_REQUESTS, EXPERIMENTS, LONG_ANSWERS, MODELS_FALLBACKS, MODELS_OFF, MODELS_REQUESTS, MONITOR_FALLBACKS, MONITOR_OFF, MONITOR_REQUESTS, ORCHESTRATOR_FALLBACKS, OS_DEVICE_REQUESTS, ORCHESTRATOR_REQUESTS, SHARE_REQUESTS, SHARING_FALLBACKS, PROJECTS_REQUESTS, SEARCH_FALLBACKS, SEARCH_REQUESTS, STORE_FALLBACKS, STORE_OFF, STORE_REQUESTS, MESSAGES_FALLBACKS, MESSAGES_REQUESTS, TURN_DELIVERERS, USAGE_FALLBACKS, USAGE_REQUESTS, VIEWERS_FALLBACKS, WIFI_FALLBACKS, WINDOW_NAMES_REQUESTS, WORKSPACES_FALLBACKS, type GatewayAccount, type GatewayOps, type GatewayStatus, type RouteAnswer, type WindowFocus } from './api.js'
 import { createServiceHost, testFaults } from './serviceHost.js'
 import { startStalls } from './stall.js'
 import { createServiceLinks, type ServiceLinks } from './serviceLinks.js'
@@ -1293,7 +1293,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // The requests each service that can run in its own process answers, as core/api.ts declares them.
   const requestsOf: Record<string, readonly string[]> = {
     search: SEARCH_REQUESTS, store: STORE_REQUESTS, usage: USAGE_REQUESTS, monitor: MONITOR_REQUESTS, projects: PROJECTS_REQUESTS, models: MODELS_REQUESTS, handoff: HANDOFF_REQUESTS, connectors: CONNECTORS_REQUESTS,
-    devices: DEVICES_REQUESTS, windowNames: WINDOW_NAMES_REQUESTS, shell: SHELL_REQUESTS, messages: MESSAGES_REQUESTS,
+    devices: DEVICES_REQUESTS, windowNames: WINDOW_NAMES_REQUESTS, shell: SHELL_REQUESTS, messages: MESSAGES_REQUESTS, osDevice: OS_DEVICE_REQUESTS,
     ...Object.fromEntries(Object.entries(EXPERIMENTS).map(([name, experiment]) => [name, experiment.requests])),
   }
   // The experiments (core/api.ts `EXPERIMENTS`): each may act on the core through the hooks an experiment has.
@@ -1504,6 +1504,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   if (!outOfProcess.has('handoff')) serviceHost.serve('handoff', inline!.startHandoff, coreApi, HANDOFF_REQUESTS)
   // Connected services' MCP bridge and the Connectors screen (services/connectors.ts): here, or in the edge host.
   if (!outOfProcess.has('connectors')) serviceHost.serve('connectors', inline!.startConnectors, coreApi, CONNECTORS_REQUESTS)
+  // A Harness OS computer managed from the owner's phone: its update and its Wi-Fi (services/osDevice.ts): here, or in the edge host.
+  if (!outOfProcess.has('osDevice')) serviceHost.serve('osDevice', inline!.startOsDevice, coreApi, OS_DEVICE_REQUESTS)
   // The recaps: in this process, or in the edge host (services/recapsProcess.ts), told each turn's lifecycle.
   if (outOfProcess.has('recaps')) ports.recaps = recapsLink.port; else serviceHost.start('recaps', inline!.startRecaps, coreApi, RECAPS_FALLBACKS)
   // Cleaning up after agents: the harnesses a closed harness started, and those idle half an hour (services/agentCleanup.ts).
@@ -2096,10 +2098,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   const gridLaunchMachine = async (engine: AgentEngine, native?: NativeLaunch): Promise<GridLaunchMachine> => ({
     hermesSystemManaged: existsSync(HERMES_SYSTEM_MANAGED_DIR),
     opencodeMajor: native ? native.opencodeMajor : engine === 'opencode' ? await opencodeMajorVersion() : null,
-    ...(native?.environment.HOME ? {
-      grokHome: nativeHookLocations(native.environment).GROK_HOME,
-      piSkillsDir: join(nativeHookLocations(native.environment).PI_AGENT_DIR, 'skills'),
-    } : {}),
+    ...(native?.environment.HOME ? { grokHome: nativeHookLocations(native.environment).GROK_HOME } : {}),
   })
 
   /**

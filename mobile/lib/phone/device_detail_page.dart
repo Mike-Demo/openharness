@@ -14,6 +14,11 @@ import 'settings_row.dart';
 import 'tty.dart';
 import 'tty_controls.dart';
 
+/// The answer to a new device — on its page here and on the "New device" banner, as the desktop's
+/// own band and page say it (`desktop/lib/widgets/new_device_notice.dart`,
+/// `account_device_detail.dart`).
+const kItsMine = 'It’s mine';
+
 /// One device in full: its facts, its whole key code to compare on that device, and what to do about
 /// it. [isNew] offers "It’s mine"; [onMine] tells the page that opened this one it was used.
 class DeviceDetailPage extends StatefulWidget {
@@ -196,7 +201,7 @@ class _DeviceDetailPageState extends State<DeviceDetailPage> {
                         if (widget.isNew)
                           SettingsRow(
                             key: const Key('device-detail-mine'),
-                            title: 'It’s mine',
+                            title: kItsMine,
                             onTap: _removing ? null : _mine,
                           ),
                         if (!_row.self)

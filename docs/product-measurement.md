@@ -14,11 +14,12 @@ automatically proven improvement. Changes still need review, tests and a deliber
 | Does work get a response promptly? | First text response buckets; over-one-minute waits; error events; matched ends without text; interruptions | Includes automation. Tool-only turns, interruptions and missing lifecycle events can explain missing text. No message is inspected. |
 | Do installations return to work? | D1/D7/D28 working-day cohorts, consecutive complete-week and calendar-month returns, return after a seven-day gap | Any working day can be a cohort; not new-signup retention. Local date flags produce unlinked totals. Opt-outs, reinstallations, resets and missing uploads affect results. |
 | Was the task useful? | Optional Completed / Partly completed / Not completed plus five fixed reason choices, reachable from Rate task outcome and Privacy | Voluntary and self-selected; not representative success or satisfaction. There is no free-text input. |
-| Is there usage at all? | Active and working computer counts; app opens; older-client relay totals | Background windows can count as active. Relay events are not distinct people; the populations must not be added together. |
+| Is there usage at all? | Active and working computer counts; app opens; older-client relay totals | Background windows can count as active. An open is a surface going from no attached window to one, not each connection (the desktop holds one per machine and redials). Relay events are not distinct people; the populations must not be added together. |
 
-| Which features get tried and used again? | First measured installations and daily first/repeat feature reach | Locally deduplicated installation-days, not unique accounts. Some operations are automatic. |
+| Which features get tried and used again? | First measured installations and daily first/repeat feature reach | Locally deduplicated installation-days, not unique accounts. Reads the apps make on their own (history, history paging, Store list, model list; `PRODUCT_USAGE_AUTOMATIC_ACTIONS`) count reliability only. The Store and model lists get reach only from the request an app marks `userAction` when a person opens them (`<action>_user_*`, `PRODUCT_USAGE_USER_OPENED_ACTIONS`); history has none. |
 | Where do app flows break? | Setup, Harness/tmux/clipboard steps, sign-in, workspace/remote connections, computer linking, viewer-pane opening and manual update checking/staging | Fixed started/ok/failed/cancelled/unknown counts and coarse duration buckets. Opening a viewer pane is not rendering its content; staging an update is not a successful relaunch. |
 | Is measurement losing coverage? | Updated collector installation-days, pruned queues, full observation maps, unmatched app starts | Loss signals warrant caution. No signal does not prove complete collection. |
+| How many people use Harness, and do they come back? | People active / working / new per day and per app, and D1/D2/D3/D7 returns (backend rollup of 10-day pseudonymous marks) | Sharing accounts only, staff excluded; an app open across midnight counts on both days, so prefer working returns. Not available before `PRODUCT_USAGE_SUBJECT_KEY` is set. |
 
 Native signed-out sessions can explicitly enable **Share setup and sign-in counts**. It starts off
 on every app launch, sends no credentials/cookies, and never replays earlier actions. Setup state
@@ -34,12 +35,52 @@ The exact counter vocabulary is in [productUsage.ts](../backend/src/types/produc
 Daemon reports combine participating signed-in installations, including staff and both environments.
 App reports are surface-specific operation totals; never add them to daemon or relay counts.
 They are not all-user counts and are not directly comparable with earlier account-cohort reports
-or industry retention benchmarks. No per-person analytics history or joining key is stored.
+or industry retention benchmarks. Apart from the 10-day people marks below (a keyed pseudonym, deleted on opt-out), no per-person analytics
+history or joining key is stored.
 Authenticated requests still reach the service; infrastructure request logs and backups have their
 own retention, which the release owner must verify separately. The account preference remains
 linked to the account so the switch works everywhere.
 
 ## Runtime and storage budget
+
+Desktop/CLI health adds separate marginal totals for the numeric public release and broad OS
+(`macos`, `linux`, `windows`, `other`). The two dimensions are never stored together or joined to
+the optional people records. The daily report suppresses margin labels and counts below 20
+collector observations; these are not 20 distinct people and this is not a claim of anonymity.
+Source/dev builds send a development context that ingestion drops without writing totals or receipts.
+Legacy clients without context remain separately unattributed. Mixed-release queued days use
+`unknown`; immutable in-flight receipts preserve their original context. Backdated returns are
+excluded from release/platform margins so a return's release cannot be mistaken for its cohort's.
+
+`health` in `usage:daily` reports consented setup/workspace/first-work/first-response milestones,
+coarse waits, request-source reconciliation, explicit composer-work D1/D7/D28 cohorts, weekly work-day
+bins, process health, and collector loss/rejection/late-report signals. Milestones describe local
+app episodes, can cross UTC days, and do not establish a joined signup conversion rate. First-work
+cohorts use explicit composer messages; terminal keystrokes and automatic work remain unclassified.
+Weekly bins cover completed weeks from installations that report again, so non-returners can be missing.
+
+Native Desktop observes main-frame/first-frame viewer loading, updater apply acknowledgements and
+the next observed version, explicit versus automatic connections, and resume-to-observed-work.
+Known-unlinked native Desktop retry probes do not start additional automatic connection
+observations: the initial refusal remains one outcome, and an explicit Connect is measured
+separately. Older releases counted every probe in the health totals. A drop across this
+measurement change is not evidence that fewer people encountered linking trouble; these
+counters do not count affected people. Retry suppression adds no identifiers or stored history.
+The startup bucket measures launch to the first consented observation of a connected workspace,
+including preference/sign-in delay. One in 60 rendered frames supplies a coarse duration bucket;
+it cannot reliably detect an idle freeze. Error hooks pass only framework/async categories.
+Desktop RSS and gateway RSS/CPU sample once per minute; they describe those processes, not the
+whole machine or agents. Sampling adds no core timer, process enumeration, or subprocess.
+
+Desktop's only new disk state is the last consented run's version, clean-exit/update flags, choice
+revision and a local-only account-scope hash. One serialized asynchronous write plus one latest
+pending value bounds disk work. It is cleared on sign-out/off and never enters a report. An unclean
+run can mean a force quit or power loss, and only becomes observable if the app returns. Update
+flags are best effort; analytics never delays exit. Gateway work-day flags expire after 35 days;
+a local yes/no marker prevents an old installation from being counted as newly activated again.
+All new fields are allowlisted; no URLs, raw error strings, stack traces, device specifications,
+task/session IDs or content are accepted. Feedback is voluntary and shown/answered/dismissed
+counts are unlinked to the task and to the separate fixed-choice answer totals.
 
 The daemon collector belongs to the gateway service, ordinarily a separate process. The core
 forwards fixed counters with a 64 KiB optional-traffic backpressure limit, never waits for reporting,
@@ -54,6 +95,15 @@ and stay below 8 KiB. One sync runs at a time, with five-second network deadline
 report interval. Unknown or failed preference checks stop collection. Slow or failed reporting can
 lose counts and cannot become a product dependency. A failed disk write also disables collection.
 
+`health_cli_report_rejected` counts unsuccessful delivery attempts, including retries; it is not
+a count of lost reports. New `health_cli_report_failure_*` counters split those attempts into fixed
+invalid, too-large, authentication, rate-limit, timeout, unreachable, write-conflict, transaction,
+server and other categories. A transaction failure does not by itself prove a timeout. No raw error
+message, database detail, URL or unknown error code is collected. These diagnostics share the same
+privacy choice and bounded queue, so a delivery outage can delay its own diagnostic counters.
+The local app proxy accepts only bounded UI counts, or Desktop health/UI counts with the exact
+public release, OS and channel context. It does not accept daemon counters or arbitrary context.
+
 Desktop and phone collectors keep only fixed counters in RAM, at most 64 in-flight observations,
 with at most 32 counters per report, one pending report per channel and one flush at a time.
 Callbacks from product actions never await measurement I/O. Reports retry no faster than once per
@@ -63,6 +113,21 @@ for all three phases. Counts expire after
 yesterday; app exit loses RAM counts. Update-stage outcomes may be lost during immediate exit;
 never delay an update to flush analytics. There is no persistent app identifier or local event log.
 
+hn reports as the `tui` surface: fixed `ui_tui_*` flow and `health_tui_*` milestone counters only,
+sent as one-way `product_observe` frames to this computer's daemon, which accepts them only from hn
+over the owner's socket, never relays them, and adds them to its own queue under the account's
+choice; those arriving before its first choice read wait in RAM (64 at most) until it is known.
+hn records only while signed in: nothing observed before sign-in is kept or sent, and a sign-in,
+sign-out or account change discards what is waiting, so its own sign-in is not observed. Flows are
+workspace and remote connections, computer linking, viewer opening (in a browser, or its link shown
+over SSH), app start, workspace ready and resume recovery, each started when it begins as on the
+Desktop; milestones are workspace ready, first work and first response, once per app session, with
+the Desktop's definitions. Milestones are not reset when the sharing choice changes within a session.
+At most 64 observations wait in hn's RAM (a full queue drops the rest and says so once per session,
+`health_tui_observation_overflow`); nothing is written to disk. Its counters travel in reports of
+their own. A backend that predates `tui` refuses only those, and the daemon then drops hn's counts
+until the next UTC day or its own restart, without counting a failed delivery.
+
 The signed-out endpoint permits only setup counters and explicit consent, rejects auth/cookie
 headers, limits bodies to 4 KiB and values to 1,000, and admits at most 120 writes/minute and four
 concurrent writes per server process. No IP-based analytics or new rate-limit identity is stored.
@@ -70,9 +135,28 @@ Exhaustion drops measurement rather than affecting sign-in. Public counts remain
 fabrication; they are directional diagnostics, not trusted account acquisition metrics.
 
 Both ingestion paths atomically add only UTC-day/metric totals plus an unlinked random retry receipt.
+Fast database write conflicts retry that complete transaction up to three times with short jitter,
+rechecking the sharing choice each time. No retry starts after the first second; existing transaction
+deadlines still apply to each attempt. Slow or exhausted conflicts return to the client's normal
+immutable-report retry. Receipts prevent both immediate and later retries from counting twice.
+Reports update their counters and separate margins in one Mongo update command inside
+that transaction. A partial write aborts the receipt and all counts; no per-report body is stored.
+This shortens shared-row contention without adding a daemon timer or delaying product actions.
+The public `/api/health` response includes validated release tag/SHA coordinates so a successful
+image build can be distinguished from the version actually serving requests.
+
+Resume diagnostics add fixed conditions by request source: runtime unavailable, saved state missing,
+project missing, harness missing, credentials missing, busy, changed, unconfirmed, preparation failed,
+launch failed, invalid and other. These come only from known error codes, never error text or paths.
+From CLI 0.4.3, an unconfirmed runtime counts as unknown and a concurrently changed harness as
+cancelled (legacy aggregate: unknown), rather than failed. Compare releases separately across this
+definition change; a lower failure rate alone is not proof the product improved.
 Receipts expire within 36 days and totals within 396 days through the existing Mongo TTL indexes.
-No account deduplication markers, stable hashes or cross-device histories are introduced. Exact
-people-based DAU/MAU and cross-device retention are deliberately unavailable.
+No account deduplication markers or stable hashes enter these totals. People-based daily counts and
+D1/D2/D3/D7 returns come from one mark per sharing person per day under an HMAC pseudonym (no time,
+machine, agent, device, country or content), kept 10 days and then only as anonymous `people_*` totals;
+turning sharing off deletes the person's marks at once. Weekly/monthly people counts and longer returns
+are not collected.
 
 ## Each daily review
 
@@ -120,12 +204,20 @@ and expiry. Then release CLI, desktop and phone together. Check that the switch 
 stop when it is off. Old clients stop contributing individual daily histories when the backend changes;
 the historical reporting command will no longer be a current-usage source.
 
+People counts roll out in this order: deploy the backend without `PRODUCT_USAGE_SUBJECT_KEY` (no marks
+are written); release desktop, phone and CLI with the updated "See what's shared" text; then set the key
+(32+ random characters, in the Helm secret). The first D1 is available two days later, D7 eight days
+later. Rotating the key: delete every `product_usage_activity` document first. Losing the key while
+marks live prevents deleting a person's marks when they turn sharing off.
+
 Suggested visible release note:
 
 > Harness now shares limited product usage counts by default to help us find broken or slow flows.
 > These counts do not include your prompts, responses, code, files or project details. Turn sharing
 > off for your account in Settings → Privacy → Share product usage data, or use `harness privacy off`.
 > Existing opt-outs stay off. Optional feedback sends only the answer you choose.
+> With sharing on, Harness also keeps which days you used it and through which app, under an
+> coded ID instead of your account, for 10 days, then only as combined totals.
 
 Sharing off prevents subsequent admission of new reports and clears local queues at the next
 successful preference check. An already admitted operation may finish. Combined totals cannot be

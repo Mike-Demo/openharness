@@ -7,6 +7,7 @@ import 'package:harness_mobile/state/app_state.dart';
 import '../p2p/phone_terminal_p2p.dart';
 import 'agent_home.dart';
 import 'approve_sign_in.dart';
+import 'browser_handoff.dart';
 import 'devices_page.dart';
 import 'exit_app.dart';
 import 'new_device_banner.dart';
@@ -35,6 +36,7 @@ class PhoneShell extends StatefulWidget {
 }
 
 class _PhoneShellState extends State<PhoneShell> with WidgetsBindingObserver {
+  late final BrowserHandoff _browser;
   final _navigator = GlobalKey<NavigatorState>();
 
   /// The nested navigator's own — see the note at the `HeroControllerScope` below.
@@ -44,6 +46,15 @@ class _PhoneShellState extends State<PhoneShell> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // A page a harness's program opened while this phone was typing there (Claude Code's `/login`).
+    _browser = BrowserHandoff(
+      widget.notifier,
+      say: (text) =>
+          ScaffoldMessenger.maybeOf(context)
+              ?.showSnackBar(SnackBar(content: Text(text))),
+    );
+    widget.notifier.onBrowserOpen = (machineId, _, url) =>
+        unawaited(_browser.open(machineId, url));
     final notices = widget.notifier.agentNotices.system;
     notices.opened.addListener(_openNoticedAgent);
     notices.openedDevice.addListener(_openNoticedDevice);
@@ -71,6 +82,8 @@ class _PhoneShellState extends State<PhoneShell> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    widget.notifier.onBrowserOpen = null;
+    unawaited(_browser.dispose());
     widget.notifier.agentNotices.system.opened.removeListener(
       _openNoticedAgent,
     );
@@ -137,9 +150,9 @@ class _PhoneShellState extends State<PhoneShell> with WidgetsBindingObserver {
     setState(() => _canPop = false);
   }
 
-  /// The computer whose "Scan with your phone" QR the welcome screen read before this phone was
-  /// signed in ([AppNotifier.pendingComputerSignIn]): the approval it asked for, now that it can be
-  /// given. Spent here whatever the answer — a code is one computer's sign-in, once.
+  /// The computer whose sign-in QR (`harness login --qr`) the welcome screen read before this phone
+  /// was signed in ([AppNotifier.pendingComputerSignIn]): the approval it asked for, now that it can
+  /// be given. Spent here whatever the answer — a code is one computer's sign-in, once.
   ///
   /// From this shell's context and not a page's: the home page under it is still settling (the
   /// machines loading, "Waiting for your computer…" swapping with "Looking for your computers…") and

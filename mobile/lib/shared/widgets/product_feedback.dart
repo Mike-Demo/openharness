@@ -71,9 +71,18 @@ class _ProductFeedbackState extends State<ProductFeedback> {
     }
   }
 
+  static ButtonStyle _chosen(BuildContext context) {
+    final primary = Theme.of(context).colorScheme.primary;
+    return OutlinedButton.styleFrom(
+      foregroundColor: primary,
+      disabledForegroundColor: primary,
+      side: BorderSide(color: primary),
+    );
+  }
+
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(top: 20),
+    padding: const EdgeInsets.only(top: 24),
     child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -90,10 +99,12 @@ class _ProductFeedbackState extends State<ProductFeedback> {
         const SizedBox(height: 8),
         Wrap(
           spacing: 8,
-          runSpacing: 4,
+          runSpacing: 8,
           children: [
             for (final choice in (widget.outcome ? outcomes : choices).entries)
               OutlinedButton(
+                // The answer given stays marked after it is sent; the others step back.
+                style: _answer == choice.key ? _chosen(context) : null,
                 onPressed:
                     _busy || _sent || (_answer != null && _answer != choice.key)
                     ? null
@@ -102,7 +113,10 @@ class _ProductFeedbackState extends State<ProductFeedback> {
               ),
           ],
         ),
-        if (_status != null) Text(_status!),
+        if (_status != null) ...[
+          const SizedBox(height: 8),
+          Text(_status!),
+        ],
       ],
     ),
   );

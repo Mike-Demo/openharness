@@ -1,4 +1,5 @@
 import '../core/test_run.dart';
+import '../measurement/onboarding_measurement.dart';
 import '../measurement/product_measurement.dart';
 import '../measurement/setup_transport.dart';
 
@@ -68,6 +69,7 @@ import 'search_when.dart';
 import 'session_content_search.dart';
 import '../usage/remote_usage.dart';
 import '../usage/usage_accounts.dart';
+import '../usage/usage_summary.dart';
 import '../phone/phone_name_store.dart';
 import '../viewer/device_log.dart';
 import '../viewer/device_history.dart';
@@ -273,6 +275,9 @@ class AppNotifier extends ChangeNotifier {
   AppConfig config;
   late ApiClient api;
   late final ProductMeasurement productMeasurement;
+
+  /// The phone's onboarding steps after sign-in, counted through [productMeasurement].
+  late final onboardingMeasurement = OnboardingMeasurement(productMeasurement);
   final _measurementConnections = <String, void Function(ProductOutcome)>{};
 
   /// Says whether this device is signed in, and signs it out: [ViewerServices.login], the app's own
@@ -1037,6 +1042,18 @@ class AppNotifier extends ChangeNotifier {
   /// so the welcome screen's pressed button says what it is waiting on, and only it.
   SignInProvider? signInProvider;
 
+  /// Signed in on this phone during this run — from the welcome — rather than a session the app
+  /// came back with. The onboarding after a sign-in reads it: home draws its waits on the
+  /// onboarding's picture, eased from the welcome's, and the computer joining gets its moment
+  /// (`phone/welcome/onboarding_frame.dart`). Cleared with the session.
+  bool signedInThisRun = false;
+
+  /// The one line the phone says by the mic the first time the onboarding opens a session — "Send
+  /// it, or say anything." — and the session it is for. Set by home as it hands over
+  /// (`phone/agent_home.dart`), spent by that session's page on its first send or when it goes
+  /// (`phone/terminal_page.dart`). Null the rest of the time; cleared with the session.
+  ({String machineId, String agentId, String text})? firstSessionLine;
+
   AppNotifier({
     required AppConfig config,
     required AuthSession authSession,
@@ -1686,6 +1703,8 @@ class AppNotifier extends ChangeNotifier {
     unawaited(_machineCache?.clear());
     sessionPreviews.clear();
     agentNotices.reset();
+    // The Settings row's usage figure was this account's — see [lastUsageSummary].
+    lastUsageSummary.value = null;
     expandedMachines.clear();
     selectedMachineId = null;
     // ⚠️ The saved session goes too. The socket that said so (a refresh refused, 4403) is the only
@@ -1696,6 +1715,10 @@ class AppNotifier extends ChangeNotifier {
     _lastError = message;
     _lastErrorRetryable = true;
     signedOutReason = _signedOutEnded;
+    signedInThisRun = false;
+    onboardingMeasurement.reset();
+    welcomedMachines.clear();
+    firstSessionLine = null;
     status = AppStatus.unauthenticated;
     notifyListeners();
   }
@@ -1711,6 +1734,10 @@ class AppNotifier extends ChangeNotifier {
   /// `viewer/email_code_api.dart`.
   Future<void> sendLoginCode(String email) => viewer.emailLogin.sendCode(email);
 
+  /// A sign-in attempt, counted as `sign_in` and under the welcome-screen button that started it.
+  void Function(ProductOutcome) _measureSignIn(ProductFlow method) =>
+      productMeasurement.beginEach([ProductFlow.signIn, method]);
+
   /// The phone's sign-in, second step: trade the emailed [code] for a session
   /// and go in.
   ///
@@ -1725,7 +1752,7 @@ class AppNotifier extends ChangeNotifier {
   }) async {
     final login = viewer.emailLogin;
     if (_disposed || signingIn) return;
-    final measureSignIn = productMeasurement.begin(ProductFlow.signIn);
+    final measureSignIn = _measureSignIn(ProductFlow.signInEmail);
     final revision = _invalidateAuthWork();
     _closedHistory.clear();
     _lastError = null;
@@ -1735,6 +1762,7 @@ class AppNotifier extends ChangeNotifier {
     try {
       await login.signIn(email: email, code: code);
       if (!_authWorkCurrent(revision)) return;
+      signedInThisRun = true;
       measureSignIn(ProductOutcome.ok);
       status = AppStatus.bootstrapping;
       notifyListeners();
@@ -1764,7 +1792,7 @@ class AppNotifier extends ChangeNotifier {
   Future<void> signInWithScan(String code) async {
     final login = viewer.emailLogin;
     if (_disposed || signingIn) return;
-    final measureSignIn = productMeasurement.begin(ProductFlow.signIn);
+    final measureSignIn = _measureSignIn(ProductFlow.signInScan);
     final revision = _invalidateAuthWork();
     _closedHistory.clear();
     _lastError = null;
@@ -1774,6 +1802,7 @@ class AppNotifier extends ChangeNotifier {
     try {
       await login.signInWithScan(code, label: phoneClientDescriptor().name);
       if (!_authWorkCurrent(revision)) return;
+      signedInThisRun = true;
       measureSignIn(ProductOutcome.ok);
       status = AppStatus.bootstrapping;
       notifyListeners();
@@ -1806,6 +1835,10 @@ class AppNotifier extends ChangeNotifier {
   Future<void> signInWithProvider(SignInProvider provider) async {
     final login = viewer.login;
     if (_disposed || signingIn) return;
+    final measureSignIn = _measureSignIn(switch (provider) {
+      SignInProvider.google => ProductFlow.signInGoogle,
+      SignInProvider.apple => ProductFlow.signInApple,
+    });
     final revision = _invalidateAuthWork();
     _closedHistory.clear();
     _lastError = null;
@@ -1822,17 +1855,26 @@ class AppNotifier extends ChangeNotifier {
       // iOS takes its sheet down here; Android's Custom Tab is the person's to close.
       unawaited(closeSignInPage());
       if (!_authWorkCurrent(revision)) return;
+      signedInThisRun = true;
+      measureSignIn(ProductOutcome.ok);
       status = AppStatus.bootstrapping;
       notifyListeners();
       await _enterSignedIn(revision);
     } on SignInCancelled {
+      measureSignIn(ProductOutcome.cancelled);
       unawaited(closeSignInPage());
       if (_authWorkCurrent(revision)) status = AppStatus.unauthenticated;
     } catch (_) {
+      measureSignIn(ProductOutcome.failed);
       unawaited(closeSignInPage());
       if (_authWorkCurrent(revision)) status = AppStatus.unauthenticated;
       rethrow;
     } finally {
+      measureSignIn(
+        _authWorkCurrent(revision)
+            ? ProductOutcome.unknown
+            : ProductOutcome.cancelled,
+      );
       if (_authWorkCurrent(revision)) {
         signingIn = false;
         signInProvider = null;
@@ -1932,6 +1974,9 @@ class AppNotifier extends ChangeNotifier {
     // sign-in code: held for the sign-in it asked for, not the one after this.
     pendingPairing = null;
     pendingComputerSignIn = null;
+    // The Settings row's usage figure was this account's — see [lastUsageSummary]. Here, before the
+    // awaits below: a sign-in started meanwhile ends this early, and must not inherit the figure.
+    lastUsageSummary.value = null;
     _closedHistory.clear();
     // Best-effort and fire-and-forget: local state is cleared below regardless, but the saved
     // session goes too, so the NEXT launch doesn't silently sign back in without ever showing the
@@ -1977,6 +2022,10 @@ class AppNotifier extends ChangeNotifier {
     expandedMachines.clear();
     selectedMachineId = null;
     signedOutReason = reason;
+    signedInThisRun = false;
+    onboardingMeasurement.reset();
+    welcomedMachines.clear();
+    firstSessionLine = null;
     status = AppStatus.unauthenticated;
     notifyListeners();
   }
@@ -2899,6 +2948,23 @@ class AppNotifier extends ChangeNotifier {
   /// from the log's persisted `pending` ([_syncPendingDevices]), so a restart does not lose them.
   final List<DevLogMember> newDevices = [];
 
+  /// Computers this phone was waiting for when they joined the account — the onboarding's "On your
+  /// computer, go to" — and so already named on its screen ("MacBook Pro is ready."). The device
+  /// log's "New device" for one of them is what the person just did: confirmed as theirs, with no
+  /// banner and no notice ([welcomeMachine]). Cleared with the session.
+  final Set<String> welcomedMachines = {};
+
+  /// [machineId] joined while this phone waited for it: see [welcomedMachines]. A "New device" for
+  /// it the log already announced goes too.
+  void welcomeMachine(String machineId) {
+    if (!welcomedMachines.add(machineId)) return;
+    for (final device in [...newDevices]) {
+      if (device.kind == 'machine' && device.machineId == machineId) {
+        dismissNewDevice(device.pub);
+      }
+    }
+  }
+
   /// Which of [newDevices] a fork suspended (not trusted here until the list is reviewed), as of the
   /// last read of the log. "Mine" on the banner cannot lift that, so for these it opens the device's
   /// page, which says why.
@@ -3004,6 +3070,12 @@ class AppNotifier extends ChangeNotifier {
       onAnnounce: (m) => _whenSignedIn(() {
         _failedDismissals.remove(m.pub);
         if (newDevices.any((d) => d.pub == m.pub)) return;
+        // The computer the onboarding was waiting for: the person is looking at its name already.
+        if (m.kind == 'machine' && welcomedMachines.contains(m.machineId)) {
+          _pendingSyncGen++;
+          unawaited(_dismissInLog(pubs: [m.pub], confirm: true));
+          return;
+        }
         newDevices.add(m);
         devicesRevision++;
         final name = m.label.isEmpty ? 'A device' : m.label;
@@ -3376,7 +3448,7 @@ class AppNotifier extends ChangeNotifier {
 
   /// A computer's own sign-in QR (the bare `hnq_…` code, [SignInCode] in
   /// `phone/welcome/connect_code.dart`) read on the welcome screen by a phone not yet signed in —
-  /// the desktop app's "Scan with your phone". Only a signed-in phone can approve it, so the welcome
+  /// `harness login --qr`'s. Only a signed-in phone can approve it, so the welcome
   /// signs this one in first and holds the code across that sign-in; the signed-in shell then asks
   /// to approve it (`phone/phone_shell.dart`), and spends it. Null the rest of the time.
   ///
@@ -5652,6 +5724,52 @@ class AppNotifier extends ChangeNotifier {
         machine.machine.machineId,
   ];
 
+  /// The computers whose services can be connected from this phone: linked and online. Their
+  /// daemon answers `connectors` for the account's owner only, end to end encrypted.
+  List<MachineState> get connectorMachines => [
+    for (final machine in machineStates.values)
+      if (!machine.needsLink && machine.nodeOnline != false) machine,
+  ];
+
+  /// `connectors` on [machineId] (cli/src/services/connectors.ts): `list`, `connect`, `flow`,
+  /// `callback`, `disconnect`. A machine that cannot answer reads as `{error: UNAVAILABLE}`.
+  /// Set by the phone shell: opens a page a harness's program asked for (`browser_open`,
+  /// phone/browser_handoff.dart).
+  void Function(String machineId, String agentId, String url)? onBrowserOpen;
+
+  /// Hands a sign-in this phone caught back to [machineId], to the program waiting for it there
+  /// (`browser_callback`, cli core/terminals/browser.ts). `{'error': 'UNAVAILABLE'}` when the line is down.
+  Future<Map<String, dynamic>> browserCallback(String machineId, String url) async {
+    final machine = machineStates[machineId];
+    if (machine == null || machine.needsLink) return {'error': 'UNAVAILABLE'};
+    try {
+      return await _conn(machineId).request(
+        'browser_callback',
+        payload: {'url': url},
+      );
+    } catch (_) {
+      return {'error': 'UNAVAILABLE'};
+    }
+  }
+
+  Future<Map<String, dynamic>> connectors(
+    String machineId,
+    Map<String, dynamic> payload, {
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
+    final machine = machineStates[machineId];
+    if (machine == null || machine.needsLink) return {'error': 'UNAVAILABLE'};
+    try {
+      return await _conn(machineId).request(
+        'connectors',
+        payload: payload,
+        timeout: timeout,
+      );
+    } catch (_) {
+      return {'error': 'UNAVAILABLE'};
+    }
+  }
+
   /// Every turn of every session on [machineId], searched by its daemon (`session_search`,
   /// cli/src/lib/sessionSearch/) — the desktop's `searchSessions`, unchanged. Null when the machine
   /// cannot answer: offline, or a CLI that predates the request, which goes silent rather than
@@ -5793,8 +5911,8 @@ class AppNotifier extends ChangeNotifier {
     final task = prompt?.trim();
     final choices = <String, dynamic>{
       'engine': engine,
-      // The harness's first task — the machine types it into the agent once it is up. Only
-      // claude, codex and opencode take one (see `kFirstTaskEngines`); an empty one is left out.
+      // The harness's first task — the machine types it into the agent once it is up. Only the
+      // engines in `kFirstTaskEngines` take one; an empty one is left out.
       if (task != null && task.isNotEmpty) 'prompt': task,
       // What the agent is called until its engine titles the session. Absent, the machine names it
       // after the engine and the time ("Codex harness 9-17 15:26").
@@ -5838,6 +5956,27 @@ class AppNotifier extends ChangeNotifier {
     'resumeSessionId': sessionId,
   }, attempt: attempt);
 
+  /// Asks what became of [attempt] — `agent_create_status`, under the same `creationId` — with
+  /// the choices it was first made with. The New form's Check status, the desktop's.
+  ///
+  /// ⚠️ **Not [createAgent] again with the form's rows as they read now.** An answer that lands
+  /// after the first press — a Git read, a machine's only Codex profile — changes the request the
+  /// form would build, and a changed request is refused ("Check the original request…") rather
+  /// than checked, so the form would be stuck saying so. The attempt holds what was asked; this
+  /// asks about exactly that.
+  ///
+  /// Never a creation: an attempt that was not sent has nothing to check, and nothing is sent.
+  Future<String?> checkAgentCreation(AgentCreationAttempt attempt) {
+    if (attempt._finished) return Future.value(attempt._outcome);
+    final machineId = attempt._machineId, choices = attempt._choices;
+    if (!attempt.awaitingConfirmation || machineId == null || choices == null) {
+      return Future.value(
+        'This request was never sent. Start the harness again.',
+      );
+    }
+    return _create(machineId, choices, attempt: attempt);
+  }
+
   Future<String?> _create(
     String machineId,
     Map<String, dynamic> choices, {
@@ -5873,16 +6012,71 @@ class AppNotifier extends ChangeNotifier {
     return null;
   }
 
-  String _creationFailureMessage(String code, String? detail, String machine) =>
+  String _creationFailureMessage(
+    String code,
+    String? detail,
+    String machine, {
+    Map<String, dynamic>? choices,
+  }) =>
       switch (code) {
+        // A New Folder named after its first task (`projectNameMode:
+        // suggested`). A current machine numbers that name past a folder that
+        // exists (`robot-2`), so only one that predates the mode refuses it, and
+        // its sentence is written for a name somebody typed. The phone has no
+        // name field to change instead, so it says the way to a fresh folder.
+        'PROJECT_EXISTS' when choices?['projectNameMode'] == 'suggested' =>
+          'A folder named after this task already exists on $machine. '
+              'Choose it from your projects, or update Harness there to make '
+              'a new one.',
+        // Making the project folder (a new one, a clone, a worktree or a
+        // branch) before anything starts in it: `cli/src/lib/projectFolder.ts`
+        // and `gitProject.ts`. The machine's sentence says what to change: the
+        // URL, the branch, Worktree.
+        'INVALID_PROJECT_SOURCE' ||
+        'INVALID_REPOSITORY' ||
+        'PROJECT_PREPARATION_FAILED' ||
+        'PROJECT_EXISTS' ||
+        'CLONE_FAILED' ||
+        'CLONE_TIMEOUT' ||
+        'GIT_PROJECT_UNAVAILABLE' ||
+        'INVALID_BRANCH' ||
+        'BRANCH_SWITCH_FAILED' ||
+        'WORKTREE_FAILED' ||
+        'GIT_UNAVAILABLE' =>
+          detail ?? 'Could not prepare the project folder on $machine.',
         'CWD_NOT_FOUND' || 'INVALID_CWD' =>
           'The project folder is unavailable on $machine. '
               'Choose another folder and try again.',
         'TMUX_UNAVAILABLE' =>
           'Harness needs tmux to start harnesses on $machine. '
               'Install tmux there, then try again.',
+        // The machine's own sentence names the engine and the flag it lacks.
+        // Without one, the phone's Approvals names the way out.
+        'CODEX_CLI_TOO_OLD' =>
+          detail ??
+              'The installed Codex CLI on $machine is too old for '
+                  'Auto-approve. Update Codex there, or choose Ask first under '
+                  'Approvals.',
         'UNSUPPORTED_ON_REMOTE' || 'UNSUPPORTED' =>
           'Update the harness CLI on this machine to create a harness',
+        'INVALID_DSH' =>
+          'This harness is not installed on $machine. '
+              '${detail ?? 'Install it there, then try again.'}',
+        'PROMPT_UNSUPPORTED' =>
+          'This engine cannot be opened with a first message on $machine.',
+        'PROMPT_TOO_LONG' =>
+          'This first task is too long for $machine. Shorten it and try again.',
+        'AGENT_UNSUPPORTED' =>
+          'This engine cannot be opened as a named agent on $machine.',
+        'INVALID_AGENT' =>
+          'This engine cannot be opened as that named agent on $machine.',
+        'INVALID_PERMISSION_MODE' =>
+          'This engine has no such permission mode on $machine.',
+        // A daemon older than the engine refuses it by name, with no detail;
+        // the fix is the update the UNSUPPORTED codes ask for. A detail is a
+        // reason of its own (the sample runs only Claude Code and Codex).
+        'INVALID_ENGINE' =>
+          detail ?? 'Update the harness CLI on $machine to start this agent.',
         // Opening a conversation Harness did not start (`resumeSessionId`). The machine says what
         // stopped it: open elsewhere, already a harness, gone.
         'SESSION_OPEN_ELSEWHERE' ||
@@ -5985,13 +6179,37 @@ class AppNotifier extends ChangeNotifier {
       }
       // Refusals that happen before a launch are safe to correct. INTERNAL,
       // spawn timeouts and connection failures cannot prove nothing started.
+      //
+      // A code missing here reads as a lost reply ("has not confirmed the new
+      // harness yet. Check status before creating another."), which asks for
+      // a second create of something the machine already turned down. The CLI
+      // checks every one before any pane exists (`create` in its
+      // core/agents/launches.ts, and core/agents/create.ts before the spawn).
+      // The desktop's set is the same list; keep the two in step.
       const refusedBeforeLaunch = {
+        // The project folder as asked for, refused before one is made or
+        // cloned.
+        'INVALID_PROJECT_SOURCE',
+        'INVALID_REPOSITORY',
+        'PROJECT_EXISTS',
         'CWD_NOT_FOUND',
         'INVALID_CWD',
         'INVALID_ENGINE',
         'INVALID_GRID',
+        'GRID_UNAVAILABLE',
         'INVALID_CODEX_HOME',
+        'INVALID_DSH',
+        // The first task, a named agent and the approval mode.
+        'PROMPT_UNSUPPORTED',
+        'PROMPT_TOO_LONG',
+        'INVALID_PROMPT',
+        'AGENT_UNSUPPORTED',
+        'INVALID_AGENT',
+        'INVALID_PERMISSION_MODE',
         'TMUX_UNAVAILABLE',
+        // An engine too old for the approval mode's flag: refused rather than
+        // left printing its help in a pane.
+        'CODEX_CLI_TOO_OLD',
         'TMUX_TOO_OLD_FOR_GRID',
         'GRID_CONFIG_FAILED',
         'UNSUPPORTED_ON_REMOTE',
@@ -6013,7 +6231,12 @@ class AppNotifier extends ChangeNotifier {
       };
       if (refusedBeforeLaunch.contains(failure.code)) {
         return creation._complete(
-          _creationFailureMessage(failure.code, failure.detail, machineName),
+          _creationFailureMessage(
+            failure.code,
+            failure.detail,
+            machineName,
+            choices: choices,
+          ),
         );
       }
       return unconfirmed;
@@ -6051,6 +6274,7 @@ class AppNotifier extends ChangeNotifier {
             failure['code'] as String,
             failure['detail'] is String ? failure['detail'] as String : null,
             machineName,
+            choices: choices,
           ),
         );
       case 'created':
@@ -6152,13 +6376,23 @@ class AppNotifier extends ChangeNotifier {
   bool machineRemoving(String machineId) =>
       _machineDeletes.containsKey(machineId);
 
-  /// Permanently deletes a machine from the account (backend `DELETE /api/machines/:id`) — not to
-  /// be confused with [unlinkMachine], which only drops this computer's local E2EE trust pin and
-  /// leaves the machine itself intact. Returns null on success, or an error message to show inline.
+  /// Permanently takes a machine off the account — not to be confused with [unlinkMachine], which
+  /// only drops this computer's local E2EE trust pin and leaves the machine itself intact. Two steps,
+  /// in the order desktop takes them (`MachineDevices.removeComputer`): the computer's key out of the
+  /// account's device log ([removeDevice]), then its machine record (backend
+  /// `DELETE /api/machines/:id`). Returns null on success, or an error message to show inline.
   ///
-  /// ⚠️ **The backend also signs that computer out.** It pushes `machine_revoked` down to a daemon
-  /// that is connected (`MachineService.destroy`), which clears its session and stops; one that is
-  /// off finds out on its next dial. The confirmation that leads here has to say so.
+  /// ⚠️ **The record alone does not take it out of Your devices.** The backend's delete pushes
+  /// `machine_revoked` down to a daemon that is connected (`MachineService.destroy`), which clears
+  /// its session and stops — one that is off finds out on its next dial — but it never touches the
+  /// device log: the computer's key stayed in Your devices, and every other device of the account
+  /// went on trusting it. The confirmation that leads here says both.
+  ///
+  /// A sign-out that fails stops before the record is touched, so the next press does the whole of
+  /// it again. A record that fails after the sign-out worked says so, and the next press finds no
+  /// key left to sign out and deletes only the record. A computer the log has no key for — an
+  /// account or a computer from before the log, one already signed out, a log this phone could not
+  /// read — loses its record alone, as before the log existed: removing it is never held up for good.
   Future<String?> deleteMachine(String machineId) {
     final inFlight = _machineDeletes[machineId];
     if (inFlight != null) return inFlight;
@@ -6179,10 +6413,34 @@ class AppNotifier extends ChangeNotifier {
 
   Future<String?> _performDeleteMachine(String machineId) async {
     final revision = _authRevision;
+    final name = machineStates[machineId]?.machine.displayName ?? 'This computer';
+    final device = await _machineDeviceKey(machineId);
+    // Signed out, or into another account, while the log was read: nothing here is theirs.
+    if (!_authWorkCurrent(revision)) return null;
+    if (device != null) {
+      String? failure;
+      try {
+        failure = await removeDevice(device.pub);
+      } catch (_) {
+        failure = 'UNREACHABLE';
+      }
+      // Signed out meanwhile: a DELETE now would go out under whoever is signed in next, and a
+      // failure is no longer anyone's to read.
+      if (!_authWorkCurrent(revision)) return null;
+      // Gone from the log already — another device signed it out after this phone read the log:
+      // what this step was for is done.
+      if (failure == 'NOT_IN_LOG') failure = null;
+      if (failure != null) return 'Couldn’t sign $name out ($failure). Try again.';
+      // The account let it go meanwhile (removed from another device): no record is left to delete.
+      if (machineStates[machineId] == null) return null;
+    }
     try {
       await api.deleteMachine(machineId: machineId);
     } catch (error) {
-      return 'Could not remove it: ${describeApiError(error)}';
+      final reason = describeApiError(error);
+      return device == null
+          ? 'Could not remove it: $reason'
+          : '$name is signed out, but its machine record could not be deleted: $reason';
     }
     if (!_authWorkCurrent(revision)) return null;
     // Any tile still showing this machine would otherwise sit forever in the "waiting to answer"
@@ -6215,6 +6473,38 @@ class AppNotifier extends ChangeNotifier {
     if (cache != null) _writeMachineCache(cache);
     notifyListeners();
     return null;
+  }
+
+  /// How long [_machineDeviceKey] waits on the device log before it goes on with what it has.
+  static const _machineKeyReadCap = Duration(seconds: 5);
+
+  /// [machineId]'s key in the account's device log, when this phone's copy of the log has one — what
+  /// [deleteMachine] signs out before the record goes. The log holds one key per computer at most
+  /// (`MACHINE_TAKEN`). Null when there is none to sign out: an account or a computer from before the
+  /// log, one already signed out, a log this phone could not read, or one that is still the account
+  /// just left (its keys are not this account's to remove).
+  ///
+  /// The log is read again first, briefly ([_connectAfterDeviceLog] waits as long): a computer that
+  /// signed in after the last read would otherwise be missed, and one signed out elsewhere since would
+  /// be signed out again, for nothing. Never throws — no answer is no key, and the record still goes.
+  Future<DevLogMember?> _machineDeviceKey(String machineId) async {
+    final log = _deviceLog;
+    if (log == null) return null;
+    await log.refresh().timeout(_machineKeyReadCap, onTimeout: () {});
+    try {
+      return await () async {
+        if (!await log.ownsLog()) return null;
+        final listing = await deviceListing();
+        for (final row in listing.members) {
+          final m = row.member;
+          if (m.kind == 'machine' && m.machineId == machineId) return m;
+        }
+        return null;
+      }().timeout(_machineKeyReadCap);
+    } catch (error) {
+      debugPrint('devices: could not read the key of ${_shortId(machineId)}: $error');
+      return null;
+    }
   }
 
   /// Computers being tried again by hand ([retryMachine]) — the row says so while it runs.
@@ -6620,10 +6910,19 @@ class AppNotifier extends ChangeNotifier {
   /// Never throws — a machine whose daemon is too old to know the RPC, one with
   /// no grid, and one that timed out are all "nothing to offer", which is what
   /// the sheet shows.
-  Future<GridModels> gridModels(String machineId) async {
+  ///
+  /// [userAction] marks the read as a person opening a model sheet: the only
+  /// read the model list's reach counts (`model_list_user_*`).
+  Future<GridModels> gridModels(
+    String machineId, {
+    bool userAction = false,
+  }) async {
     try {
-      final response = await _conn(machineId)
-          .request('grid_models_list', timeout: const Duration(seconds: 12));
+      final response = await _conn(machineId).request(
+        'grid_models_list',
+        payload: userAction ? const {'userAction': true} : const {},
+        timeout: const Duration(seconds: 12),
+      );
       List<GridModel> parseModels(Object? raw, {String? grid}) =>
           (raw as List<dynamic>? ?? [])
               .whereType<Map<String, dynamic>>()
@@ -8255,6 +8554,14 @@ class AppNotifier extends ChangeNotifier {
           }
         }
         break;
+      // A program in a harness's pane opened a page (Claude Code's `/login`) while this phone was the one
+      // typing there (cli core/terminals/browser.ts): it opens on this phone. Nothing here to redraw.
+      case 'browser_open':
+        final url = payload['url'];
+        if (url is String && url.isNotEmpty) {
+          onBrowserOpen?.call(machineId, payload['agentId'] as String? ?? '', url);
+        }
+        return;
       // ⚠️ Everything else changed nothing here, so it must not redraw. The machine streams every
       // agent's live chat — `text_delta`, `tool_start`, … — down this socket, several per second
       // per agent, and each one used to rebuild every screen listening to this notifier.
@@ -8585,6 +8892,7 @@ class AppNotifier extends ChangeNotifier {
 
   @override
   void dispose() {
+    onboardingMeasurement.dispose();
     productMeasurement.dispose();
     _measurementConnections.clear();
     _disposed = true;

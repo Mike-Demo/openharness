@@ -149,12 +149,16 @@ class TtyTextButton extends StatelessWidget {
     required this.onPressed,
     this.color,
     this.weight = FontWeight.w500,
+    this.size = TtySize.row,
   });
 
   final String label;
   final VoidCallback? onPressed;
   final Color? color;
   final FontWeight weight;
+
+  /// The onboarding's quiet line is the meta size ("Continue with email").
+  final double size;
 
   @override
   Widget build(BuildContext context) {
@@ -181,7 +185,7 @@ class TtyTextButton extends StatelessWidget {
                 label,
                 color: onPressed == null ? tty.dim : (color ?? tty.text),
                 weight: weight,
-                size: TtySize.row,
+                size: size,
               ),
             ),
           ),

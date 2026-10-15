@@ -36,9 +36,53 @@ final _rule = RegExp(r'^[─━═╭╮╰╯┌┐└┘\-]+$');
 /// [row] is an absolute buffer row, scrollback included: what
 /// `RenderTerminal.getCellOffset` reports. A tap on history scrolled far above
 /// the prompt is therefore never a prompt tap.
-bool isPromptTap(Buffer buffer, int row) {
+///
+/// ⚠️ **A dialog drawn in the prompt's place counts whole** ([wholeDialog]).
+/// Claude Code hides its prompt under a dialog and parks the cursor UNDER the
+/// dialog's footer — measured on a live pane with an MCP server's
+/// `Accept  Decline` open (openharness#1272): the cursor sat on the blank row
+/// below `Esc to cancel · ↑/↓ to navigate`, so the dialog's own rows were
+/// "reading", the rows left to tap were under the mic, and the phone had no
+/// way at all to press the keys the dialog asked for. See [_dialogTop].
+///
+/// False where the host answers the dialog's rows itself (a tap on an answer's
+/// band): a tap beside them is somebody reading the question, and a keyboard
+/// rising over the answers would hide the very thing they were about to tap.
+bool isPromptTap(Buffer buffer, int row, {bool wholeDialog = true}) {
   final top = _promptTop(buffer, buffer.absoluteCursorY) - 1;
-  return row >= min(top, buffer.height - _footRows);
+  final edge = min(top, buffer.height - _footRows);
+  final dialog = wholeDialog ? _dialogTop(buffer) : null;
+  return row >= (dialog == null ? edge : min(edge, dialog));
+}
+
+/// A dialog's footer: what a key does, as Claude Code words its hints —
+/// `Esc to cancel`, `↑/↓ to navigate`, `Enter to select`.
+final _dialogFooter = RegExp(
+  r'\b(?:esc|enter|tab|space)\s+to\s+\w|[←↑→↓](?:\s*/\s*[←↑→↓])?\s+to\s+\w',
+  caseSensitive: false,
+);
+
+/// The rule over a dialog the program drew where its prompt was, or null when
+/// the foot of the screen is a prompt — or anything a footer does not mark as a
+/// dialog.
+///
+/// Walked up from the foot of the screen: no row on the way may start a prompt
+/// (`❯ `, `› `), a footer must be passed, and the first rule at or above the
+/// cursor is the dialog's top. Claude Code draws every dialog that way — a
+/// full-width rule, the dialog, its footer — and Codex draws no rule, so a
+/// Codex pane keeps exactly the zone it had.
+int? _dialogTop(Buffer buffer) {
+  final lines = buffer.lines;
+  final screenTop = max(0, buffer.height - buffer.viewHeight);
+  final cursor = min(buffer.absoluteCursorY, buffer.height - 1);
+  var footer = false;
+  for (var row = buffer.height - 1; row >= screenTop; row--) {
+    final line = lines[row];
+    if (_promptGlyphColumn(line) != null) return null;
+    if (_dialogFooter.hasMatch(line.getText())) footer = true;
+    if (row <= cursor && _isRuleRow(line)) return footer ? row : null;
+  }
+  return null;
 }
 
 int _promptTop(Buffer buffer, int cursorRow) {

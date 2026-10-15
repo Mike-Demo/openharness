@@ -10,6 +10,7 @@ import 'package:harness_mobile/state/app_state.dart';
 
 import 'welcome/connect_computer.dart';
 import 'welcome/set_up_computer.dart' show ComputerSteps;
+import 'welcome/your_computer.dart';
 import 'tty_controls.dart';
 import 'tty.dart';
 import 'find_row.dart';
@@ -34,6 +35,7 @@ class MachinesTab extends StatelessWidget {
     required this.notifier,
     this.large = true,
     this.fromTerminal = false,
+    this.fromSettings = false,
   });
 
   final AppNotifier notifier;
@@ -46,12 +48,20 @@ class MachinesTab extends StatelessWidget {
   /// same swipe the other way, as on the New Harness form.
   final bool fromTerminal;
 
+  /// Pushed from Settings ▸ Computers: no Settings at the top right — back is the way there, and
+  /// Settings again over this list would stack Settings on Settings.
+  final bool fromSettings;
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: notifier,
     builder: (context, _) {
       AppTheme.watch(context);
       final tty = Tty.of(context);
+      // The ↻ at the top right, where Settings was (owner, 2026-10-13). Settings stays beside it
+      // only on the home screen — while no computer is ready, nothing else there leads to Settings
+      // or Sign out. Pushed, back leads to a screen that has it.
+      final showSettings = large && !fromSettings;
       final page = Scaffold(
         backgroundColor: tty.ground,
         body: SafeArea(
@@ -88,13 +98,10 @@ class MachinesTab extends StatelessWidget {
                   _RefreshButton(
                     busy:
                         notifier.machinesRefreshing || notifier.machinesLoading,
-                    trailing: !large,
+                    trailing: !showSettings,
                     onPressed: () => unawaited(notifier.retryMachines()),
                   ),
-                  // Large, this is the home screen while no computer is ready — locked, or off —
-                  // and nothing else on it leads to Settings or Sign out. Pushed (small) — from
-                  // Settings, or by the terminal's swipe left — back is the way out.
-                  if (large) PhoneSettingsButton(notifier: notifier),
+                  if (showSettings) PhoneSettingsButton(notifier: notifier),
                 ],
               ),
               Expanded(
@@ -185,7 +192,7 @@ class _Body extends StatelessWidget {
         action: FilledButton(
           key: const ValueKey('machines-set-up'),
           onPressed: () => _setUpComputer(context),
-          child: const Text('Set up a computer'),
+          child: const Text('Add computer'),
         ),
       );
     }
@@ -230,8 +237,8 @@ class _Body extends StatelessWidget {
   }
 
   /// [ordered]'s rows — each run of computers that want the same thing under one line that says it
-  /// once, `asleep · turn them on, or run harness start there`, rather than the same words under
-  /// every row: six asleep computers said it six times, half the screen of one sentence.
+  /// once, `offline · turn them on, or run harness start there`, rather than the same words under
+  /// every row: six offline computers said it six times, half the screen of one sentence.
   ///
   /// A run of one keeps its own second line: a header over a single row is two lines saying what
   /// one did, and in the singular. The working ones each say their own thing — how many harnesses —
@@ -263,16 +270,16 @@ class _Body extends StatelessWidget {
     return rows;
   }
 
-  /// What a run of computers in [status] is called over it, and what to do about them, said once —
-  /// null for the ones that need nothing.
+  /// What a run of computers in [status] is called over it ([phoneMachineWord]), and what to do
+  /// about them, said once — null for the ones that need nothing.
   static ({String word, String hint})? _groupOf(PhoneMachineStatus status) =>
       switch (status) {
         PhoneMachineStatus.needsPassword => (
-          word: 'locked',
+          word: phoneMachineWord(status),
           hint: 'tap one to unlock: scan its code',
         ),
         PhoneMachineStatus.offline => (
-          word: 'asleep',
+          word: phoneMachineWord(status),
           hint: 'turn them on, or run harness start there',
         ),
         PhoneMachineStatus.ready || PhoneMachineStatus.connecting => null,
@@ -281,17 +288,12 @@ class _Body extends StatelessWidget {
   /// A row whose second line its group's own line says instead — one line, a thumb's height.
   static const double _gatheredRowHeight = 48;
 
-  /// Connect your computer over this list — the download link, the steps, and a scan that pairs —
-  /// for a computer not on the account yet.
+  /// Add computer: the onboarding's "On your computer, go to" over this list — the address that
+  /// sends the download, and the account watched for the computer that opens it. A second computer
+  /// is set up the way the first was (`welcome/your_computer.dart`).
   void _setUpComputer(BuildContext context) => unawaited(
     Navigator.of(context).push(
-      phoneRoute(
-        (route) => ConnectComputerPage(
-          notifier: notifier,
-          signedIn: false,
-          onBack: () => Navigator.of(route).maybePop(),
-        ),
-      ),
+      phoneRoute((_) => YourComputerPage(notifier: notifier)),
     ),
   );
 
@@ -305,22 +307,20 @@ class _Body extends StatelessWidget {
     final status = phoneMachineStatusOf(state);
     final count = state.agents.length;
     final machineId = state.machine.machineId;
-    var (String word, Color color, String detail) = switch (status) {
+    var word = phoneMachineWord(status);
+    var (Color color, String detail) = switch (status) {
       PhoneMachineStatus.ready => (
-        'ready',
         tty.green,
         count == 0
             ? 'nothing running'
             : '$count harness${count == 1 ? '' : 'es'}',
       ),
-      PhoneMachineStatus.connecting => ('connecting', tty.faint, 'one moment…'),
+      PhoneMachineStatus.connecting => (tty.faint, 'one moment…'),
       PhoneMachineStatus.needsPassword => (
-        'locked',
         tty.yellow,
         'tap to unlock: scan its code',
       ),
       PhoneMachineStatus.offline => (
-        'asleep',
         tty.faint,
         'turn it on, or run harness start there',
       ),
@@ -338,7 +338,7 @@ class _Body extends StatelessWidget {
       minHeight: ownLine ? FindRow.height : _gatheredRowHeight,
       state: word,
       stateColor: color,
-      // ⚠️ An asleep computer is tappable now. It used to be drawn inert, with nothing a tap could do
+      // ⚠️ An offline computer is tappable now. It used to be drawn inert, with nothing a tap could do
       // for it — and it is exactly the one somebody wants to try again, rename, or take off the
       // account.
       onTap: () => _open(context, state),
@@ -353,7 +353,7 @@ class _Body extends StatelessWidget {
 }
 
 /// Over a run of computers that want the same thing: what they are, then what to do about them —
-/// `asleep · turn them on, or run harness start there` — said once for the run.
+/// `offline · turn them on, or run harness start there` — said once for the run.
 class _GroupLine extends StatelessWidget {
   const _GroupLine({required this.word, required this.hint});
 
@@ -390,13 +390,13 @@ class _GroupLine extends StatelessWidget {
   }
 }
 
-/// The foot of Computers, under the list and kept there however long it grows: Connect computer —
-/// the camera at once, for a computer already showing its QR code, the button the desktop's Add
-/// Phone tells somebody to tap — and Set up another computer, for one with no Harness on it yet.
+/// The foot of Computers, under the list and kept there however long it grows: **Add computer** —
+/// the onboarding's own step ② ("On your computer, go to"), the way every computer is added now —
+/// and under it, quietly, the camera, for a desktop from before that still pairs by its Add Phone
+/// QR code.
 ///
 /// Pinned, not the list's last rows: at the end of a list they sat after every computer, read as
 /// two more of them, and went below the fold at nine. Down here they are where a thumb already is.
-/// The button is Connect your computer's own, so the two screens show one thing by one name.
 ///
 /// How a scan goes is said on a line over the button — under the list, where the computer it pairs
 /// turns up; once paired, the computer is in the list.
@@ -411,12 +411,18 @@ class _ConnectBar extends StatefulWidget {
   final AppNotifier notifier;
 
   /// This list is the home screen, which a computer turning up takes away: the code goes to the
-  /// home screen to pair by, as on Connect your computer at home — [scanAndPairComputer]'s
-  /// `handOff`.
+  /// home screen to pair by — [scanAndPairComputer]'s `handOff`.
   final bool home;
 
-  /// Set up another computer: Connect your computer, pushed over this list.
+  /// Add computer: "On your computer, go to", pushed over this list.
   final VoidCallback onSetUp;
+
+  /// "Or scan the QR code on your computer" under Add computer — hidden, its code kept (owner,
+  /// 2026-10-13). Signed in here, a computer on the same account turns up and is trusted by itself
+  /// (the device key log), and one that still wants a code reads "locked" in the list, whose
+  /// Unlock page leads with "Scan its code": the line only repeated that, and under Add computer it
+  /// read as a second way to add one.
+  static const offerScan = false;
 
   @override
   State<_ConnectBar> createState() => _ConnectBarState();
@@ -470,9 +476,12 @@ class _ConnectBarState extends State<_ConnectBar> {
       ),
       child: Padding(
         // SafeArea leaves the foot to this page: the bar keeps clear of the home indicator itself.
+        // Without the scan's line under the button, the gap under it is the one over it.
         padding: EdgeInsets.only(
           top: 12,
-          bottom: MediaQuery.paddingOf(context).bottom,
+          bottom:
+              MediaQuery.paddingOf(context).bottom +
+              (_ConnectBar.offerScan ? 0 : 12),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -497,26 +506,29 @@ class _ConnectBarState extends State<_ConnectBar> {
                       ),
                     ),
                   TtyPrimaryButton(
-                    key: const ValueKey('machines-connect-computer'),
-                    icon: LucideIcons.qrCode300,
-                    label: 'Connect computer',
-                    // Green and still while a scan is looked up or paired; the line over it says
-                    // which.
-                    busy: _scanning,
-                    onPressed: () => unawaited(_scan()),
+                    key: const ValueKey('machines-add-computer'),
+                    icon: LucideIcons.laptopMinimal300,
+                    label: 'Add computer',
+                    onPressed: widget.onSetUp,
                   ),
-                  const SizedBox(height: 8),
-                  // "QR code", not "Add Phone code": a desktop menu's name read as a noun stack
-                  // under a button named for the other side — and the camera takes a computer's
-                  // sign-in QR too.
-                  Text(
-                    'Scan the QR code on your computer.',
-                    style: tty.style(size: TtySize.meta, color: tty.faint),
-                  ),
+                  // A desktop from before shows its Add Phone QR code rather than an address: the
+                  // camera pairs with it. "QR code", not "Add Phone code" — a desktop menu's name
+                  // read as a noun stack under a button named for the other side.
+                  if (_ConnectBar.offerScan)
+                    Center(
+                      child: TtyTextButton(
+                        key: const ValueKey('machines-connect-computer'),
+                        label: _scanning
+                            ? 'Scanning…'
+                            : 'Or scan the QR code on your computer',
+                        size: TtySize.meta,
+                        color: tty.faint,
+                        onPressed: _scanning ? null : () => unawaited(_scan()),
+                      ),
+                    ),
                 ],
               ),
             ),
-            FindAddRow(label: 'Set up another computer', onTap: widget.onSetUp),
           ],
         ),
       ),
@@ -524,8 +536,8 @@ class _ConnectBarState extends State<_ConnectBar> {
   }
 }
 
-/// The list read again — what a pull does ([AppNotifier.retryMachines]) — as a glyph beside
-/// Settings.
+/// The list read again — what a pull does ([AppNotifier.retryMachines]) — as a glyph at the top
+/// right, beside Settings on the home screen.
 ///
 /// While a read the person asked for is running ([busy]) the glyph turns and a press does nothing;
 /// it keeps its ink rather than greying out, because it is working, not unavailable — the rail's
@@ -540,9 +552,9 @@ class _RefreshButton extends StatefulWidget {
 
   final bool busy;
 
-  /// Last in its row, with no Settings after it (the list pushed from Settings): the glyph sits on
-  /// the right gutter, in Settings' own box. Otherwise it stands left of Settings, which keeps its
-  /// place on the gutter.
+  /// Last in its row, with no Settings after it (the list pushed): the glyph sits on the right
+  /// gutter, in Settings' own box. Otherwise it stands left of Settings, which keeps its place on
+  /// the gutter.
   final bool trailing;
 
   final VoidCallback onPressed;

@@ -163,7 +163,8 @@ void main() {
         ),
         (
           'EXPIRED',
-          'Couldn’t pair with Studio Mac. Open Add Phone… on it again and scan the new code.',
+          'Couldn’t pair with Studio Mac. Open Add Phone… on it again and '
+              'scan the new code.',
         ),
       ]) {
         final (link, socket, keys) = await linkClient();

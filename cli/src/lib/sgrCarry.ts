@@ -53,6 +53,11 @@ export class SgrCarry {
     return `\u001b[${SLOTS.flatMap((slot) => this.state.get(slot) ?? []).join(';')}m`
   }
 
+  /** Whether the state paints the cell behind the text: a background colour, or inverse video. */
+  get filled(): boolean {
+    return this.state.has('bg') || this.state.has('inverse')
+  }
+
   /** Read one captured row and move the state to where tmux leaves it at that row's end. */
   feed(row: string): void {
     for (const match of row.matchAll(SGR_PATTERN)) this.apply(match[1].split(';'))

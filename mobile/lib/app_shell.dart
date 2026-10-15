@@ -288,11 +288,17 @@ class RootShell extends ConsumerWidget {
         }
         return Column(
           children: [
-            Expanded(child: screen),
-            SafeArea(
-              top: false,
-              child: SetupUsageChoice(measurement: app.productMeasurement),
+            // The choice under it keeps the home indicator's inset; the screen's own SafeArea
+            // would keep it a second time, an empty band between its foot and the choice.
+            Expanded(
+              child: MediaQuery.removePadding(
+                context: context,
+                removeBottom: true,
+                child: screen,
+              ),
             ),
+            // Keeps the home indicator's inset itself, its ground painted under it.
+            SetupUsageChoice(measurement: app.productMeasurement),
           ],
         );
       },

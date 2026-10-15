@@ -91,7 +91,7 @@ class FindRow extends StatelessWidget {
   static const double height = 60;
 
   /// [height], or less for a row of one line where its second has been said once for a group of
-  /// them — Computers' asleep ones. Never under a thumb's 44.
+  /// them — Computers' offline ones. Never under a thumb's 44.
   final double minHeight;
 
   /// Above line 1 and below line 2.

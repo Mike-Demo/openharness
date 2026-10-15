@@ -100,6 +100,26 @@ export const launch: EngineLaunch = {
     },
   },
   /**
+   * Codex 0.157 made its full-screen transcript the default (`tui.fullscreen_transcript`, 0.156 added it), which
+   * pins the composer to the foot of a phone's pane (facets/launch.ts `ScreenContract`). `-c` outranks the person's
+   * config.toml and a profile's: measured against 0.162.1, `=true` there with `=false` here leaves the alternate
+   * screen off. 0.155.1 and 0.146.0, which have no such key, start with it as they would without (2026-10-13).
+   * `--no-alt-screen` would also do, but it turns every overlay inline too, the transcript pager among them.
+   */
+  screen: {
+    args: ['-c', 'tui.fullscreen_transcript=false'],
+    // In its scrollback 0.162.1 answers every resize, a phone's keyboard going up or down among them, by printing
+    // its transcript again: `ESC[2J ESC[3J` outside its synchronized update about 80 ms after the resize, then the
+    // whole transcript in one synchronized update (`ESC[?2026h` … `ESC[?2026l`), done by 155-186 ms (measured in a
+    // 50x40 pane, 2026-10-13). A keyframe taken at 10-40 ms let the phone draw the cleared screen, a flash at every
+    // raise and lower of the keyboard. Waiting instead for the output to pause held a phone's typing 1.5 s: Codex at
+    // work redraws its `Working (…)` line without one. Read off its end, the wait was 100-112 ms. The clear came at
+    // 78-82 ms idle; at work, past 150 ms (the flash came back at that, 2026-10-13), and one later still than this is
+    // caught as live output (lib/terminalStreamManager.ts `REPAINT_GUARD_MS`). A Codex with no transcript to print
+    // sends none, and costs the whole `withinMs`.
+    resizeRepaint: { clears: '\u001b[3J', ends: '\u001b[?2026l', withinMs: 250 },
+  },
+  /**
    * Codex 0.162.1 has no setting for its attribution's text: its own line ("Generated with [Codex](…)") is an
    * instruction in its developer message (`<git_attribution>`), on or off by workspace. `developer_instructions` is
    * the config key that adds to that message, so ours is worded as Codex words its own, and stays beside it.

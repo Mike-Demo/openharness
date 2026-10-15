@@ -528,7 +528,11 @@ class _ModelsPanelState extends State<ModelsPanel> with SectionWakes {
         : model.downloaded
         ? AppIcons.play
         : AppIcons.download;
-    final tooltip = active
+    // A download under way can be cancelled — the one action open while it runs.
+    final cancel = !pending && controller.downloading(model);
+    final tooltip = cancel
+        ? 'Cancel the download. What it downloaded is deleted.'
+        : active
         ? status
         : model.canStop
         ? 'Pause ${model.name} and free memory. The download is kept.'
@@ -603,7 +607,21 @@ class _ModelsPanelState extends State<ModelsPanel> with SectionWakes {
             child: SizedBox(
               width: 40,
               height: 40,
-              child: active
+              child: cancel
+                  ? IconButton(
+                      key: ValueKey('model-cancel-${model.id}'),
+                      onPressed: () =>
+                          unawaited(controller.cancelDownload(model)),
+                      icon: Icon(
+                        AppIcons.close,
+                        size: 16,
+                        semanticLabel: 'Cancel downloading ${model.name}',
+                      ),
+                      style: IconButton.styleFrom(
+                        foregroundColor: AppPalette.textPrimary,
+                      ),
+                    )
+                  : active
                   ? Semantics(
                       liveRegion: true,
                       label: '$status ${model.name}',

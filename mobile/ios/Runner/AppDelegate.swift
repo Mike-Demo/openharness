@@ -1,3 +1,4 @@
+import AudioToolbox
 import AuthenticationServices
 import Flutter
 import UIKit
@@ -20,6 +21,82 @@ import UserNotifications
     DeviceNameChannel.register(with: engineBridge.pluginRegistry)
     ClipboardImageChannel.register(with: engineBridge.pluginRegistry)
     SignInPageChannel.register(with: engineBridge.pluginRegistry)
+    HandoffChannel.register(with: engineBridge.pluginRegistry)
+    ChimeChannel.register(with: engineBridge.pluginRegistry)
+  }
+}
+
+/// `harness/chime` — a short sound the app plays of its own (Dart: `lib/core/chime.dart`): the two
+/// glass notes when a computer joins during the onboarding.
+///
+/// Through System Sound Services, not an audio player: a system sound is silenced by the Ring/Silent
+/// switch — muted means silent, as the onboarding asks — and plays without touching the audio
+/// session, which belongs to the voice input's recorder. `play` takes the Flutter asset's name, and
+/// answers whether it played; each sound is loaded once and kept.
+enum ChimeChannel {
+  private static var sounds: [String: SystemSoundID] = [:]
+
+  static func register(with registry: FlutterPluginRegistry) {
+    guard let registrar = registry.registrar(forPlugin: "HarnessChime") else { return }
+    let channel = FlutterMethodChannel(name: "harness/chime", binaryMessenger: registrar.messenger())
+    channel.setMethodCallHandler { call, result in
+      guard call.method == "play" else { result(FlutterMethodNotImplemented); return }
+      guard let asset = call.arguments as? String else { result(false); return }
+      if let sound = ChimeChannel.sounds[asset] {
+        AudioServicesPlaySystemSound(sound)
+        result(true)
+        return
+      }
+      let key = registrar.lookupKey(forAsset: asset)
+      guard let path = Bundle.main.path(forResource: key, ofType: nil) else { result(false); return }
+      var sound: SystemSoundID = 0
+      guard AudioServicesCreateSystemSoundID(URL(fileURLWithPath: path) as CFURL, &sound) == kAudioServicesNoError
+      else { result(false); return }
+      ChimeChannel.sounds[asset] = sound
+      AudioServicesPlaySystemSound(sound)
+      result(true)
+    }
+  }
+}
+
+/// `harness/handoff` — a web page offered to the person's other Apple devices (Dart:
+/// `lib/core/handoff.dart`). While the onboarding's "On your computer, go to" is up, a Mac nearby
+/// signed in to the same Apple account shows the download page in its Dock.
+///
+/// `offer` takes the page's https address and makes it the current activity; `withdraw` ends it.
+/// The activity is held here, since nothing else keeps it alive, and replaced by each `offer` —
+/// Dart offers again whenever the app comes back to the front, where iOS has stopped advertising.
+enum HandoffChannel {
+  private static var activity: NSUserActivity?
+
+  static func register(with registry: FlutterPluginRegistry) {
+    guard let messenger = registry.registrar(forPlugin: "HarnessHandoff")?.messenger() else { return }
+    let channel = FlutterMethodChannel(name: "harness/handoff", binaryMessenger: messenger)
+    channel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "offer":
+        // Only a web page: Handoff opens it in the other device's browser, and that takes https.
+        guard let text = call.arguments as? String, let url = URL(string: text),
+          url.scheme == "https"
+        else {
+          result(FlutterError(code: "bad-url", message: "Not an https address", details: nil))
+          return
+        }
+        HandoffChannel.activity?.invalidate()
+        let offered = NSUserActivity(activityType: NSUserActivityTypeBrowsingWeb)
+        offered.webpageURL = url
+        offered.isEligibleForHandoff = true
+        offered.becomeCurrent()
+        HandoffChannel.activity = offered
+        result(nil)
+      case "withdraw":
+        HandoffChannel.activity?.invalidate()
+        HandoffChannel.activity = nil
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
   }
 }
 

@@ -1,4 +1,4 @@
-import { PRODUCT_FEEDBACK, PRODUCT_FEEDBACK_REASONS, PRODUCT_FEEDBACK_OUTCOMES, PRODUCT_USAGE_ACTIONS, PRODUCT_USAGE_FLOWS, PRODUCT_USAGE_SURFACES } from '../types/productUsage.js'
+import { PRODUCT_FEEDBACK, PRODUCT_FEEDBACK_REASONS, PRODUCT_FEEDBACK_OUTCOMES, PRODUCT_USAGE_ACTIONS, PRODUCT_USAGE_AUTOMATIC_ACTIONS, PRODUCT_USAGE_FLOWS, PRODUCT_USAGE_SETUP_FLOWS, PRODUCT_USAGE_SURFACES, PRODUCT_USAGE_UI_SURFACES, PRODUCT_USAGE_USER_OPENED_ACTIONS } from '../types/productUsage.js'
 import { DAILY_PRODUCT_METRICS } from './dailyProductUsage.js'
 
 type Row = { dayUtc: Date; metric: string; value: number }
@@ -89,8 +89,9 @@ export function dailyProductReview(rows: Row[], now: Date) {
       percent: completeMonth.counters.monthly_working_installations ? rate(monthReturn, monthDenominator) : null,
       definition: 'Participating installations with work in two consecutive complete UTC calendar months; late uploads and measurement rollout affect coverage.',
     },
-    flows: ['setup', 'ui'].flatMap(channel => PRODUCT_USAGE_SURFACES.flatMap(surface => PRODUCT_USAGE_FLOWS
-      .filter(flow => channel !== 'setup' || ['setup', 'setup_harness', 'setup_tmux', 'setup_clipboard', 'sign_in'].includes(flow))
+    // hn has app flows but no signed-out setup channel.
+    flows: ['setup', 'ui'].flatMap(channel => ((channel === 'setup' ? PRODUCT_USAGE_SURFACES : PRODUCT_USAGE_UI_SURFACES) as readonly string[]).flatMap(surface => PRODUCT_USAGE_FLOWS
+      .filter(flow => channel !== 'setup' || (PRODUCT_USAGE_SETUP_FLOWS as readonly string[]).includes(flow))
       .map(flow => {
         const prefix = `${channel}_${surface}_${flow}_`
         const started = c[`${prefix}started`] ?? null
@@ -124,12 +125,25 @@ export function dailyProductReview(rows: Row[], now: Date) {
       launchAttempts: c.launch_started ?? null, observedLaunchesCreated: c.launch_created ?? null,
       interpretation: 'Post-sign-in first-use signals; these stage counts are not one signup cohort or a signup conversion rate. Already installed clients enter measurement when updated.' },
     feedback: Object.fromEntries(PRODUCT_FEEDBACK.map(answer => [answer, c[`feedback_${answer}`] ?? 0])),
-    features: PRODUCT_USAGE_ACTIONS.map(action => ({ action, requests: c[`${action}_requests`] ?? 0,
-      installationDays: c[`${action}_installation_days`] ?? null,
-      firstMeasuredInstallations: c[`${action}_first_installations`] ?? null,
-      repeatInstallationDays: c[`${action}_repeat_installation_days`] ?? null,
-      interpretation: 'An operation was requested, possibly automatically. Reach is installation-days, not unique people, UI clicks or successful feature use.',
-    })),
+    features: PRODUCT_USAGE_ACTIONS.map(action => {
+      // The apps make these reads on their own; clients before the split still send their reach. The
+      // Store and model lists are also opened by people, and only those requests carry reach (`_user_`).
+      const automatic = PRODUCT_USAGE_AUTOMATIC_ACTIONS.includes(action)
+      const opened = (PRODUCT_USAGE_USER_OPENED_ACTIONS as readonly string[]).includes(action)
+      const reach = (measure: string) => opened ? c[`${action}_user_${measure}`] ?? null
+        : automatic ? null : c[`${action}_${measure}`] ?? null
+      return { action, automatic, requests: c[`${action}_requests`] ?? 0,
+        userRequests: opened ? c[`${action}_user_requests`] ?? 0 : null,
+        installationDays: reach('installation_days'),
+        firstMeasuredInstallations: reach('first_installations'),
+        repeatInstallationDays: reach('repeat_installation_days'),
+        interpretation: opened
+          ? 'Also requested by the apps on their own: requests are reliability only. userRequests and reach count only a person opening the list (apps that mark it); reach is installation-days, a lower bound.'
+          : automatic
+          ? 'Requested by the apps on their own (after updates, on connect, for previews): reliability and latency only, not feature use.'
+          : 'An operation was requested, possibly automatically. Reach is installation-days, not unique people, UI clicks or successful feature use.',
+      }
+    }),
     measurementHealth: { updatedInstallationDays: c.measurement_v2_installation_days ?? null,
       queuePruning: c.measurement_queue_pruned ?? 0, turnObservationOverflow: c.turn_observation_overflow ?? 0,
       interpretation: 'Loss signals establish incomplete coverage; no loss signal does not prove complete collection.',

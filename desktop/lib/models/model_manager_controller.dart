@@ -672,6 +672,53 @@ class ModelManagerController extends ChangeNotifier {
   Future<void> toggle(LocalModel model) =>
       control(model, model.canStop ? 'stop' : 'start');
 
+  /// Whether [model]'s download is under way here: what [cancelDownload] stops. Every other action
+  /// waits while it runs, so a download that hung (its connection stalled after a full disk) once left
+  /// nothing to press.
+  bool downloading(LocalModel model) {
+    final operation = operationFor(model);
+    return operation?.active == true && operation?.stage == 'downloading';
+  }
+
+  /// [model]'s download cancelled: the daemon's stop of a model that is downloading ends the download
+  /// and deletes what it downloaded, and the model can be got again.
+  Future<void> cancelDownload(LocalModel model) async {
+    final owner = machine;
+    if (owner == null ||
+        owner.connectionStatus != ConnectionStatus.connected ||
+        owner.needsLink ||
+        owner.machine.isShared ||
+        pendingId != null ||
+        !downloading(model)) {
+      return;
+    }
+    pendingId = model.id;
+    _actionRevision++;
+    error = null;
+    _changed();
+    try {
+      final answer = await app.controlLocalModel(
+        owner.machine.machineId,
+        model.id,
+        start: false,
+      );
+      if (!_current(owner)) return;
+      error = answer['error'] as String?;
+    } catch (_) {
+      if (_current(owner)) {
+        error =
+            'Checking the model operation. Your click will not be repeated.';
+      }
+    } finally {
+      if (_current(owner)) {
+        pendingId = null;
+        _changed();
+        await _refreshing;
+        if (_current(owner)) await refresh();
+      }
+    }
+  }
+
   Future<void> control(LocalModel model, String action) async {
     final owner = machine;
     if (owner == null ||

@@ -1,4 +1,5 @@
 import Fastify, { type FastifyRequest } from 'fastify'
+import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 const methods = vi.hoisted(() => ({ ingestProductUsage: vi.fn(), ingestSetupUsage: vi.fn(), productUsageChoice: vi.fn(), setProductUsageChoice: vi.fn() }))
 vi.mock('../lib/productUsage.js', () => methods)
@@ -39,6 +40,21 @@ it('does not reflect a database error or report contents', async () => {
   expect(response.statusCode).toBe(503)
   expect(response.body).not.toContain('PRIVATE_CANARY')
 })
+it.each([['P2034', 'USAGE_WRITE_CONFLICT'], ['P2002', 'USAGE_WRITE_CONFLICT'],
+  ['P2028', 'USAGE_TRANSACTION_FAILED'], ['PRIVATE_CANARY', 'USAGE_UNAVAILABLE']])(
+  'returns only the fixed delivery category for storage error %s', async (code, expected) => {
+    methods.ingestProductUsage.mockRejectedValue(Object.assign(new Error('PRIVATE_CANARY'), { code, meta: 'PRIVATE_CANARY' }))
+    const response = await submit(good)
+    expect(response.statusCode).toBe(503)
+    expect(response.json().error.code).toBe(expected)
+    expect(response.body).not.toContain('PRIVATE_CANARY')
+  },
+)
+it('accepts the same native Desktop report exercised through the real daemon proxy', async () => {
+  const report = JSON.parse(readFileSync(new URL('../../../tests/fixtures/desktop-product-usage-report.json', import.meta.url), 'utf8'))
+  expect((await submit(report)).statusCode).toBe(200)
+  expect(methods.ingestProductUsage).toHaveBeenCalledExactlyOnceWith('account', report)
+})
 it('also sanitizes malformed JSON and oversized bodies before schema validation', async () => {
   for (const payload of ['{"prompt":"PRIVATE_CANARY', JSON.stringify({ prompt: 'PRIVATE_CANARY'.repeat(1000) })]) {
     const response = await app.inject({ method: 'POST', url: '/api/product-usage/report', headers: {
@@ -64,10 +80,20 @@ it('the visible control changes only the authenticated account', async () => {
 
 it('the complete vocabulary fits bounded chunks, including the longest metric keys', async () => {
   for (let i = 0; i < PRODUCT_USAGE_METRICS.length; i += 64) {
-    const payload = { ...good, counters: Object.fromEntries(PRODUCT_USAGE_METRICS.slice(i, i + 64).map(k => [k, PRODUCT_USAGE_MAX_COUNT])) }
+    const payload = { ...good, context: { surface: 'desktop', release: '999.999.999', platform: 'windows', channel: 'production' }, counters: Object.fromEntries(PRODUCT_USAGE_METRICS.slice(i, i + 64).map(k => [k, PRODUCT_USAGE_MAX_COUNT])) }
     expect(Buffer.byteLength(JSON.stringify(payload))).toBeLessThan(8192)
     expect((await submit(payload)).statusCode).toBe(200)
   }
+})
+
+it('rejects extra context, custom versions and device fingerprints without echoing them', async () => {
+  const context = { surface: 'desktop', release: '1.2.73', platform: 'macos', channel: 'production' }
+  for (const c of [{ ...context, path: 'PRIVATE_CANARY' }, { ...context, release: 'PRIVATE_CANARY' },
+    { ...context, platform: 'PRIVATE_CANARY' }, { ...context, channel: 'PRIVATE_CANARY' }]) {
+    const response = await submit({ ...good, context: c })
+    expect(response.statusCode).toBe(400); expect(response.body).not.toContain('PRIVATE_CANARY')
+  }
+  expect(methods.ingestProductUsage).not.toHaveBeenCalled()
 })
 
 const setup = { schemaVersion: 1, consent: true, id: good.id, day: good.day, counters: { setup_desktop_sign_in_started: 1 } }
@@ -78,7 +104,9 @@ it('accepts only explicitly enabled setup counts without credentials or account 
   expect(methods.productUsageChoice).not.toHaveBeenCalled()
   expect(methods.ingestProductUsage).not.toHaveBeenCalled()
   for (const payload of [{ ...setup, consent: false }, { ...setup, account: 'PRIVATE_CANARY' },
-    { ...setup, counters: { turns_started: 1 } }, { ...setup, counters: { setup_desktop_sign_in_started: 1001 } }]) {
+    { ...setup, counters: { turns_started: 1 } }, { ...setup, counters: { setup_desktop_sign_in_started: 1001 } },
+    // hn has no signed-out channel: it counts only through its signed-in daemon.
+    { ...setup, counters: { setup_tui_sign_in_started: 1 } }, { ...setup, counters: { ui_tui_sign_in_started: 1 } }]) {
     const response = await sendSetup(payload)
     expect(response.statusCode).toBe(400)
     expect(response.body).not.toContain('PRIVATE_CANARY')

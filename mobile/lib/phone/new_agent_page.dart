@@ -126,6 +126,10 @@ class _NewAgentPageState extends State<NewAgentPage> {
   String? _gitFolder;
   bool _gitLoading = false;
 
+  /// The read [_gitLoading] is about, held so a Start pressed during it can wait for the same
+  /// answer — see [_gitSettled].
+  Future<void>? _gitRead;
+
   /// Set when the machine could not answer at all, as opposed to answering
   /// "not a repository".
   ///
@@ -195,7 +199,22 @@ class _NewAgentPageState extends State<NewAgentPage> {
   }
 
   /// The first task — `prompt` on `agent_create`. Optional: empty starts the harness idle.
+  ///
+  /// ⚠️ **No length limit on the field.** One cut whatever was typed or pasted past
+  /// [kFirstTaskMaxLength] without a word, and what the mic added went past it unchecked. Start
+  /// says so instead, and sends nothing — see [_lengthError].
   final _task = TextEditingController();
+
+  /// What Start said about the task's length, while it is the line under the task. Editing the
+  /// task keeps it true: the count follows the words, and the line goes once they fit.
+  String? _lengthError;
+
+  /// The task changed — typed, pasted or said.
+  void _taskEdited(String text) => setState(() {
+    if (_lengthError != null && _error == _lengthError) {
+      _error = _lengthError = firstTaskLengthError(text);
+    }
+  });
 
   /// Made on the first tap of the mic, not before: a recorder opens a platform channel, and a
   /// form nobody talks to should not.
@@ -222,7 +241,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
             text: next,
             selection: TextSelection.collapsed(offset: next.length),
           );
-          setState(() {});
+          _taskEdited(next);
           return true;
         }),
       );
@@ -259,6 +278,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
     _engine = draft.engine;
     _permissionMode = draft.permissionMode;
     _folder = draft.folder;
+    _exactFolder = draft.exactFolder;
     _project = draft.project;
     _projectLabel = draft.projectLabel;
     _worktree = draft.worktree ?? false;
@@ -290,6 +310,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
       engine: _engine,
       permissionMode: _permissionMode,
       folder: _folder,
+      exactFolder: _exactFolder,
       project: _project,
       projectLabel: _projectLabel,
       worktree: _worktree,
@@ -297,7 +318,9 @@ class _NewAgentPageState extends State<NewAgentPage> {
       branchName: _branchName,
       placeholder: _placeholder,
       git: _git,
-      gitFolder: _gitFolder,
+      // Only an answer is kept. A read still out, or one that failed, comes back as no read at
+      // all, so Start asks again instead of taking "not a repository" from it — see [_gitSettled].
+      gitFolder: _gitLoading || _gitFailed ? null : _gitFolder,
       codexProfile: _codexProfile,
       model: _model,
       task: _task.text,
@@ -365,8 +388,16 @@ class _NewAgentPageState extends State<NewAgentPage> {
   /// Silent about failure. A folder that is not a repository and a machine that
   /// could not answer both come back with nothing to offer, and neither is
   /// something to interrupt a half-filled form about — the section simply does
-  /// not appear, and everything else on the page still works.
-  Future<void> _loadGit(String folder) async {
+  /// not appear, and everything else on the page still works. Start is where
+  /// it matters, and Start waits for this answer: see [_gitSettled].
+  Future<void> _loadGit(String folder) => _gitRead = _readGit(folder);
+
+  /// The folder the person browsed to: a worktree there stays itself, on every read of it.
+  String? _exactFolder;
+
+  /// [_loadGit]'s read, which it keeps in [_gitRead].
+  Future<void> _readGit(String folder) async {
+    final exact = folder == _exactFolder;
     final machineId = _machineId;
     setState(() {
       _gitLoading = true;
@@ -385,8 +416,9 @@ class _NewAgentPageState extends State<NewAgentPage> {
     // ⚠️ **A worktree is a temporary folder, so New shows its repository** — the desktop's rule
     // (`state/new_harness.dart`). Harness made it for another harness; opening New on it named
     // that harness's folder (`silent-beacon`) as the project, which nobody recognises. The
-    // machine names the main checkout, and new work starts from the branch that is on.
-    if (info.mainFolder case final main?) {
+    // machine names the main checkout, and new work starts from the branch that is on. One the
+    // person browsed to stays itself, mainFolder and all ([_inWorktree]).
+    if (info.mainFolder case final main? when !exact) {
       _folder = main;
       _gitFolder = main;
       info = GitProjectInfo(
@@ -402,7 +434,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
       _gitFailed = info.unavailable;
       _git = info.isGit ? info : null;
       if (!info.isGit) return;
-      _worktree = worktreeByDefault(info);
+      _worktree = info.mainFolder == null && worktreeByDefault(info);
       _branchRef = defaultBranchRef(info, worktree: _worktree);
       _placeholder ??= placeholderBranch([
         for (final branch in info.branches)
@@ -414,6 +446,9 @@ class _NewAgentPageState extends State<NewAgentPage> {
   /// The repository the Git rows are about, or null when there is none to show.
   GitProjectInfo? get _repository =>
       _folder != null && _folder == _gitFolder ? _git : null;
+
+  /// A worktree the person browsed to: the harness works in it, on its branch.
+  bool get _inWorktree => _repository?.mainFolder != null;
 
   /// What Start would do, so the rows can say it before it is done. Null when
   /// there is no repository, or when Worktree is off — the folder simply moves
@@ -612,33 +647,110 @@ class _NewAgentPageState extends State<NewAgentPage> {
       _projectLabel = null;
       _error = null;
     });
+    _exactFolder = chosen;
     unawaited(_loadGit(chosen));
   }
 
+  /// Waits for the Git answer about the folder Start is about to use, and says whether Start may go
+  /// on. False has already put the form back, with the reason on it.
+  ///
+  /// ⚠️ **Start does not go without the answer**, as the desktop's `create` does not
+  /// (`state/new_harness.dart`). The request is built from it: with no answer there is no
+  /// repository on hand, [_create] takes the plain path, and the harness starts on a bare `cwd` with
+  /// no worktree and no branch. The form reads Git after its first frame, so a Start pressed as it
+  /// opened used to land in exactly that gap.
+  ///
+  /// A machine that could not answer is asked again, once per Start, as the desktop asks; failing
+  /// again refuses rather than starting in the folder anyway, because whether the folder is a
+  /// repository is exactly what is not known. A folder that is simply NOT one was answered, and
+  /// starts there as it always has.
+  Future<bool> _gitSettled() async {
+    final folder = _folder;
+    if (folder == null || _project != null) return true;
+    // Never read for this folder — a draft left while its read was out — counts as unread.
+    if (!_gitLoading && (_gitFailed || _gitFolder != folder)) {
+      unawaited(_loadGit(folder));
+    }
+    // The newest read, not the first: one about a folder the form has since left ends without an
+    // answer (see [_gitFolder]), and the folder only changes by starting another.
+    Future<void>? waited;
+    while (_gitLoading &&
+        _folder != null &&
+        _project == null &&
+        !identical(waited, _gitRead)) {
+      waited = _gitRead;
+      try {
+        await waited;
+      } catch (_) {
+        // A read that threw has no answer either; it is refused below like one that failed.
+      }
+      if (!mounted) return false;
+    }
+    if (_folder == null && _project == null) {
+      setState(() => _creating = false);
+      return false;
+    }
+    if (_project == null && (_gitLoading || _gitFailed)) {
+      final machine = _machine?.machine.displayName ?? 'the computer';
+      setState(() {
+        _creating = false;
+        // The desktop's words, so the two say the same thing about the same machine.
+        _error =
+            'Could not check Git on $machine. Check the connection and Harness '
+            'CLI, then retry.';
+      });
+      return false;
+    }
+    return true;
+  }
+
   Future<void> _create() async {
-    final folder = _folder, engine = _engine, project = _project;
-    if ((folder == null && project == null) || engine == null || _creating) {
+    final engine = _engine;
+    if ((_folder == null && _project == null) || engine == null || _creating) {
       return;
     }
+    // A request still waiting on its answer is asked about, never made again — see [_creation].
+    final pending = _checking ? _creation : null;
     setState(() {
       _creating = true;
+      _checkingLaunch = pending != null;
       _error = null;
     });
+    if (pending != null) {
+      _answered(
+        pending,
+        engine,
+        await widget.notifier.checkAgentCreation(pending),
+      );
+      return;
+    }
+    if (!await _gitSettled()) return;
+    // Taken after the wait, not before it: the answer can move the form to the folder's own
+    // repository (a worktree's main checkout), and Start goes where the form says now.
+    final folder = _folder, project = _project;
+    // The first task as it is sent, read after the wait too: the field stays open through it. An
+    // engine that cannot take one is sent none.
+    final task = takesFirstTask(engine) ? _task.text.trim() : '';
+    // Shortened by the person, never cut here: a machine refuses a longer one, and a task cut to
+    // fit is not the one that was written. The desktop's check, in its words.
+    if (firstTaskLengthError(task) case final tooLong?) {
+      setState(() {
+        _creating = false;
+        _error = _lengthError = tooLong;
+      });
+      return;
+    }
     // Held so the id of what it starts comes back here — see
-    // [AgentCreationAttempt.agentId]. A fresh one per submit, which is what the
-    // call made on its own before: a retry after a refusal is a new request.
-    final creation = AgentCreationAttempt();
+    // [AgentCreationAttempt.agentId] — and kept as [_creation] for as long as
+    // its answer is outstanding.
+    final creation = _creation = AgentCreationAttempt();
     // A folder in a repository is not sent as a bare `cwd`: the branch and the
     // worktree travel with it, and [gitFolderRequest] is the desktop's own rule
     // for turning the rows above into what the machine is asked to do. A folder
     // that is not a repository, or one this form never read, falls through to
     // the plain path — and `New project` / `Git…` keep the request they made.
     // A New folder is named after the first task when there is one to send — the phone has no name
-    // field, and five `codex-2026-…` folders told nobody which was which (openharness#94). The agent
-    // takes the same words until its engine titles the session.
-    final task = engine == 'terminal' || !takesFirstTask(engine)
-        ? ''
-        : _task.text;
+    // field, and five `codex-2026-…` folders told nobody which was which (openharness#94).
     final namedByTask =
         project != null &&
         project.repository == null &&
@@ -672,10 +784,23 @@ class _NewAgentPageState extends State<NewAgentPage> {
       codexHome: _showsCodexProfile ? _codexProfile?.path : null,
       model: _model,
       attempt: creation,
-      prompt: _engine != null && takesFirstTask(_engine!) ? _task.text : null,
-      name: namedByTask ? taskProjectTitle(task) : null,
+      prompt: task.isEmpty ? null : task,
+      // Whenever a first task is sent, the harness is called by its words until the engine titles
+      // the session — in any project, the desktop's rule. Named only for a New folder, a second
+      // harness in an existing one read "Untitled Pane" until then. Nothing to say leaves the name
+      // to the machine.
+      name: task.isEmpty ? null : taskProjectTitle(task),
     );
+    _answered(creation, engine, error);
+  }
+
+  /// What the machine said to [creation], on the form: inside the new harness when one started,
+  /// otherwise the reason under the task.
+  void _answered(AgentCreationAttempt creation, String engine, String? error) {
     if (!mounted) return;
+    // Started, or refused for good: done with. The next press is a new request with an id of its
+    // own, made from the rows as they read then.
+    if (!creation.awaitingConfirmation) _creation = null;
     if (error == null) {
       // The harness exists: the draft that described it would be a second one waiting to be made
       // by accident. See [NewAgentDraft].
@@ -687,12 +812,40 @@ class _NewAgentPageState extends State<NewAgentPage> {
     setState(() {
       _creating = false;
       _error = error;
-      _failed = true;
+      _failure = error;
     });
   }
 
-  /// The last Start did not take: the button says Try Again, and every value stays.
-  bool _failed = false;
+  /// The last request this form made, kept while the machine has not said whether it started —
+  /// the desktop's `_attempt` (`state/new_harness.dart`).
+  ///
+  /// ⚠️ **A lost reply is not a refusal.** "Has not confirmed the new harness yet" and "still
+  /// starting your harness" both mean a harness may exist. Pressed again with a fresh attempt,
+  /// the button sent a new `creationId` and could start a second one; with this one it asks
+  /// `agent_create_status` about the first. Dropped by [_answered] once the answer is final.
+  ///
+  /// Only for the open form. Closing it lets the request go, and the draft it leaves is a new
+  /// request the next time — the desktop keeps the receipt in its draft, but its drafts are kept
+  /// per place, and the phone's one draft would keep every later New on Check status, with
+  /// nothing on the form to let it go.
+  AgentCreationAttempt? _creation;
+
+  /// [_creation] is waiting on its answer: the button checks on it, and the choices it was made
+  /// with are held — the desktop's `checking` and `locked`.
+  bool get _checking => _creation?.awaitingConfirmation ?? false;
+
+  /// The rows take no taps: a request is on its way, or one is waiting to be checked on.
+  bool get _locked => _creating || _checking;
+
+  /// The press under way is a check on [_creation], not a new request — the desktop's
+  /// `_checkingLaunch`, so the button says Checking rather than Starting.
+  bool _checkingLaunch = false;
+
+  /// What the last press was answered with. The button says Try Again while that answer is still
+  /// the line under the task; a choice changed since clears the line, and the button goes back to
+  /// saying what it will do.
+  String? _failure;
+  bool get _failed => _failure != null && _failure == _error;
 
   /// Where a finished creation lands: inside the agent it just started.
   ///
@@ -846,7 +999,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                   detail: _engine == null
                                       ? null
                                       : _engineNote(_engine!),
-                                  onTap: _creating
+                                  onTap: _locked
                                       ? null
                                       : () => unawaited(_chooseAgent()),
                                 ),
@@ -859,7 +1012,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                       ? tty.green
                                       : null,
                                   detail: _machineNote,
-                                  onTap: _creating
+                                  onTap: _locked
                                       ? null
                                       : () => unawaited(_chooseComputer()),
                                 ),
@@ -873,7 +1026,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                       ? tty.green
                                       : null,
                                   detail: null,
-                                  onTap: _creating
+                                  onTap: _locked
                                       ? null
                                       : () => unawaited(_chooseProject()),
                                 ),
@@ -883,7 +1036,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                   label: 'options',
                                   value: _optionsOpen ? '[-]' : '[+]',
                                   chevron: false,
-                                  onTap: _creating
+                                  onTap: _locked
                                       ? null
                                       : () => setState(
                                           () => _optionsOpen = !_optionsOpen,
@@ -896,7 +1049,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                         _model?.id ??
                                         modelSubscriptionLabel(_engine!),
                                     detail: _model?.node,
-                                    onTap: _creating
+                                    onTap: _locked
                                         ? null
                                         : () => unawaited(_chooseModel()),
                                   ),
@@ -908,7 +1061,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                     valueColor: (mode?.risky ?? false)
                                         ? tty.red
                                         : null,
-                                    onTap: _creating
+                                    onTap: _locked
                                         ? null
                                         : () => unawaited(_chooseApprovals()),
                                   ),
@@ -916,7 +1069,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                   TtyFormRow(
                                     label: 'profile',
                                     value: _codexProfile?.label ?? 'Default',
-                                    onTap: _creating
+                                    onTap: _locked
                                         ? null
                                         : () => unawaited(_chooseProfile()),
                                   ),
@@ -936,7 +1089,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                         ? 'Choose a project'
                                         : 'Not a Git repository',
                                     detail: info == null ? null : _branchNote,
-                                    onTap: info == null || _creating
+                                    onTap: info == null || _locked
                                         ? null
                                         : () => unawaited(_pickBranch(info)),
                                   ),
@@ -951,7 +1104,11 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                           ? tty.faint
                                           : null,
                                       chevron: false,
-                                      onTap: info == null || _creating
+                                      detail: _inWorktree
+                                          ? 'Already a worktree'
+                                          : null,
+                                      onTap:
+                                          info == null || _locked || _inWorktree
                                           ? null
                                           : () => setState(() {
                                               _worktree = !_worktree;
@@ -1036,9 +1193,8 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                     controller: _task,
                                     hint: 'What should it do?',
                                     lines: 6,
-                                    maxLength: kFirstTaskMaxLength,
                                     action: TextInputAction.newline,
-                                    onChanged: (_) => setState(() {}),
+                                    onChanged: _taskEdited,
                                     trailing: [
                                       Align(
                                         alignment: Alignment.bottomRight,
@@ -1074,8 +1230,11 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                     ),
                                   const SizedBox(height: 10),
                                   TtyPrimaryButton(
-                                    // Says what it will do: start, or choose what is still missing first.
-                                    label: _failed
+                                    // Says what it will do: check on a request still unanswered, start,
+                                    // or choose what is still missing first.
+                                    label: _checking
+                                        ? 'Check status'
+                                        : _failed
                                         ? 'Try Again'
                                         : ready
                                         ? 'Start'
@@ -1083,7 +1242,9 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                         ? 'Choose an agent'
                                         : 'Choose a project',
                                     busy: _creating,
-                                    busyLabel: 'Starting…',
+                                    busyLabel: _checkingLaunch
+                                        ? 'Checking…'
+                                        : 'Starting…',
                                     // Never a dead button: with a choice missing, Start opens its chooser.
                                     onPressed: () => unawaited(_start()),
                                   ),
@@ -1429,13 +1590,13 @@ class _NewAgentPageState extends State<NewAgentPage> {
   }
 
   Future<void> _chooseProfile() async {
-    final picked = await showNewAgentChooser<LocalCodexProfile?>(
+    final picked = await showNewAgentChooser<_ProfileChoice>(
       context,
       title: 'Profile',
       hint: 'Search profiles',
       items: [
         ChooserItem(
-          value: null,
+          value: const _ProfileChoice(null),
           title: 'Default',
           subtitle: _codexProfilesLoaded ? null : 'Looking for others…',
           icon: LucideIcons.user300,
@@ -1443,7 +1604,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
         ),
         for (final profile in _codexProfiles)
           ChooserItem(
-            value: profile,
+            value: _ProfileChoice(profile),
             title: profile.label,
             subtitle: profile.path,
             icon: LucideIcons.user300,
@@ -1451,8 +1612,9 @@ class _NewAgentPageState extends State<NewAgentPage> {
           ),
       ],
     );
-    if (!mounted) return;
-    setState(() => _codexProfile = picked);
+    // Put away without a pick: the profile stays what it was. Default is a pick, of no profile.
+    if (picked == null || !mounted) return;
+    setState(() => _codexProfile = picked.profile);
   }
 
   /// The branch row: the picker, and the name dialog behind its first entry.
@@ -1657,6 +1819,15 @@ class _ProjectChoice {
   final _ProjectChoiceKind kind;
   final String? machineId;
   final String? folder;
+}
+
+/// What the Profile chooser hands back: a profile, or none for Default. Wrapped because the sheet
+/// answers null when it is put away, and Default read that way reset a profile nobody unchose — the
+/// model sheet's [NewAgentModelChoice] for the same reason.
+class _ProfileChoice {
+  const _ProfileChoice(this.profile);
+
+  final LocalCodexProfile? profile;
 }
 
 /// A computer's project choice, held while the form is on another computer — see

@@ -172,9 +172,28 @@ export interface TerminalStreamHandle<Ref extends TerminalRuntimeRef = TerminalR
    * `tuiOwnsScrollback` is for a full-screen TUI that paints in tmux's *normal*
    * buffer (Grok). Its tmux history is prior repaint frames, not a shell
    * transcript, and must not be seeded; the snapshot is labelled as the
-   * alternate screen so the receiver routes the wheel to the program. */
-  snapshot(options?: { tuiOwnsScrollback?: boolean }): Promise<TerminalReadResult<TerminalStreamSnapshot>>
-  /** Release output produced strictly after the snapshot cut. */
+   * alternate screen so the receiver routes the wheel to the program.
+   *
+   * `conversationHistory` is for an engine that keeps its conversation in the
+   * scrollback (facets/launch.ts `ScreenContract`): the seeded history is all
+   * tmux keeps rather than its last screens, within the keyframe's size, and it
+   * is re-wrapped by word for the pane's width (historyRewrap.ts), the visible
+   * grid never.
+   *
+   * `repaint` is how the engine answers a resize by printing its screen again
+   * (facets/launch.ts `ScreenContract.resizeRepaint`): a snapshot taken right
+   * after the pane was resized waits for that print, so it holds what follows
+   * the clear rather than what preceded it; `cleared`, when the clear has come
+   * already, as live output, so only the print's end is waited for. A print
+   * that began before the capture's cut and had not ended there, whenever it
+   * began, has the snapshot taken again once it ends. */
+  snapshot(options?: {
+    tuiOwnsScrollback?: boolean
+    conversationHistory?: boolean
+    repaint?: { clears: string; ends: string; withinMs: number; cleared?: boolean }
+  }): Promise<TerminalReadResult<TerminalStreamSnapshot>>
+  /** Release output produced strictly after the snapshot cut. The sink may
+   * begin the next snapshot from it: what is left is then held behind that one. */
   endSnapshot(): void
   writeRaw(bytes: Uint8Array): Promise<TerminalActionResult>
   /** A clipboard paste, delivered as one atomic unit rather than chunked like `writeRaw` — see
@@ -192,6 +211,10 @@ export interface TerminalStreamHandle<Ref extends TerminalRuntimeRef = TerminalR
   resumeOutput(): Promise<TerminalActionResult>
   close(): Promise<void>
 }
+
+/** The largest keyframe sent: a larger one closes its stream (terminalStreamManager.ts). A snapshot that can
+ *  build its keyframe more than one way keeps under it itself (tmuxStream.ts, the re-wrapped history). */
+export const KEYFRAME_MAX_BYTES = 480 * 1024
 
 export const TERMINAL_ACTION_SUCCEEDED: TerminalActionResult = {
   state: 'succeeded',

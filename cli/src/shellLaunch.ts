@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process'
 import { constants } from 'node:os'
 import { engineBin, PROCESS_ENGINES } from './lib/engineBin.js'
 import type { ProcessEngine } from './engines/types.js'
+import { launchContract } from './engines/launches.js'
+import { screenArgs, screenEnvironment } from './engines/kit/launchScreen.js'
 import { engineInstallRecipe } from './lib/engineInstall.js'
 import { shellAgentArgv } from './lib/engineLaunch.js'
 import { buildGridEngineLaunch, gridConflictingEnvToClear } from './lib/gridLaunch.js'
@@ -54,10 +56,14 @@ export async function shellLaunch(args: string[], deps: ShellLaunchDeps = {
   error: console.error,
 }): Promise<number> {
   const [engine, grid, model, separator, ...nativeArgs] = args
+  // An engine typed at a Harness prompt runs in the pane the phone and the desktop share, so it runs on the screen
+  // every launch Harness makes runs it on (facets/launch.ts `ScreenContract`). Its argv goes ahead of the person's
+  // own, which may start with a subcommand: Codex takes `-c` before `resume` and `fork` (0.162.1).
+  const screen = launchContract(engine)
   if (PROCESS_ENGINES.includes(engine as ProcessEngine) && grid === '--native' && model === '--') {
     const nativeEngine = engine as ProcessEngine
-    const argv = shellAgentArgv(engineBin(nativeEngine), args.slice(3), engineInstallRecipe(nativeEngine)!)
-    return deps.run(argv[0], argv.slice(1), process.env)
+    const argv = shellAgentArgv(engineBin(nativeEngine), [...screenArgs(screen), ...args.slice(3)], engineInstallRecipe(nativeEngine)!)
+    return deps.run(argv[0], argv.slice(1), screenEnvironment(screen, process.env))
   }
   if (PROCESS_ENGINES.includes(engine as ProcessEngine) && engine !== 'codex' && engine !== 'claude' && separator === '--') {
     deps.error(`cm routing is not supported for ${engine} yet. Run cm default to use its own model settings.`)
@@ -74,9 +80,9 @@ export async function shellLaunch(args: string[], deps: ShellLaunchDeps = {
   const target = await deps.resolve(parsed.selection).catch(() => null)
   if (!target) { deps.error('That model is unavailable from this computer. Choose another with cm, or use cm default.'); return 1 }
   try {
-    const launch = routedInvocation(engine, target, nativeArgs, process.env)
+    const launch = routedInvocation(engine, target, [...screenArgs(screen), ...nativeArgs], process.env)
     const argv = shellAgentArgv(launch.binary, launch.args, engineInstallRecipe(engine)!)
-    return await deps.run(argv[0], argv.slice(1), launch.env)
+    return await deps.run(argv[0], argv.slice(1), screenEnvironment(screen, launch.env))
   } catch {
     deps.error('This model route could not be started. Your agent defaults have not changed.')
     return 1

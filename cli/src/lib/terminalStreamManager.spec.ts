@@ -167,9 +167,88 @@ describe('TerminalStreamManager', () => {
     expect(sent.at(-1)?.payload.code).toBe('TERMINAL_AGENT_NOT_FOUND')
   })
 
-  it('tells a Grok snapshot not to seed tmux history, and leaves other engines alone', async () => {
+  // Codex prints its transcript again after a resize, its clear first; at work it began after the keyframe had been
+  // taken, and a phone drew the cleared screen (2026-10-13). Its clear never goes out as output.
+  it('stands a keyframe in for an engine\'s print that begins as live output after a resize', async () => {
+    const repaint = { clears: '\u001b[3J', ends: '\u001b[?2026l', withinMs: 250 }
+    const output = () => binarySent.filter(({ frame }) => frame.kind === TerminalBinaryKind.output)
+      .map(({ frame }) => Buffer.from(frame.bytes).toString('latin1')).join('')
+    await manager.handleFrame('web-1', 'terminal_open', {
+      requestId: 'open-1', protocolVersion: 3, agentId: 'agent-1', cols: 120, rows: 40,
+    })
+    const streamId = sent[0].payload.streamId as string
+    await manager.handleFrame('web-1', 'terminal_resize', { streamId, resizeSeq: 0, cols: 120, rows: 30 })
+    const taken = stream.snapshots
+
+    // Begun in one chunk and ended in another: the keyframe waits for the end.
+    sink!.onData(Buffer.from('\u001b[?2026l\u001b[H\u001b[2J\u001b[3J\u001b[H\u001b[?2026h'))
+    await vi.advanceTimersByTimeAsync(8)
+    expect(stream.snapshots).toBe(taken + 1)
+    expect(stream.snapshotOptions.at(-1)).toEqual({ conversationHistory: true, repaint: { ...repaint, cleared: true } })
+    expect(output()).not.toContain('\u001b[3J')
+
+    // Begun and ended in one chunk: the keyframe is taken at once.
+    await manager.handleFrame('web-1', 'terminal_resize', { streamId, resizeSeq: 1, cols: 120, rows: 40 })
+    sink!.onData(Buffer.from('\u001b[2J\u001b[3J\u001b[?2026htranscript\u001b[?2026l'))
+    await vi.advanceTimersByTimeAsync(8)
+    expect(stream.snapshotOptions.at(-1)).toEqual({ conversationHistory: true })
+    expect(output()).not.toContain('\u001b[3J')
+
+    // Long after a resize a clear is the engine's own business, and goes out like any output.
+    await vi.advanceTimersByTimeAsync(2_000)
+    const before = stream.snapshots
+    sink!.onData(Buffer.from('\u001b[3J'))
+    await vi.advanceTimersByTimeAsync(8)
+    expect(stream.snapshots).toBe(before)
+    expect(output()).toContain('\u001b[3J')
+  })
+
+  // The keyframe after a resize was taken before Codex's print began, and the clear came in the output held behind it.
+  // Released while the keyframe was still marked as being taken, it went to the viewer unread (review of #1310).
+  it('reads the output a keyframe held back for an engine\'s print, as it reads live output', async () => {
+    const repaint = { clears: '\u001b[3J', ends: '\u001b[?2026l', withinMs: 250 }
+    const output = () => binarySent.filter(({ frame }) => frame.kind === TerminalBinaryKind.output)
+      .map(({ frame }) => Buffer.from(frame.bytes).toString('latin1')).join('')
+    await manager.handleFrame('web-1', 'terminal_open', {
+      requestId: 'open-1', protocolVersion: 3, agentId: 'agent-1', cols: 120, rows: 40,
+    })
+    const streamId = sent[0].payload.streamId as string
+    stream.onEndSnapshot = () => {
+      stream.onEndSnapshot = null
+      sink!.onData(Buffer.from('\u001b[?2026hworking\u001b[?2026l'))
+      sink!.onData(Buffer.from('\u001b[H\u001b[2J\u001b[3J\u001b[H\u001b[?2026h'))
+    }
+    const taken = stream.snapshots
+    await manager.handleFrame('web-1', 'terminal_resize', { streamId, resizeSeq: 0, cols: 120, rows: 30 })
+    await vi.advanceTimersByTimeAsync(8)
+
+    // The resize's keyframe, then the print's, which waits for its end.
+    expect(stream.snapshots).toBe(taken + 2)
+    expect(stream.snapshotOptions.at(-1)).toEqual({ conversationHistory: true, repaint: { ...repaint, cleared: true } })
+    expect(stream.snapshotBegins).toBe(stream.snapshotEnds)
+    expect(output()).not.toContain('\u001b[3J')
+    expect(binarySent.at(-1)!.frame.kind).toBe(TerminalBinaryKind.keyframe)
+  })
+
+  it('tells a Grok snapshot not to seed tmux history, an engine kept in the scrollback to seed all of it, and leaves other engines alone', async () => {
     await manager.handleFrame('web-1', 'terminal_open', {
       requestId: 'open-codex', protocolVersion: 3, agentId: 'agent-1', cols: 120, rows: 40,
+    })
+    // Codex prints its transcript again on a resize, which a keyframe after one waits for.
+    expect(stream.snapshotOptions.at(-1)).toEqual({
+      conversationHistory: true, repaint: { clears: '\u001b[3J', ends: '\u001b[?2026l', withinMs: 250 },
+    })
+
+    agents.set('claude-1', session('claude', 'claude-1'))
+    await manager.handleFrame('web-1', 'terminal_open', {
+      requestId: 'open-claude', protocolVersion: 3, agentId: 'claude-1', cols: 120, rows: 40,
+    })
+    // Claude Code runs as the person set it up: its history is sent as any pane's.
+    expect(stream.snapshotOptions.at(-1)).toBeUndefined()
+
+    agents.set('opencode-1', session('opencode', 'opencode-1'))
+    await manager.handleFrame('web-1', 'terminal_open', {
+      requestId: 'open-opencode', protocolVersion: 3, agentId: 'opencode-1', cols: 120, rows: 40,
     })
     expect(stream.snapshotOptions.at(-1)).toBeUndefined()
 
@@ -786,6 +865,119 @@ describe('TerminalStreamManager', () => {
     const ready = sent.find((frame) => frame.connId === 'phone-1' && frame.type === 'terminal_ready')
     expect(ready?.payload.readOnly).toBe(true)
     expect(ready?.payload).not.toHaveProperty('heldBy')
+  })
+
+  // hn with no terminal (its server, kept for the sessions a closed window left) reads every pane of the desk. On
+  // 2026-10-14 it reopened first after each daemon restart, took the terminals at its 80x24 layout and left the
+  // window the person was using watching a shrunken agent until they typed. It opens with `watch: true` now.
+  describe('a watch-only open', () => {
+    let readOnlyOpens: boolean[]
+    beforeEach(() => {
+      readOnlyOpens = []
+      terminals = {
+        openStream: async (_session: RegisteredSession, _size: unknown, nextSink: TerminalStreamSink, readOnly?: boolean) => {
+          sink = nextSink
+          readOnlyOpens.push(readOnly === true)
+          return { state: 'succeeded' as const, value: stream }
+        },
+      } as unknown as TerminalBackendCoordinator
+      manager = newManager()
+    })
+
+    const ready = (connId: string) => sent.findLast((frame) => frame.connId === connId && frame.type === 'terminal_ready')!
+
+    it('watches a terminal nobody holds: tmux attaches read-only, so the agent keeps its size, and nothing is typed', async () => {
+      await manager.handleFrame('hn-headless', 'terminal_open', {
+        requestId: 'open-1', protocolVersion: 3, agentId: 'agent-1', cols: 37, rows: 22, takeover: false, watch: true,
+        client: { kind: 'tui', name: 'Mac Auto terminal' },
+      })
+      expect(ready('hn-headless').payload.readOnly).toBe(true)
+      expect(ready('hn-headless').payload).not.toHaveProperty('heldBy')
+      expect(readOnlyOpens).toEqual([true])
+      const streamId = ready('hn-headless').payload.streamId as string
+      await manager.handleFrame('hn-headless', 'terminal_resize', { streamId, resizeSeq: 1, cols: 30, rows: 10 })
+      expect(sent.at(-1)?.payload.code).toBe('VIEW_ONLY')
+      expect(stream.sizes).toEqual([])
+    })
+
+    it('is not anyone holding it: a window that reconnects politely beside it takes the terminal, and is told of no holder', async () => {
+      // After a daemon restart, each in turn: hn with no terminal is back first, then a window with a person in it
+      // (hn's, the desktop's, the phone's) reconnects the way it always does after its first open, without the key.
+      for (const [connId, kind] of [['hn-window', 'tui'], ['desktop-1', 'desktop'], ['phone-1', 'phone']] as const) {
+        await manager.closeConnection('hn-headless')
+        await manager.handleFrame('hn-headless', 'terminal_open', {
+          requestId: 'open-headless', protocolVersion: 3, agentId: 'agent-1', cols: 37, rows: 22, takeover: false, watch: true,
+          client: { kind: 'tui', name: 'Mac Auto terminal' },
+        })
+        expect(ready('hn-headless').payload.readOnly).toBe(true)
+        sent.length = 0
+        readOnlyOpens.length = 0
+        await manager.handleFrame(connId, 'terminal_open', {
+          requestId: `open-${connId}`, protocolVersion: 3, agentId: 'agent-1', cols: 99, rows: 55, takeover: false,
+          client: { kind, name: connId },
+        })
+        expect(ready(connId).payload.readOnly).toBe(false)
+        expect(ready(connId).payload).not.toHaveProperty('heldBy')
+        // tmux attaches it as the controller, at its own size.
+        expect(readOnlyOpens).toEqual([false])
+        // The watcher goes as any does when a terminal changes hands, and opens again on the new size.
+        expect(sent.find((frame) => frame.connId === 'hn-headless' && frame.type === 'terminal_closed')?.payload)
+          .toMatchObject({ code: 'TERMINAL_TAKEN_OVER', takenBy: { kind, name: connId } })
+        await manager.closeConnection(connId)
+      }
+    })
+
+    it('leaves the window beside it typing and resizing', async () => {
+      await manager.handleFrame('hn-headless', 'terminal_open', {
+        requestId: 'open-1', protocolVersion: 3, agentId: 'agent-1', cols: 37, rows: 22, takeover: false, watch: true,
+      })
+      await manager.handleFrame('desktop-1', 'terminal_open', {
+        requestId: 'open-2', protocolVersion: 3, agentId: 'agent-1', cols: 120, rows: 40, takeover: false,
+      })
+      const streamId = ready('desktop-1').payload.streamId as string
+      await manager.handleFrame('desktop-1', 'terminal_resize', { streamId, resizeSeq: 1, cols: 100, rows: 30 })
+      expect(stream.sizes).toEqual([{ cols: 100, rows: 30 }])
+      await manager.handleBinary('desktop-1', { kind: TerminalBinaryKind.input, streamId, seq: 0, compressed: false, bytes: Buffer.from('ok') })
+      expect(Buffer.from(stream.writes[0]).toString()).toBe('ok')
+    })
+
+    it('leaves a client already driving the terminal alone, and a polite open beside both still watches that client', async () => {
+      await manager.handleFrame('desktop-1', 'terminal_open', {
+        requestId: 'open-1', protocolVersion: 3, agentId: 'agent-1', cols: 120, rows: 40,
+        client: { kind: 'desktop', name: 'MacBookPro2021.local' },
+      })
+      await manager.handleFrame('hn-headless', 'terminal_open', {
+        requestId: 'open-2', protocolVersion: 3, agentId: 'agent-1', cols: 37, rows: 22, takeover: false, watch: true,
+        client: { kind: 'tui', name: 'Mac Auto terminal' },
+      })
+      expect(sent.some((frame) => frame.connId === 'desktop-1' && frame.type === 'terminal_closed')).toBe(false)
+      expect(ready('hn-headless').payload).toMatchObject({ readOnly: true, heldBy: { kind: 'desktop', name: 'MacBookPro2021.local' } })
+      // The phone's pager guess, beside the desktop and the watch-only stream: the desktop's, named as it.
+      await manager.handleFrame('phone-1', 'terminal_open', {
+        requestId: 'open-3', protocolVersion: 3, agentId: 'agent-1', cols: 40, rows: 20, takeover: false,
+        client: { kind: 'phone', name: 'iPhone 15' },
+      })
+      expect(ready('phone-1').payload).toMatchObject({ readOnly: true, heldBy: { kind: 'desktop', name: 'MacBookPro2021.local' } })
+      expect(readOnlyOpens).toEqual([false, true, true])
+    })
+
+    it('is closed by a takeover like any watcher, so it opens again on the size the new holder gave the pane', async () => {
+      await manager.handleFrame('hn-headless', 'terminal_open', {
+        requestId: 'open-1', protocolVersion: 3, agentId: 'agent-1', cols: 37, rows: 22, takeover: false, watch: true,
+      })
+      await manager.handleFrame('phone-1', 'terminal_open', {
+        requestId: 'open-2', protocolVersion: 3, agentId: 'agent-1', cols: 40, rows: 20,
+        client: { kind: 'phone', name: 'iPhone 15' },
+      })
+      expect(sent.find((frame) => frame.connId === 'hn-headless' && frame.type === 'terminal_closed')?.payload)
+        .toMatchObject({ code: 'TERMINAL_TAKEN_OVER', takenBy: { kind: 'phone', name: 'iPhone 15' } })
+      expect(ready('phone-1').payload.readOnly).toBe(false)
+    })
+
+    it('is advertised, so a client can tell a daemon that would ignore the key', async () => {
+      await manager.handleFrame('web-1', 'terminal_capabilities', { requestId: 'r1' })
+      expect((sent.at(-1)?.payload.features as Record<string, unknown>).watchOnly).toBe(true)
+    })
   })
 
   it('falls back to what the daemon can say about a silent winner, and says nothing over a bad claim', async () => {

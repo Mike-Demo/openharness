@@ -28,6 +28,25 @@ const _retryDelay = Duration(seconds: 60);
 const _retryWindow = Duration(hours: 1);
 const _retryHourlyCap = 10;
 
+// ⚠️ **Deliberately not the CLI's rule (owner, 2026-10-14).** A channel that was carrying terminals
+// and went away is dialled again within seconds, then at the minute as before. Its going away is
+// rarely the network being unreachable, which is what the minute is for: on a Galaxy S23 the
+// channel closed within a second of its streams moving onto it (2026-10-14), and everything typed
+// for the next minute crossed the relay, a ~200ms round trip from the machine to the backend, so
+// every keystroke showed about 0.4s late. Each redial still spends the hourly budget.
+const _redialDelays = [
+  Duration(seconds: 1),
+  Duration(seconds: 5),
+  Duration(seconds: 15),
+];
+
+// How long a channel has to stay up before its dropping starts the redials over from the first:
+// one that keeps closing right after it opens is dialled three times quickly, not every second.
+const _redialStableAfter = Duration(minutes: 2);
+
+// How often, at most, typing over the relay brings a waiting retry forward (`_kickForTyping`).
+const _typingKickEvery = Duration(seconds: 10);
+
 // How long a stream may sit mid-migration before the sweep gives up on it and the
 // ordinary demote-on-mismatch rule applies to it again.
 const _migrationTtl = Duration(seconds: 30);
@@ -148,6 +167,22 @@ class TerminalP2pPlugin implements TerminalTransportPlugin {
 
   final _retryTimestamps = <DateTime>[];
   Timer? _retryTimer;
+
+  /// Whether the waiting [_retryTimer] is the budget's deferral rather than a retry it paid for —
+  /// typing does not bring that one forward ([_kickForTyping]).
+  bool _retryDeferred = false;
+
+  /// When the live link opened, until it goes away — what a drop is measured against
+  /// ([_redialStableAfter]).
+  DateTime? _linkOpenedAt;
+
+  /// A channel that was up went away, and none has come up since: retries take [_redialDelays].
+  bool _redialing = false;
+
+  /// How many of [_redialDelays] have been used since a channel last stayed up.
+  int _redials = 0;
+
+  DateTime? _lastTypingKickAt;
   late final Timer _sweep;
 
   int _upgradeAttempts = 0;
@@ -260,6 +295,7 @@ class TerminalP2pPlugin implements TerminalTransportPlugin {
     if (timer != null) {
       timer.cancel();
       _retryTimer = null;
+      _retryDeferred = false;
       _log('retry kicked · app resumed');
       if (_link == null) _startP2p();
       return;
@@ -272,6 +308,33 @@ class TerminalP2pPlugin implements TerminalTransportPlugin {
       _log('upgrade kicked · app resumed');
       _attemptUpgrade();
     }
+  }
+
+  /// Somebody is typing into a terminal the relay carries while a retry waits out its delay, after a
+  /// channel that was up went away: the retry runs now, as a resume's does ([kickRetry]). A round
+  /// trip to the backend on every keystroke is felt the moment somebody types, and what is typed
+  /// after a channel came back rides it.
+  ///
+  /// Only after a drop ([_redialing]): where no channel has come up, the network is the likelier
+  /// reason, and typing would spend the hourly budget in minutes on negotiations bound to fail. Not
+  /// more than once per [_typingKickEvery], each a full negotiation; never while one is under way,
+  /// and never for the budget's deferral, which stays the budget's.
+  void _kickForTyping() {
+    if (_disposed ||
+        !_redialing ||
+        _retryTimer == null ||
+        _retryDeferred ||
+        _link != null) {
+      return;
+    }
+    final now = _now();
+    final last = _lastTypingKickAt;
+    if (last != null && now.difference(last) < _typingKickEvery) return;
+    _lastTypingKickAt = now;
+    _retryTimer!.cancel();
+    _retryTimer = null;
+    _log('retry kicked · typing on the relay');
+    _startP2p();
   }
 
   // ── Negotiation ───────────────────────────────────────────────────────────
@@ -292,6 +355,8 @@ class TerminalP2pPlugin implements TerminalTransportPlugin {
         switch (state) {
           case TerminalP2pLinkState.open:
             wasDirect = true;
+            _linkOpenedAt = _now();
+            _redialing = false;
             final relayed = link.transport == TerminalP2pTransport.relay;
             _log(
               'connected · via=${relayed ? 'turn' : 'direct'}'
@@ -349,7 +414,8 @@ class TerminalP2pPlugin implements TerminalTransportPlugin {
     final windowStart = now.subtract(_retryWindow);
     _retryTimestamps.removeWhere((at) => !at.isAfter(windowStart));
     var delay = _retryDelay;
-    if (_retryTimestamps.length >= _retryHourlyCap) {
+    _retryDeferred = _retryTimestamps.length >= _retryHourlyCap;
+    if (_retryDeferred) {
       // The CLI stops here and leaves the streams on the relay until the socket
       // itself redials. The window is rolling, though, and nothing else on a phone
       // would ever ask again — so wait for the oldest attempt to age out instead.
@@ -361,14 +427,19 @@ class TerminalP2pPlugin implements TerminalTransportPlugin {
         ' last hour) — deferred ${delay.inSeconds}s until it frees',
       );
     } else {
+      // A channel that was up went away: its first retries come within seconds ([_redialDelays]).
+      final redial = _redialing && _redials < _redialDelays.length;
+      if (redial) delay = _redialDelays[_redials++];
       _retryTimestamps.add(now);
       _log(
         'retry scheduled · in ${delay.inSeconds}s'
+        '${redial ? ' (redial $_redials/${_redialDelays.length})' : ''}'
         ' (${_retryTimestamps.length}/$_retryHourlyCap this hour)',
       );
     }
     _retryTimer = Timer(delay, () {
       _retryTimer = null;
+      _retryDeferred = false;
       if (!_disposed && _link == null) _startP2p();
     });
   }
@@ -656,7 +727,14 @@ class TerminalP2pPlugin implements TerminalTransportPlugin {
   Future<bool> sendBinary(Uint8List localFrame, Uint8List sealedFrame) async {
     if (_disposed) return false;
     final header = peekTerminalLocal(localFrame);
-    if (header == null || !_p2pStreams.contains(header.streamId)) return false;
+    if (header == null) return false;
+    if (!_p2pStreams.contains(header.streamId)) {
+      if (header.kind == TerminalBinaryKind.input ||
+          header.kind == TerminalBinaryKind.paste) {
+        _kickForTyping();
+      }
+      return false;
+    }
     final link = _link;
     if (link == null) return false;
     // A burst of large frames (a chunked upload) can push the send buffer over the
@@ -715,6 +793,14 @@ class TerminalP2pPlugin implements TerminalTransportPlugin {
     }
     if (streamIds.isNotEmpty) _reportP2pResult('dropped', reason: reason);
     unawaited(link?.stop(reason: reason));
+    // A channel that was up is dialled again within seconds ([_redialDelays]), from the first delay
+    // again once it had stayed up a while.
+    final openedAt = _linkOpenedAt;
+    _linkOpenedAt = null;
+    if (openedAt != null) {
+      if (_now().difference(openedAt) >= _redialStableAfter) _redials = 0;
+      _redialing = true;
+    }
     _scheduleRetry();
   }
 
