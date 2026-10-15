@@ -63,6 +63,7 @@ int ph_notices_top(const pod_model_t *m, int max, ph_notice_line_t *out)
     int k = 0;
     for (; k < n && k < max; k++) {
         out[k].engine = it[k].a ? it[k].a->engine : NULL;
+        out[k].name = it[k].a ? it[k].a->name : it[k].u ? it[k].u->name : "";
         item_line(&it[k], out[k].text, sizeof out[k].text);
     }
     return k;

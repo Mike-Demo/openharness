@@ -17,7 +17,9 @@ enum { PH_HOME_BG = 0x151413,
        PH_TINT_CODEX1 = 0x4F6CF2, PH_TINT_CODEX2 = 0x1C2A78, PH_TINT_CLAUDE1 = 0xE0805A, PH_TINT_CLAUDE2 = 0x7A3420,
        PH_TINT_MUSE1 = 0xC2A684, PH_TINT_MUSE2 = 0x56442F, PH_TINT_OTHER1 = 0x55555C, PH_TINT_OTHER2 = 0x1D1D21,
        PH_TINT_KILO1 = 0x8F8A2A, PH_TINT_KILO2 = 0x2C2A0C,
-       PH_NOTICE1 = 0xFF9A52, PH_NOTICE2 = 0x9C3F10,   // the Notices card's gradient
+       PH_NOTICE1 = 0xFF9A52, PH_NOTICE2 = 0x9C3F10,   // the notice orange (toast bar, peeking Notices card's name)
+       PH_LETTER = 0xF4EEE3, PH_LETTER_MID = 0xD9CFBF, PH_LETTER_BACK = 0xBFB3A1, PH_LETTER_INK = 0x1F1A14, PH_LETTER_RULE = 0xE2D8C8,   // the Notices card: a letter
+       PH_LETTER_WHO = 0x9A5A2E, PH_LETTER_MORE = 0x9A8A76, PH_LETTER_MARK = 0xD9622B, PH_LETTER_BADGE = 0xFF7A2F,
        PH_TOAST_FILL = 0x1B2A3D, PH_TOAST_EDGE = 0x2A3D55, PH_TOAST_NAME = 0xFFB36B, PH_TOAST_INK = 0xF2F7FC, PH_TOAST_BAR = 0xFF8A3D,   // the notice toast
        PH_CARD_INK = 0xFFFFFF, PH_PILL_WORK = 0x9DFFC0, PH_PILL_ASK = 0xFFC796 };
 
@@ -87,7 +89,7 @@ int ph_inbox_pitch(void);
 int ph_inbox_max_row(const pod_model_t *);
 // The first `max` notices in the order Notices lists them (pod_notice_count of them in all), for Home's Notices card: the agent's engine (NULL when it is
 // off the roster) and the one-line text (an entry's first sentence, "Done" / "Failed" without one; an asking agent's question). Returns how many were filled.
-typedef struct { const char *engine; char text[160]; } ph_notice_line_t;
+typedef struct { const char *engine, *name; char text[160]; } ph_notice_line_t;   // name: the agent's, "" when unknown
 int ph_notices_top(const pod_model_t *, int max, ph_notice_line_t *out);
 
 // ---- The notice toast (ph_toast.c) ----

@@ -133,7 +133,7 @@ int main(void) {
                 icons += r->pro_kind == K_IMAGE;
                 dots11 += r->pro_kind == K_RECT_AA && r->pro_height == 11 && r->y >= 660;
             }
-            CHECK(cards == 1 && grads == 1 + 1 + (t < 6));   // the neighbours peek when they exist (tab 0's is the Notices card)
+            CHECK(cards == 1 && grads == 1 + (t > 0) + (t < 6));   // the tab neighbours peek when they exist (tab 0's left one is the Notices letter, no gradient)
             CHECK(dots11 == 0 && dot_runs() == 0);                  // no page dots
             CHECK(hits_of(POD_A_ENTER_TAB) == 1 && F.hit_count == 1);
             const pod_hit_t *h = nth_hit(POD_A_ENTER_TAB, 0);
@@ -233,7 +233,7 @@ int main(void) {
         // no tabs at all: with a notice (x8 asks) the Notices card alone, else the "Harness" wordmark
         pod_model_swarms(&M, sw, lists, counts, 0, "", NULL, 0);
         N.stack[0].scroll = 0; fresh(); ph_view_home(&F, &N, &M, now);
-        CHECK(text_run("Notices") && text_run("1") && text_run("new") && hits_of(POD_A_INBOX) == 1 && F.hit_count == 1 && pod_tabs_pages_of(&N, &M) == 1);
+        CHECK(text_run("Notices") && text_run("1") && text_run("Tap to read") && hits_of(POD_A_INBOX) == 1 && F.hit_count == 1 && pod_tabs_pages_of(&N, &M) == 1);
         pod_model_question_close(&M, "x8");
         fresh(); ph_view_home(&F, &N, &M, now);
         {   // the first screen: "Harness" as seven letter runs in Inter Bold 84 (the only text), centred on x 360 within 2 px, baseline 373,
@@ -284,7 +284,9 @@ int main(void) {
         }
     }
 
-    // ---- Home's Notices card (the owner's mockup, option B): first before every tab, count, up to three rows, one POD_A_INBOX hit ----
+    // ---- Home's Notices card (the owner's mockup harness-pro-notices-card.html, option A "a letter"): first before every tab, a light paper card with two
+    // sheets behind, an envelope, "Notices" and the count in a round badge, up to three rows (the agent's name over the text) ruled apart, a foot line,
+    // one POD_A_INBOX hit ----
     {
         static pod_model_t M;
         static pod_nav_t N;
@@ -315,29 +317,36 @@ int main(void) {
         CHECK(pod_notice_count(&M) == 1 && pod_tabs_pages_of(&N, &M) == 3);
         N.stack[0].scroll = -1; fresh(); ph_view_home(&F, &N, &M, now);
         {
-            int cards = 0, grads = 0, logos = 0;
+            int paper = 0, mid = 0, back = 0, grads = 0, logos = 0, badge = 0;
             for (int i = 0; i < S.count; i++) {
                 const ht_run_t *r = &S.runs[i];
-                if (r->pro_kind == POD_GRAD && r->w == 540) {
-                    uint16_t g[2]; memcpy(g, r->text, sizeof g);
-                    CHECK(r->x == 90 && r->y == 56 && r->pro_height == 560 && r->radius == 48 && g[0] == ht_rgb(PH_NOTICE1) && g[1] == ht_rgb(PH_NOTICE2));
-                    cards++;
+                if (r->pro_kind == K_RECT_AA && r->w == 540 && r->pro_height == 560 && r->radius == 48 && r->fg == ht_rgb(PH_LETTER)) { paper++; CHECK(r->x == 90 && r->y == 56); }
+                // a sheet 12 (24) px down-right: three rounded 96 px corners and two straight slivers, all inside its own box
+                if ((r->pro_kind == K_RECT_AA || r->pro_kind == K_RECT) && r->fg == ht_rgb(PH_LETTER_MID)) {
+                    mid++; CHECK(r->x >= 90 + 12 && r->y >= 56 + 12 && r->x + r->w <= 90 + 540 + 12 && r->y + r->pro_height <= 56 + 560 + 12);
                 }
+                if ((r->pro_kind == K_RECT_AA || r->pro_kind == K_RECT) && r->fg == ht_rgb(PH_LETTER_BACK)) {
+                    back++; CHECK(r->x >= 90 + 24 && r->y >= 56 + 24 && r->x + r->w <= 90 + 540 + 24 && r->y + r->pro_height <= 56 + 560 + 24);
+                }
+                if (r->pro_kind == K_RECT_AA && r->fg == ht_rgb(PH_LETTER_BADGE)) { badge++; CHECK(r->w == 76 && r->pro_height == 76 && r->x + r->w == 90 + 540 - 44); }
                 grads += r->pro_kind == POD_GRAD;
                 logos += r->pro_kind == K_IMAGE && r->w == 44;
             }
-            CHECK(cards == 1 && grads == 2 && logos == 1);   // the card and tab 0 peeking on the right
-            const ht_run_t *nm = text_run("Notices"), *num = text_run("1"), *lab = text_run("new"), *row = text_run("Fixed the cable resync.");
-            CHECK(nm && nm->pro_font == &ph_sb_48 && nm->x == 134 && nm->fg == ht_rgb(PH_CARD_INK));
-            CHECK(num && num->pro_font == &ph_num_230 && num->x == 128 && num->y == 56 + 61 && lab && lab->pro_font == &ph_sb_26 && lab->x == 128 + ht_pro_width(&ph_num_230, "1") + 16);
-            CHECK(row && row->pro_font == &ph_rg_24 && row->x == 90 + 44 + 44 + 18 && row->y > 56 + 345 && row->y < 56 + 345 + 44);
+            CHECK(paper == 1 && mid == 5 && back == 5 && badge == 1 && grads == 1 && logos == 1);   // the letter, its two sheets, the badge; tab 0 peeking on the right
+            const ht_run_t *nm = text_run("Notices"), *num = text_run("1"), *who = text_run("claude-one"), *row = text_run("Fixed the cable resync."), *foot = text_run("Tap to read");
+            CHECK(nm && nm->pro_font == &ph_sb_48 && nm->x == 90 + 44 + 46 + 16 && nm->fg == ht_rgb(PH_LETTER_INK));
+            CHECK(num && num->pro_font == &ph_sb_48 && num->fg == ht_rgb(0xFFFFFF) && !text_run("new"));
+            CHECK(who && who->pro_font == &ph_sb_22 && who->fg == ht_rgb(PH_LETTER_WHO) && who->x == 90 + 44 + 44 + 18);
+            CHECK(row && row->pro_font == &ph_rg_24 && row->fg == ht_rgb(PH_LETTER_INK) && row->x == 90 + 44 + 44 + 18 && row->y > who->y && row->y < 56 + 140 + 112);
+            CHECK(foot && foot->fg == ht_rgb(PH_LETTER_MORE));
             CHECK(hits_of(POD_A_INBOX) == 1 && F.hit_count == 1 && !hits_of(POD_A_ENTER_TAB));
             const pod_hit_t *h = nth_hit(POD_A_INBOX, 0);
             CHECK(h->x == 90 && h->y == 56 && h->w == 540 && h->h == 560);
             CHECK(!ph_home_moves(&N, &M) && pod_view_next_ms(&N, &M, now) == 1000);   // nothing on the card moves
             CHECK(ph_runs(&F) <= HT_RUNS && dot_runs() == 0);
         }
-        // five notices: the asking agent first, then the newest entries; three rows, 66 px apart, the logos 44 px (an engine with none: the >_ outline), long text cut
+        // five notices: the asking agent first, then the newest entries; three rows 112 px apart, two rules, the logos 44 px (an engine with none: the >_
+        // outline), long text cut, "+2 more"
         pod_model_question(&M, "q", "Run the migration on the dev database now, or wait?");
         pod_model_unread_add(&M, "x", "codex-one", "Added the retry queue.", 12, now - 4000);
         pod_model_unread_add(&M, "g", "mystery", "Bumped the SDK and regenerated the client. Nothing else changed in this run.", 41, now - 3000);
@@ -345,21 +354,21 @@ int main(void) {
         CHECK(pod_notice_count(&M) == 5 && pod_tabs_pages_of(&N, &M) == 3);
         N.stack[0].scroll = -1; fresh(); ph_view_home(&F, &N, &M, now);
         {
-            CHECK(text_run("5") && text_run("new"));
-            int rows = 0, logos = 0, outlines = 0;
+            CHECK(text_run("5") && text_run("+2 more \xc2\xb7 tap to read") && text_run("asker"));
+            int rows = 0, logos = 0, outlines = 0, rules = 0;
             int ys[3] = {0, 0, 0};
             for (int i = 0; i < S.count; i++) {
                 const ht_run_t *r = &S.runs[i];
                 if (r->pro_kind == K_TEXT && r->pro_font == &ph_rg_24 && r->x == 90 + 44 + 44 + 18) { CHECK(rows < 3); ys[rows++] = r->y; }
                 logos += r->pro_kind == K_IMAGE && r->w == 44;
                 outlines += r->pro_kind == K_RECT_STROKE && r->w == 44 && r->pro_height == 44;
+                rules += r->pro_kind == K_RECT && r->pro_height == 2 && r->fg == ht_rgb(PH_LETTER_RULE);
                 if (r->pro_kind == K_TEXT && r->pro_font == &ph_rg_24) CHECK(r->x + r->w <= 90 + 540 - 44 + 2);   // inside the card
             }
-            CHECK(rows == 3 && ys[1] - ys[0] == 66 && ys[2] - ys[1] == 66 && logos + outlines == 3);
+            CHECK(rows == 3 && ys[1] - ys[0] == 112 && ys[2] - ys[1] == 112 && logos + outlines == 3 && rules == 2);
             const ht_run_t *first = text_prefix("Run the migration");   // the asking agent's question leads
             CHECK(first && first->y == ys[0]);
             CHECK(!text_run("Added the retry queue.") || text_run("Added the retry queue.")->y > ys[0]);
-            // the newest entry's text, then the cut: "Bumped the SDK ..." does not fit one 390 px line
             const ht_run_t *cut = text_prefix("Bumped the SDK");
             CHECK(cut == NULL || ht_pro_width(&ph_rg_24, cut->text) > 0);   // drawn (the run clips with an ellipsis), or fell below the third row
             CHECK(ph_runs(&F) <= HT_RUNS);
@@ -372,8 +381,11 @@ int main(void) {
                 if (S.runs[i].pro_kind == POD_GRAD) {
                     uint16_t g[2]; memcpy(g, S.runs[i].text, sizeof g);
                     if (S.runs[i].w == 540) full++;
-                    else if (S.runs[i].x < 0) { left++; CHECK(g[0] != ht_rgb(PH_NOTICE1) && g[0] != ht_rgb(PH_HOME_BG)); }   // faded 45 % toward the ground
+                    else if (S.runs[i].x < 0) left++;
                     else right++;
+                } else if (S.runs[i].pro_kind == K_RECT_AA && S.runs[i].x < 0 && S.runs[i].w == 464) {   // the letter peeking, faded 45 % toward the ground
+                    left++;
+                    CHECK(S.runs[i].fg != ht_rgb(PH_LETTER) && S.runs[i].fg != ht_rgb(PH_HOME_BG));
                 }
             CHECK(full == 1 && left == 1 && right == 1 && !text_run("Notices") && text_run("Alpha") && text_run("Bravo"));   // the left card's name is off the glass
             CHECK(hits_of(POD_A_ENTER_TAB) == 1 && !hits_of(POD_A_INBOX) && nth_hit(POD_A_ENTER_TAB, 0)->arg == 0);
