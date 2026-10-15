@@ -34,7 +34,7 @@ import { TMUX_KEYS } from './terminalKeys.js'
 import { processIdentityOf, sameProcessIdentity, terminalRouteKey } from './terminalRuntime.js'
 import { windowsProcessRows } from './windows/processTable.js'
 import { defaultWindowsShell } from './windows/shell.js'
-import { taskkillTree, type TreeKillOutcome } from './windows/treeKill.js'
+import { taskkillTree, type TreeKillOutcome } from './windows/taskkill.js'
 import {
   TERMINAL_ACTION_SUCCEEDED,
   terminalActionNotStarted,
@@ -94,7 +94,7 @@ export interface PtyHostBackendOptions {
   owner?: () => string
   /** The platform it runs on (`process.platform`); a seam for the Windows wiring's tests. */
   platform?: NodeJS.Platform
-  /** `taskkill` on a process tree (windows/treeKill.ts); a seam for tests. */
+  /** `taskkill` on a process tree (windows/taskkill.ts); a seam for tests. */
   taskkill?: (pid: number, force: boolean) => Promise<TreeKillOutcome>
 }
 

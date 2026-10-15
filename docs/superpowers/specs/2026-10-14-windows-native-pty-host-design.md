@@ -339,8 +339,8 @@ remote machine, which tests the remote-machine use before sub-project C exists. 
 
 | Orca source | Use |
 |---|---|
-| `src/main/windows/windows-process-tree-kill.ts`, `windows-pty-root-identity.ts` | Fallback kill for processes outside a pane (A, section 3) |
-| `src/main/git-bash.ts`, `pwsh.ts`, `providers/windows-powershell-executable.ts`, `windows-shell-args.ts`, shell fallback chain | Shell detection; A needs a PowerShell default, B the rest |
+| `src/main/windows-process-tree-kill.ts` | The `taskkill /T /F` tree kill behind the agent signaller (A, section 3). `src/main/windows-pty-root-identity.ts` was read for its identity gap (section 3, Identity), not reused |
+| `src/main/git-bash.ts`, `src/main/pwsh.ts`, `src/main/providers/windows-powershell-executable.ts`, `src/main/providers/windows-shell-args.ts`, `src/main/providers/windows-shell-fallback-chain.ts` | Shell detection; A needs a PowerShell default, B the rest |
 | `src/main/pty/windows-environment-path.ts` and the registry PATH reader/merge | Engine environment (B) |
 | Two-role connections, versioned hello, batched output with backpressure, Job per shell (Orca's is not kill-on-close; ours is, see section 3), OSC 7 cwd, bundled `conpty.dll`/OpenConsole | Design ideas only, reimplemented |
 

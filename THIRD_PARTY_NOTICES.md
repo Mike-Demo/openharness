@@ -8,9 +8,8 @@ also names its source in a header comment.
 
 The Harness CLI's Windows process control is adapted from Orca (https://github.com/stablyai/orca):
 
-- `cli/src/lib/windows/treeKill.ts`, from `src/main/windows-process-tree-kill.ts` (the `taskkill /T`
-  tree kill and its bounds) and `src/main/windows-pty-root-identity.ts` (checking a pid before killing
-  its tree).
+- `cli/src/lib/windows/taskkill.ts`, from `src/main/windows-process-tree-kill.ts` (the `taskkill /T`
+  tree kill and its bounds: a timeout, never the calling process).
 - `cli/src/lib/windows/shell.ts`, from `src/main/providers/windows-shell-fallback-chain.ts` (the order of
   the Windows shells a pane falls back through: PowerShell 7, Windows PowerShell, the command processor).
 

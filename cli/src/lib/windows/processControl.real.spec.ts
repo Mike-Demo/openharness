@@ -1,5 +1,5 @@
 // Windows process control against the real Harness PTY host: its process table, the Job check in `validate`, the
-// agent signaller and `treeKill`. Windows only. Build the host first:
+// agent signaller. Windows only. Build the host first:
 //   cd pty && cargo build
 //   cd cli && set HARNESS_PTY_BIN=C:\...\pty\target\debug\harness-pty.exe && npx vitest run src/lib/windows/processControl.real.spec.ts
 import { spawn } from 'node:child_process'
@@ -14,7 +14,6 @@ import { processRows } from '../processTable.js'
 import { signalAgentProcess } from '../processSignals.js'
 import { removeTree } from '../terminalBackend.contract.js'
 import { processIdentityOf } from '../terminalRuntime.js'
-import { treeKill } from './treeKill.js'
 
 const enabled = process.platform === 'win32' && !!process.env.HARNESS_PTY_BIN
 const CASE_TIMEOUT_MS = 90_000
@@ -71,12 +70,6 @@ const running = (pid: number): boolean => {
       const foreignRow = (await until(processRows, (table) => !!table?.some((row) => row.pid === foreign!.pid)))?.find((row) => row.pid === foreign!.pid)
       expect(await backend.validate(pane, { engine: 'opencode', processIdentity: processIdentityOf(foreignRow!) }))
         .toMatchObject({ state: 'gone' })
-
-      // treeKill: a recycled identity is left alone; the real one is ended.
-      expect(await treeKill({ ...processIdentityOf(foreignRow!), startMarker: 'w:1' }, { graceful: false })).toBe('gone')
-      expect(running(foreign.pid!)).toBe(true)
-      expect(await treeKill(processIdentityOf(foreignRow!), { graceful: false })).toBe('sent')
-      expect(await until(async () => running(foreign!.pid!), (alive) => !alive)).toBe(false)
 
       // The agent signaller: SIGKILL of the pane root ends its whole tree, and leaves the held pane (dead).
       signalAgentProcess(root, 'SIGKILL')
