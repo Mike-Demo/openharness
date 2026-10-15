@@ -304,7 +304,8 @@ are kept.
 - Scrollback is bounded per pane.
 - The host logs to `HARNESS_HOME/logs/pty-host.log` (`pty/src/logfile.rs`): owner-only (0600 in a
   0700 directory; the user-only DACL on Windows), and each line goes to stderr too, for a host run
-  by hand. Past 5 MB it is moved to `pty-host.log.1` (one older file is kept). `HARNESS_PTY_LOG`
+  by hand. Past 5 MB it is moved to `pty-host.log.1` (one older file is kept), by the home lock's
+  holder only; a rotation that fails is tried again 5 MB later. `HARNESS_PTY_LOG`
   sets the level (default `info`).
 
 ## 5. Testing

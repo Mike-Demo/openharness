@@ -164,6 +164,8 @@ pub fn serve(home: &Path, history_limit: usize, reexec: bool) -> std::io::Result
         log::info!("another host serves this home; exiting");
         return Ok(());
     };
+    // This host is the home's: it alone rotates the log (logfile.rs).
+    crate::logfile::own_rotation();
     #[cfg(unix)]
     let bound = {
         use crate::transport::unix;
