@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { expect, it } from 'vitest'
 import { isAppProductUsageReport } from './appProductUsageReport.js'
-import { HEALTH_MEASURES } from './productHealthContract.js'
+import { HEALTH_MEASURES, CLI_REPORT_FAILURES } from './productHealthContract.js'
 import { PRODUCT_USAGE_UI_METRICS } from './productUsageContract.js'
 
 const native = JSON.parse(readFileSync(new URL('../../../tests/fixtures/desktop-product-usage-report.json', import.meta.url), 'utf8'))
@@ -12,7 +12,8 @@ it('admits the current native report and every fixed Desktop health measure', ()
   expect(isAppProductUsageReport(native)).toBe(true)
   const dart = readFileSync(new URL('../../../desktop/lib/measurement/product_health_contract.dart', import.meta.url), 'utf8')
   const wires = [...dart.split('class ProductUsageContext')[0].matchAll(/\('([^']+)'\)/g)].map(match => match[1])
-  expect(wires).toEqual([...HEALTH_MEASURES])
+  expect(wires.toSorted()).toEqual([...HEALTH_MEASURES,
+    ...CLI_REPORT_FAILURES.map(reason => `report_failure_${reason}`)].toSorted())
   for (const wire of wires) expect(isAppProductUsageReport({ ...native, counters: { [`health_desktop_${wire}`]: 1000 } })).toBe(true)
   for (const platform of ['macos', 'windows', 'linux', 'other']) for (const channel of ['production', 'development']) {
     expect(isAppProductUsageReport({ ...native, context: { ...native.context, platform, channel, release: 'unknown' } })).toBe(true)

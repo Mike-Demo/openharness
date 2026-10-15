@@ -148,7 +148,7 @@ Reports update their counters and separate margins in one Mongo update command i
 that transaction. A partial write aborts the receipt and all counts; no per-report body is stored.
 This shortens shared-row contention without adding a daemon timer or delaying product actions.
 Each backend process admits one aggregate report transaction at a time, with at most 32 waiting
-reports and a one-second queue deadline. Overflow returns a retryable busy response. Permission
+reports and a two-second queue deadline. Overflow returns a retryable busy response. Permission
 is checked inside the transaction after admission, including every conflict retry. Other server
 processes can still contend; this does not promise zero delivery failures.
 The public `/api/health` response includes validated release tag/SHA coordinates so a successful

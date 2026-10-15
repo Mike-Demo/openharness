@@ -2,7 +2,7 @@ import '../measurement/product_measurement.dart';
 import '../measurement/product_runtime_health.dart';
 import '../measurement/product_connections.dart';
 import '../core/crash_log.dart';
-import '../measurement/setup_transport.dart';
+import '../measurement/desktop_setup_report.dart';
 import 'attached_task_delivery.dart';
 import 'task_route.dart';
 import '../core/permission_modes.dart';
@@ -3305,7 +3305,7 @@ class AppNotifier extends ChangeNotifier {
                 )
               : null,
           sendSetup: (report) =>
-              sendSetupMeasurement(this.config.apiBaseUrl, report),
+              sendDesktopSetupMeasurement(this.config.apiBaseUrl, report),
         );
     productConnections = ProductConnections(this.productMeasurement);
     this.productMeasurement.addListener(_measurementChoiceChanged);

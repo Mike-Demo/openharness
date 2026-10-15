@@ -1,7 +1,7 @@
 /** Daily totals are shared rows. Serializing this process's report transactions avoids
  * making its own uploads fight over them. Other processes still use transaction retries.
- * Only measurement waits here: bounded RAM, one second of queueing, no product traffic. */
-export function createUsageAdmission(maxQueued = 32, waitMs = 1000) {
+ * Only measurement waits here: bounded RAM, two seconds of queueing, no product traffic. */
+export function createUsageAdmission(maxQueued = 32, waitMs = 2000) {
   type Waiter = { ready: (release: () => void) => void; timer: ReturnType<typeof setTimeout> }
   const waiting = new Set<Waiter>()
   let busy = false

@@ -1,4 +1,4 @@
-import { cleanUsageContext, HEALTH_MEASURES } from './productHealthContract.js'
+import { cleanUsageContext, HEALTH_MEASURES, CLI_REPORT_FAILURES } from './productHealthContract.js'
 import { PRODUCT_USAGE_UI_METRICS, type ProductUsageReport } from './productUsageContract.js'
 
 // hn's counts reach the daemon's own queue only through hn's `product_observe`; no app can file them.
@@ -6,6 +6,7 @@ const uiMetrics = new Set<string>(PRODUCT_USAGE_UI_METRICS.filter(metric => !met
 const desktopMetrics = new Set<string>([
   ...PRODUCT_USAGE_UI_METRICS.filter(metric => metric.startsWith('ui_desktop_')),
   ...HEALTH_MEASURES.map(measure => `health_desktop_${measure}`),
+  ...CLI_REPORT_FAILURES.map(reason => `health_desktop_report_failure_${reason}`),
 ])
 const fields = new Set(['schemaVersion', 'revision', 'id', 'day', 'counters', 'context'])
 const contextFields = new Set(['surface', 'release', 'platform', 'channel'])

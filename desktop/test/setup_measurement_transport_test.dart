@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harness/measurement/setup_transport.dart';
 import 'package:harness/measurement/product_report_failure.dart';
+import 'package:harness/measurement/desktop_setup_report.dart';
 
 void main() {
   test(
@@ -27,7 +28,7 @@ void main() {
       });
       try {
         await expectLater(
-          sendSetupMeasurement('http://127.0.0.1:${server.port}', {}),
+          sendDesktopSetupMeasurement('http://127.0.0.1:${server.port}', {}),
           throwsA(
             isA<ProductReportFailure>()
                 .having((e) => e.permanent, 'permanent', true)

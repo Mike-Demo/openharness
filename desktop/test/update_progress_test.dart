@@ -67,14 +67,14 @@ void main() {
     expect(installer.progress, isNotNull, reason: 'the hook must be passed in');
   }
 
-  testWidgets(
+  test(
     'records the next-version flag during download and clears a failed stage',
-    (tester) async {
+    () async {
       app.productRuntimeHealth?.dispose();
       final health = _UpdateHealth(app.productMeasurement);
       app.productRuntimeHealth = health;
       final installing = app.installAvailableUpdate();
-      await tester.pump();
+      await Future<void>.delayed(Duration.zero);
       expect(installer.progress, isNotNull);
       expect(health.expected, _update.version);
       installer.staged.complete(null);
