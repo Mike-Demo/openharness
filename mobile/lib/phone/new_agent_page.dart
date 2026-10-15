@@ -388,10 +388,12 @@ class _NewAgentPageState extends State<NewAgentPage> {
   /// something to interrupt a half-filled form about — the section simply does
   /// not appear, and everything else on the page still works. Start is where
   /// it matters, and Start waits for this answer: see [_gitSettled].
-  Future<void> _loadGit(String folder) => _gitRead = _readGit(folder);
+  Future<void> _loadGit(String folder, {bool exact = false}) =>
+      _gitRead = _readGit(folder, exact: exact);
 
-  /// [_loadGit]'s read, which it keeps in [_gitRead].
-  Future<void> _readGit(String folder) async {
+  /// [_loadGit]'s read, which it keeps in [_gitRead]. [exact]: the person browsed to this very
+  /// folder, so a worktree stays itself.
+  Future<void> _readGit(String folder, {bool exact = false}) async {
     final machineId = _machineId;
     setState(() {
       _gitLoading = true;
@@ -410,8 +412,9 @@ class _NewAgentPageState extends State<NewAgentPage> {
     // ⚠️ **A worktree is a temporary folder, so New shows its repository** — the desktop's rule
     // (`state/new_harness.dart`). Harness made it for another harness; opening New on it named
     // that harness's folder (`silent-beacon`) as the project, which nobody recognises. The
-    // machine names the main checkout, and new work starts from the branch that is on.
-    if (info.mainFolder case final main?) {
+    // machine names the main checkout, and new work starts from the branch that is on. One the
+    // person browsed to stays itself, mainFolder and all ([_inWorktree]).
+    if (info.mainFolder case final main? when !exact) {
       _folder = main;
       _gitFolder = main;
       info = GitProjectInfo(
@@ -427,7 +430,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
       _gitFailed = info.unavailable;
       _git = info.isGit ? info : null;
       if (!info.isGit) return;
-      _worktree = worktreeByDefault(info);
+      _worktree = info.mainFolder == null && worktreeByDefault(info);
       _branchRef = defaultBranchRef(info, worktree: _worktree);
       _placeholder ??= placeholderBranch([
         for (final branch in info.branches)
@@ -439,6 +442,9 @@ class _NewAgentPageState extends State<NewAgentPage> {
   /// The repository the Git rows are about, or null when there is none to show.
   GitProjectInfo? get _repository =>
       _folder != null && _folder == _gitFolder ? _git : null;
+
+  /// A worktree the person browsed to: the harness works in it, on its branch.
+  bool get _inWorktree => _repository?.mainFolder != null;
 
   /// What Start would do, so the rows can say it before it is done. Null when
   /// there is no repository, or when Worktree is off — the folder simply moves
@@ -637,7 +643,7 @@ class _NewAgentPageState extends State<NewAgentPage> {
       _projectLabel = null;
       _error = null;
     });
-    unawaited(_loadGit(chosen));
+    unawaited(_loadGit(chosen, exact: true));
   }
 
   /// Waits for the Git answer about the folder Start is about to use, and says whether Start may go
@@ -1093,7 +1099,11 @@ class _NewAgentPageState extends State<NewAgentPage> {
                                           ? tty.faint
                                           : null,
                                       chevron: false,
-                                      onTap: info == null || _locked
+                                      detail: _inWorktree
+                                          ? 'Already a worktree'
+                                          : null,
+                                      onTap:
+                                          info == null || _locked || _inWorktree
                                           ? null
                                           : () => setState(() {
                                               _worktree = !_worktree;

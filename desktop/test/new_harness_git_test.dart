@@ -723,6 +723,52 @@ void main() {
     },
   );
 
+  test('a browsed worktree stays itself and works on its branch', () async {
+    const folder = '/harnesses/worktrees/repo/feature';
+    final connection = _Connection()
+      ..answers[folder] = {
+        ...linked('feature'),
+        'branches': [
+          {'ref': 'refs/heads/main', 'name': 'main', 'worktree': '/repo'},
+          {'ref': 'refs/heads/feature', 'name': 'feature', 'worktree': folder},
+          {
+            'ref': 'refs/remotes/origin/main',
+            'name': 'origin/main',
+            'remote': true,
+          },
+        ],
+      };
+    final app = createApp(
+      connectionForTest: (_) => connection,
+      connected: true,
+    );
+    final box = NewHarnessController(app, machineId: 'm', engine: 'codex')
+      ..useDesktopChoices(true);
+    addTearDown(app.dispose);
+    addTearDown(box.dispose);
+    await settle();
+    box.setFolder(folder);
+    await settle();
+    expect(box.project.folder, folder);
+    expect(box.inWorktree, true);
+    expect(box.canUseWorktree, false);
+    expect(box.worktree, false);
+    expect(box.opensWorktree, false);
+    expect(box.branchLabel, 'feature');
+    expect(await box.create(), NewHarnessOutcome.created);
+    expect(connection.starts.last, containsPair('projectSource', 'branch'));
+    expect(connection.starts.last, containsPair('gitSource', folder));
+    expect(
+      connection.starts.last,
+      containsPair('branchRef', 'refs/heads/feature'),
+    );
+    expect(
+      app.agentPreference.successfulWorktree,
+      isNull,
+      reason: 'The next harness still gets its own worktree.',
+    );
+  });
+
   test('a refused launch in a new worktree retries on its branch', () async {
     const prepared = '/harnesses/worktrees/repo/codex-0922-1136';
     final connection = _Connection()
