@@ -27,6 +27,8 @@ harness close NAME [--now]                          # save its screen and stop i
 
 `ps`, `show`, `wait` and `close` take `--machine NAME` too, for a harness on another of the person's machines.
 
+Every command ends with `Next:`, the command to run next, and `--json` gives the same as `next`. Exit 5 means refused (your limits, the person's setting, or a harness you did not start): do not retry it; tell the person, or do the work yourself. A harness waiting on a question or a permission is said as `needs the person`: tell the person, only they answer it. `harness help agents` prints the commands, states, exit codes and rules on one screen.
+
 Once Harness runs on a computer, Claude Code and Codex there run these commands and Harness's MCP tools without asking: Harness adds them to their permission rules, and Codex runs them outside its sandbox. Run each `harness` command by itself or join them with `&&`; piped or joined with other commands, the rule no longer matches. Where Harness has not set an agent up, run `harness` outside its sandbox, which cannot reach Harness's local daemon.
 
 `harness mcp` serves the same as MCP tools over stdio (command `harness`, arguments `["mcp"]`): `harness_whoami`, `harness_list`, `harness_start`, `harness_wait`, `harness_read`, `harness_close`, and `harness_send` inside a harness (teammates in its tab only, while Agent Messages are on: Settings ▸ Experimental, off by default).
