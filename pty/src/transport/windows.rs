@@ -2,12 +2,14 @@
 //!
 //! - The name hashes the user's SID and the canonical home, so each user and each home has its
 //!   own pipe, and a long home path cannot make the name too long.
-//! - Each host start adds 16 random hex digits, so no other process can know the name before the
-//!   host publishes it in its owner-only discovery file. A process of another user could otherwise
-//!   create the pipe first and wait for the daemon: the hello's proof keeps such a squatter from
-//!   passing for the host, but Node's pipe client (libuv's `CreateFileW`) cannot ask for
-//!   `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`, so the squatter could impersonate the daemon
-//!   on the connection. Clients connect only to the endpoint the discovery file names. One host per
+//! - Each host start adds 16 random hex digits, so no other process can guess the name and create
+//!   the pipe before the host does. A process of another user could otherwise wait on it for the
+//!   daemon: the hello's proof keeps such a squatter from passing for the host, but Node's pipe
+//!   client (libuv's `CreateFileW`) cannot ask for `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`,
+//!   so the squatter could impersonate the daemon on the connection. The name is no secret once the
+//!   host runs (anyone can list `\\.\pipe\`): after the host dies its name could be taken over, so
+//!   the daemon never dials the endpoint of a host proven dead (cli/src/lib/ptyHost/launch.ts
+//!   `discoveredHostDead`), and connects only to the endpoint the discovery file names. One host per
 //!   home is the home's lock (`host_lock`), not the name.
 //! - The first instance is created with `FILE_FLAG_FIRST_PIPE_INSTANCE`: when another process
 //!   already has the name, creating it fails with `ERROR_ACCESS_DENIED` (`Bound::Taken`).

@@ -123,6 +123,61 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
+/** A process table row, as far as the liveness proof reads it (processTable.ts `ProcessRow`). */
+export interface HostProcessRow { pid: number; executable: string; startMarker: string }
+
+/**
+ * How a discovery file's host is proven dead before its endpoint is dialled (`discoveredHostDead`): whether its pid
+ * runs, and (optional) the process table. The backend passes the table on Windows only (ptyHostBackend.ts).
+ */
+export interface HostLiveness {
+  alive(pid: number): boolean
+  rows?: () => Promise<readonly HostProcessRow[] | null>
+}
+
+const DEFAULT_LIVENESS: HostLiveness = { alive: (pid) => pidAlive(pid) }
+
+/** When a process started, in ms since the epoch, from its start marker (`w:<FILETIME>`, or a C-locale `lstart`). */
+export function startMarkerMs(marker: string): number | null {
+  const windows = /^w:(\d+)$/.exec(marker)
+  // FILETIME: 100 ns intervals since 1601-01-01.
+  if (windows) return Number(BigInt(windows[1]!) / 10_000n) - 11_644_473_600_000
+  const parsed = Date.parse(marker)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/** A marker read to the second (`lstart`) may be up to this much early; a FILETIME is exact. */
+const START_SLACK_MS = 2_000
+
+/**
+ * Whether the host [discovery] names is proven dead, so nothing should dial its endpoint: a Windows host that died
+ * leaves its file naming a pipe that any user can see in `\\.\pipe\` and create once the host's last instance is
+ * gone, and dialling it hands the hello (and the daemon's identity, libuv sets no SQOS) to whoever did. Proof: the
+ * pid runs no process; or the process table has no such pid; or the process with it started after the discovery
+ * file was written (the pid was given to another process since). No proof (a table that cannot be read, a file that
+ * cannot be stat'ed) is not death: the endpoint is dialled as before, and a hello that fails there stays an error.
+ */
+export async function discoveredHostDead(
+  home: string,
+  discovery: Pick<PtyHostDiscovery, 'protocol' | 'pid'>,
+  liveness: HostLiveness = DEFAULT_LIVENESS,
+): Promise<boolean> {
+  if (!liveness.alive(discovery.pid)) return true
+  if (!liveness.rows) return false
+  const rows = await liveness.rows().catch(() => null)
+  if (!rows) return false
+  const row = rows.find((candidate) => candidate.pid === discovery.pid)
+  if (!row) return true
+  let written: number
+  try {
+    written = statSync(path.join(home, 'run', `pty-host-${discovery.protocol}.json`)).mtimeMs
+  } catch {
+    return false
+  }
+  const started = startMarkerMs(row.startMarker)
+  return started !== null && started > written + START_SLACK_MS
+}
+
 export type PtyHostUnavailable = { unavailable: string; code: 'PTY_HOST_UNAVAILABLE' }
 export type EnsurePtyHostResult = { client: PtyHostClient } | PtyHostUnavailable | { incompatible: string }
 
@@ -131,6 +186,8 @@ export interface EnsurePtyHostOptions {
   binary?: string | null
   /** How long a started host has to publish its discovery file. */
   waitMs?: number
+  /** How a discovery file's host is proven dead before it is dialled (`discoveredHostDead`); its pid alone by default. */
+  liveness?: HostLiveness
 }
 
 const unavailable = (reason: string): PtyHostUnavailable => ({ unavailable: reason, code: 'PTY_HOST_UNAVAILABLE' })
@@ -139,15 +196,22 @@ const unavailable = (reason: string): PtyHostUnavailable => ({ unavailable: reas
  * The host the discovery file names: a client, `{ incompatible }` when it answers but refuses this
  * daemon, or null when nothing answers there (or there is no file).
  */
-async function connectExisting(home: string, protocol = PTY_PROTOCOL): Promise<{ client: PtyHostClient } | { incompatible: string } | null> {
+async function connectExisting(
+  home: string,
+  protocol = PTY_PROTOCOL,
+  liveness: HostLiveness = DEFAULT_LIVENESS,
+): Promise<{ client: PtyHostClient } | { incompatible: string } | null> {
   const discovery = readDiscovery(home, protocol)
   if (!discovery) return null
+  // A dead host's endpoint is never dialled: no host, so the caller starts one (a drain backend's judges it gone).
+  if (await discoveredHostDead(home, discovery, liveness)) return null
   const result = await PtyHostClient.connect(discovery)
   if (result instanceof PtyHostClient) return { client: result }
   if (result === null) return null
   // A host that restarted between our read and our hello has a new token: read the file again.
   const again = readDiscovery(home, protocol)
   if (again && (again.token !== discovery.token || again.endpoint !== discovery.endpoint)) {
+    if (await discoveredHostDead(home, again, liveness)) return null
     const retried = await PtyHostClient.connect(again)
     if (retried instanceof PtyHostClient) return { client: retried }
     if (retried === null) return null
@@ -178,21 +242,23 @@ export function reachable(endpoint: string, timeoutMs = CONNECT_TIMEOUT_MS): Pro
 /** One start per home at a time in this process; concurrent callers share it. */
 const starting = new Map<string, Promise<PtyHostUnavailable | null>>()
 
-function startHost(home: string, binary: string | null, waitMs: number): Promise<PtyHostUnavailable | null> {
+function startHost(home: string, binary: string | null, waitMs: number, liveness: HostLiveness): Promise<PtyHostUnavailable | null> {
   const key = path.resolve(home)
   let start = starting.get(key)
   if (!start) {
-    start = spawnAndWait(home, binary, waitMs).finally(() => starting.delete(key))
+    start = spawnAndWait(home, binary, waitMs, liveness).finally(() => starting.delete(key))
     starting.set(key, start)
   }
   return start
 }
 
 /** Start `binary serve --home <home>` and wait for a discovery file naming another pid. */
-async function spawnAndWait(home: string, binary: string | null, waitMs: number): Promise<PtyHostUnavailable | null> {
+async function spawnAndWait(home: string, binary: string | null, waitMs: number, liveness: HostLiveness): Promise<PtyHostUnavailable | null> {
   const before = readDiscovery(home, PTY_PROTOCOL)
-  // A caller that found no host may arrive just after another caller's start finished.
-  if (before && await reachable(before.endpoint)) return null
+  // A caller that found no host may arrive just after another caller's start finished. Not a dead host's endpoint:
+  // something else may have taken its name (`discoveredHostDead`).
+  const live = (discovery: PtyHostDiscovery) => discoveredHostDead(home, discovery, liveness).then((dead) => !dead)
+  if (before && await live(before) && await reachable(before.endpoint)) return null
   if (!binary) return unavailable('harness-pty is not installed')
   let failed: string | null = null
   let exitedCleanly = false
@@ -223,7 +289,7 @@ async function spawnAndWait(home: string, binary: string | null, waitMs: number)
     if (failed) return unavailable(failed)
     const now = readDiscovery(home, PTY_PROTOCOL)
     if (now && now.pid !== before?.pid) return null
-    if (exitedCleanly && now && await reachable(now.endpoint)) return null
+    if (exitedCleanly && now && await live(now) && await reachable(now.endpoint)) return null
   }
   return unavailable(`harness-pty did not publish its discovery file within ${waitMs} ms`)
 }
@@ -234,13 +300,14 @@ async function spawnAndWait(home: string, binary: string | null, waitMs: number)
  * daemon; starting another would not replace it.
  */
 export async function ensurePtyHost(home: string, options: EnsurePtyHostOptions = {}): Promise<EnsurePtyHostResult> {
-  const existing = await connectExisting(home)
+  const liveness = options.liveness ?? DEFAULT_LIVENESS
+  const existing = await connectExisting(home, PTY_PROTOCOL, liveness)
   if (existing) return existing
   const binary = options.binary !== undefined ? options.binary : ptyHostBinary()
-  const failed = await startHost(home, binary, options.waitMs ?? START_WAIT_MS)
+  const failed = await startHost(home, binary, options.waitMs ?? START_WAIT_MS, liveness)
   if (failed) return failed
   // The host this start found or made published a discovery file, but nothing answers where it says.
-  return (await connectExisting(home)) ?? unavailable('no harness-pty answers at the endpoint its discovery file names')
+  return (await connectExisting(home, PTY_PROTOCOL, liveness)) ?? unavailable('no harness-pty answers at the endpoint its discovery file names')
 }
 
 /**
@@ -256,14 +323,14 @@ export type ReachPtyHostResult = { client: PtyHostClient } | { incompatible: str
  * protocol before this daemon's (ptyHost/drain.ts). Whether a host that does not answer has gone is not decided
  * here: a file that could not be read, or a pid that runs, is no proof either way.
  */
-export async function reachPtyHost(home: string, protocol: number): Promise<ReachPtyHostResult> {
+export async function reachPtyHost(home: string, protocol: number, liveness: HostLiveness = DEFAULT_LIVENESS): Promise<ReachPtyHostResult> {
   const file = path.join(home, 'run', `pty-host-${protocol}.json`)
   const discovery = readDiscovery(home, protocol)
   if (!discovery) {
     const missing = !existsSync(file)
     return { ...unavailable(missing ? `there is no pty-host-${protocol}.json` : `pty-host-${protocol}.json cannot be read`), pid: null, missing }
   }
-  const existing = await connectExisting(home, protocol)
+  const existing = await connectExisting(home, protocol, liveness)
   if (existing) return existing
   return { ...unavailable(`nothing answers for the protocol ${protocol} host (pid ${discovery.pid})`), pid: discovery.pid, missing: false }
 }

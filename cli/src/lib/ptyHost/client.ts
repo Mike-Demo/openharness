@@ -97,8 +97,9 @@ function hello(discovery: PtyHostDiscovery, role: HelloRole, timeoutMs: number):
   return new Promise(resolve => {
     // Node takes `\\.\pipe\…` names here on Windows, so one call serves both transports. It cannot ask for
     // SECURITY_IDENTIFICATION (libuv opens the pipe with no SQOS flags), so a pipe server may impersonate this
-    // process: the host's pipe name is random per start (pty/src/transport/windows.rs) and read only from the
-    // owner-only discovery file, so no other user's process can be listening on it.
+    // process. The host's pipe name is random per start (pty/src/transport/windows.rs): nobody can create it before
+    // the host does. It is no secret once the host runs (anyone can list `\\.\pipe\`), so a dead host's name could
+    // be taken over: launch.ts never dials the endpoint of a host proven dead (`discoveredHostDead`).
     const socket = net.connect(discovery.endpoint)
     const lines = new LineSplitter()
     let connected = false

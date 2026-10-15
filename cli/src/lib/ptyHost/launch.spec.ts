@@ -7,7 +7,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { removeTree } from '../terminalBackend.contract.js'
 import { PtyHostClient } from './client.js'
-import { currentPtyVersion, discoverHosts, ensurePtyHost, forgetExitedHost, ptyHostBinary, reachable, reachPtyHost, readDiscovery, removeUnusedPtyVersions } from './launch.js'
+import { currentPtyVersion, discoveredHostDead, discoverHosts, ensurePtyHost, forgetExitedHost, ptyHostBinary, reachable, reachPtyHost, readDiscovery, removeUnusedPtyVersions, startMarkerMs } from './launch.js'
 import { helloProof, PTY_PROTOCOL, SUPPORTED_PTY_PROTOCOLS } from './protocol.js'
 
 const exe = process.platform === 'win32' ? 'harness-pty.exe' : 'harness-pty'
@@ -314,6 +314,57 @@ describe.skipIf(process.platform === 'win32')('ensurePtyHost', () => {
     expect(spawnCount(dir)).toBe(0)
   })
 
+  it('never dials the endpoint a dead host\'s discovery file names: whoever has it now is not the host', async () => {
+    const dir = home()
+    const endpoint = path.join(dir, 'squatted.sock')
+    let dialled = 0
+    const squatter = net.createServer(socket => {
+      dialled++
+      socket.on('error', () => {})
+      socket.once('data', () => socket.end(`${JSON.stringify({ hello: { ok: false, code: 'incompatible', reason: 'squatter' } })}\n`))
+    })
+    squatter.listen(endpoint)
+    await once(squatter, 'listening')
+    cleanup.push(() => new Promise(resolve => squatter.close(resolve)))
+    writeDiscovery(dir, { protocol: PTY_PROTOCOL, instance: 'p1', endpoint, pid: deadPid(), version: 'v', token: 'stale' })
+    const client = await clientOf(await ensurePtyHost(dir, { binary: fakeBinary('serve') }))
+    expect(await client.call({ op: 'inventory' })).toMatchObject({ state: 'ok' })
+    expect(spawnCount(dir)).toBe(1)
+    expect(dialled).toBe(0)
+  })
+
+  it('takes a pid given to another process since the file was written for a dead host, and a live one\'s refusal as an error', async () => {
+    const dir = home()
+    const endpoint = path.join(dir, 'refusing.sock')
+    let dialled = 0
+    const server = net.createServer(socket => {
+      dialled++
+      socket.on('error', () => {})
+      socket.once('data', () => socket.end(`${JSON.stringify({ hello: { ok: false, code: 'incompatible', reason: 'wrong token' } })}\n`))
+    })
+    server.listen(endpoint)
+    await once(server, 'listening')
+    cleanup.push(() => new Promise(resolve => server.close(resolve)))
+    writeDiscovery(dir, { protocol: PTY_PROTOCOL, instance: 'p1', endpoint, pid: process.pid, version: 'v', token: 'stale' })
+    // The host that wrote the file started before it; this one after: not it.
+    // (The host started in its place is listed too, as having started before its own file.)
+    const started = () => existsSync(path.join(dir, 'spawns'))
+      ? readFileSync(path.join(dir, 'spawns'), 'utf8').split('\n').filter(Boolean).map(Number) : []
+    const later = { alive: () => true, rows: async () => [
+      { pid: process.pid, executable: 'x', startMarker: filetime(Date.now() + 60_000) },
+      ...started().map(pid => ({ pid, executable: 'harness-pty', startMarker: filetime(Date.now() - 60_000) })),
+    ] }
+    expect(await clientOf(await ensurePtyHost(dir, { binary: fakeBinary('serve'), liveness: later }))).toBeTruthy()
+    expect(dialled).toBe(0)
+    // The process that wrote it, still running and refusing: an error, and no other host is started.
+    const other = home()
+    writeDiscovery(other, { protocol: PTY_PROTOCOL, instance: 'p1', endpoint, pid: process.pid, version: 'v', token: 'stale' })
+    const earlier = { alive: () => true, rows: async () => [{ pid: process.pid, executable: 'x', startMarker: filetime(Date.now() - 60_000) }] }
+    expect(await ensurePtyHost(other, { binary: fakeBinary('serve'), liveness: earlier })).toEqual({ incompatible: 'incompatible: wrong token' })
+    expect(dialled).toBe(1)
+    expect(spawnCount(other)).toBe(0)
+  })
+
   it('tries again once when the discovery file changed during a refused hello', async () => {
     const dir = home()
     const binary = fakeBinary('serve')
@@ -378,6 +429,37 @@ function deadPid(): number {
   return child.pid!
 }
 
+/** A Windows start marker for [ms] since the epoch. */
+const filetime = (ms: number) => `w:${(BigInt(ms) + 11_644_473_600_000n) * 10_000n}`
+
+describe('discoveredHostDead', () => {
+  it('reads both kinds of start marker', () => {
+    expect(startMarkerMs(filetime(1_791_893_045_123))).toBe(1_791_893_045_123)
+    expect(startMarkerMs('Thu Oct 15 10:00:00 2026')).toBe(new Date(2026, 9, 15, 10, 0, 0).getTime())
+    expect(startMarkerMs('soon')).toBeNull()
+  })
+
+  it('is proven only by a pid that runs nothing, a table without it, or a process that started after the file', async () => {
+    const dir = tempDir('h-')
+    writeDiscoveryOf(dir, PTY_PROTOCOL, { endpoint: '/x', pid: 42 })
+    const discovery = { protocol: PTY_PROTOCOL, pid: 42 }
+    const row = (startMarker: string) => ({ pid: 42, executable: 'harness-pty.exe', startMarker })
+    expect(await discoveredHostDead(dir, discovery, { alive: () => false })).toBe(true)
+    // The pid alone, alive: no proof.
+    expect(await discoveredHostDead(dir, discovery, { alive: () => true })).toBe(false)
+    expect(await discoveredHostDead(dir, discovery, { alive: () => true, rows: async () => [] })).toBe(true)
+    expect(await discoveredHostDead(dir, discovery, { alive: () => true, rows: async () => [row(filetime(Date.now() + 60_000))] })).toBe(true)
+    expect(await discoveredHostDead(dir, discovery, { alive: () => true, rows: async () => [row(filetime(Date.now() - 60_000))] })).toBe(false)
+    // Within a second-resolution stamp's slack of the file: the host that wrote it.
+    expect(await discoveredHostDead(dir, discovery, { alive: () => true, rows: async () => [row(filetime(Date.now() + 1_000))] })).toBe(false)
+    // A table that cannot be read, a marker that cannot be read, a file that is not there: no proof.
+    expect(await discoveredHostDead(dir, discovery, { alive: () => true, rows: async () => null })).toBe(false)
+    expect(await discoveredHostDead(dir, discovery, { alive: () => true, rows: async () => { throw new Error('ps') } })).toBe(false)
+    expect(await discoveredHostDead(dir, discovery, { alive: () => true, rows: async () => [row('soon')] })).toBe(false)
+    expect(await discoveredHostDead(tempDir('h-'), discovery, { alive: () => true, rows: async () => [row(filetime(Date.now() + 60_000))] })).toBe(false)
+  })
+})
+
 describe('discoverHosts', () => {
   it('reads every supported protocol\'s discovery file, oldest first, and nothing else', () => {
     const dir = tempDir('h-')
@@ -399,6 +481,17 @@ describe('reachPtyHost', () => {
     const client = await clientOf(result as Awaited<ReturnType<typeof ensurePtyHost>>)
     expect(client.protocol).toBe(protocol)
     expect(protocols).toEqual([protocol])
+  })
+
+  it('never dials a dead host\'s endpoint, even when something answers there', async () => {
+    const dir = tempDir('h-')
+    const protocol = SUPPORTED_PTY_PROTOCOLS[0]
+    const endpoint = endpointIn(dir, 'squatted')
+    const protocols = await answeringHost(endpoint, 't')
+    const dead = deadPid()
+    writeDiscoveryOf(dir, protocol, { endpoint, pid: dead })
+    expect(await reachPtyHost(dir, protocol)).toEqual({ unavailable: expect.stringContaining(`pid ${dead}`), code: 'PTY_HOST_UNAVAILABLE', pid: dead, missing: false })
+    expect(protocols).toEqual([])
   })
 
   it('says what the file named when nothing answers, and never that the host has gone', async () => {

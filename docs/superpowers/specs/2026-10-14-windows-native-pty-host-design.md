@@ -54,11 +54,15 @@ A is first because every other piece needs a terminal backend that is not tmux.
 - Shares the vendored `alacritty_terminal` and `vte` from `tui/vendor`.
 - One host per user and `HARNESS_HOME` (the home's lock, `run/pty-host-<protocol>.lock`), listening on
   `\\.\pipe\harness-pty-<hash(user SID + HARNESS_HOME)>-<16 random hex>-p<protocol>` with an
-  owner-only DACL. The random part is new at each host start and is published only in the owner-only
-  discovery file (section 4); clients connect only to the endpoint named there. Node's pipe client
-  (libuv) cannot ask for `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`, so a process that held the
-  name first could impersonate the daemon; a name nobody else can know is the mitigation (the host's
-  own Rust client does connect with `SECURITY_IDENTIFICATION`). On Unix (tests only) it listens on a
+  owner-only DACL. The random part is new at each host start, so nobody can guess the name and create
+  the pipe first; clients connect only to the endpoint the discovery file (section 4) names. Node's
+  pipe client (libuv) cannot ask for `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`, so a process
+  that held the name could impersonate the daemon. The name is not secret once the host runs (anyone
+  can list `\\.\pipe\`), so after a host dies its name could be taken over: the daemon never dials the
+  endpoint of a host proven dead (its pid runs nothing, or another process has it since the discovery
+  file was written; `cli/src/lib/ptyHost/launch.ts` `discoveredHostDead`) and starts a new host
+  instead. A live host's pid whose hello fails stays an error. (The host's own Rust client connects
+  with `SECURITY_IDENTIFICATION`.) On Unix (tests only) it listens on a
   Unix socket in `HARNESS_HOME/run/`.
 - Per pane:
   - a ConPTY via `alacritty_terminal::tty`, using the bundled `conpty.dll`/`OpenConsole.exe`;

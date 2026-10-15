@@ -25,7 +25,7 @@ import { lookupPaneEngineProcess } from './paneEngineProcess.js'
 import { comparableStartMarker, processRows, setProcessTableSource, type ProcessRow } from './processTable.js'
 import { setAgentSignaller, type AgentSignal } from './processSignals.js'
 import type { PtyHostCallResult, PtyHostClient } from './ptyHost/client.js'
-import { ensurePtyHost, forgetExitedHost, pidAlive, reachPtyHost, type EnsurePtyHostResult, type PtyHostUnavailable, type PtyHostUnreached, type ReachPtyHostResult } from './ptyHost/launch.js'
+import { ensurePtyHost, forgetExitedHost, pidAlive, reachPtyHost, type EnsurePtyHostResult, type HostLiveness, type PtyHostUnavailable, type PtyHostUnreached, type ReachPtyHostResult } from './ptyHost/launch.js'
 import { PTY_PROTOCOL, SHUTDOWN_PROTOCOL, type PtyEvent } from './ptyHost/protocol.js'
 import { PtyHostStream } from './ptyHost/stream.js'
 import { submitContent, submitSettleMs } from './submitTiming.js'
@@ -184,10 +184,18 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
     // A drain backend's instance is known before its host is reached: when it has gone, the rows still name it.
     if (this.draining) this.instance = `p${this.protocol}`
     const protocol = this.protocol
-    this.launch = options.launch ?? (this.draining ? ((home) => reachPtyHost(home, protocol)) : ((home) => ensurePtyHost(home)))
     this.hostProcess = options.hostProcess ?? { alive: pidAlive, rows: processRows }
     this.owner = options.owner ?? (() => harnessPaneOwner(env.ADAPTER_DATA_DIR))
     this.platform = options.platform ?? process.platform
+    // A dead host's endpoint is never dialled (launch.ts `discoveredHostDead`). On Windows its pipe name can be
+    // taken by anyone once the host is gone, so the process table is read for a pid since given to another process;
+    // elsewhere the pid alone (a Unix socket lives in the owner-only run directory).
+    const liveness: HostLiveness = this.platform === 'win32'
+      ? { alive: (pid) => this.hostProcess.alive(pid), rows: () => this.hostProcess.rows() }
+      : { alive: (pid) => this.hostProcess.alive(pid) }
+    this.launch = options.launch ?? (this.draining
+      ? ((home) => reachPtyHost(home, protocol, liveness))
+      : ((home) => ensurePtyHost(home, { liveness })))
     this.taskkill = options.taskkill ?? ((pid, force) => taskkillTree(pid, force))
   }
 
