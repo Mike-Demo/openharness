@@ -12,7 +12,7 @@ const sha = (bytes: Buffer | string) => createHash('sha256').update(bytes).diges
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 
-function fixture(options: { signed?: boolean; tamper?: boolean; keyringSha?: string; dryRun?: string } = {}) {
+function fixture(options: { signed?: boolean; tamper?: boolean; keyringSha?: string; dryRun?: string; dropArm64Line?: boolean; gcloud?: string } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'harness-node-win-'))
   dirs.push(root)
   const dist = join(root, 'dist', 'v22.0.0')
@@ -22,13 +22,17 @@ function fixture(options: { signed?: boolean; tamper?: boolean; keyringSha?: str
     writeFileSync(join(dist, name), `zip ${arch}`)
     return `${sha(options.tamper && arch === 'arm64' ? 'other bytes' : `zip ${arch}`)}  ${name}`
   })
-  writeFileSync(join(dist, 'SHASUMS256.txt'), lines.join('\n') + '\n')
+  writeFileSync(join(dist, 'SHASUMS256.txt'), (options.dropArm64Line ? lines.slice(0, 1) : lines).join('\n') + '\n')
   writeFileSync(join(dist, 'SHASUMS256.txt.sig'), 'signature')
   writeFileSync(join(root, 'pubring.kbx'), 'keyring')
   const bin = join(root, 'bin')
   mkdirSync(bin)
   writeFileSync(join(bin, 'gpgv'), `#!/bin/sh\necho "$@" > "${join(root, 'gpgv-args')}"\nexit ${options.signed === false ? 1 : 0}\n`)
   chmodSync(join(bin, 'gpgv'), 0o755)
+  if (options.gcloud) {
+    writeFileSync(join(bin, 'gcloud'), `#!/bin/sh\necho "$@" >> '${join(root, 'gcloud.log')}'\n${options.gcloud}`)
+    chmodSync(join(bin, 'gcloud'), 0o755)
+  }
   const result = spawnSync('bash', [script, '22.0.0'], {
     encoding: 'utf8',
     env: {
@@ -79,5 +83,46 @@ describe.skipIf(process.platform === 'win32')('publish-node-runtime-windows.sh, 
     const { result } = fixture({ dryRun: 'yes' })
     expect(result.status).toBe(2)
     expect(result.stderr).toContain('DRY_RUN must be 0 or 1')
+  })
+
+  it('refuses a signed list that has no checksum line for an archive', () => {
+    const { result } = fixture({ dropArm64Line: true })
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('has no checksum for node-v22.0.0-win-arm64.zip')
+  })
+
+  // The real upload path, against a gcloud shim that logs its arguments. $2 is the subcommand, $3 the first operand.
+  // A `cp` from gs:// writes PUBLISHED (default: the bytes the signed list has) to the destination.
+  const live = (ls: string, published = 'zip x64') => ({
+    dryRun: '0',
+    gcloud: `if [ "$2" = ls ]; then ${ls}; fi\nif [ "$2" = cp ]; then case "$3" in gs://*) printf '%s' '${published}' > "$4";; esac; fi\nexit 0\n`,
+  })
+  const log = (root: string) => readFileSync(join(root, 'gcloud.log'), 'utf8')
+
+  it('aborts before any upload when a lookup fails for a reason other than not found', () => {
+    const { root, result } = fixture(live('echo "ERROR: Reauthentication failed" >&2; exit 1'))
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('could not check')
+    expect(log(root)).not.toContain(' cp ')
+  })
+
+  it('aborts with nothing uploaded when a zip object already exists with other bytes', () => {
+    const { root, result } = fixture(live('exit 0', 'different bytes'))
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('exists with other bytes')
+    expect(log(root)).not.toMatch(/cp .*--cache-control/)
+  })
+
+  it('skips an object already published with the same bytes, uploads the missing one, and writes the manifest', () => {
+    // x64 is there (same bytes); arm64 and the manifest are confirmed absent.
+    const { root, result } = fixture(live('case "$3" in *win-x64.zip) exit 0;; *) echo "One or more URLs matched no objects" >&2; exit 1;; esac'))
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain('node-v22.0.0-win-x64.zip is already published with these bytes')
+    const uploads = log(root).split('\n').filter((line) => line.includes('--cache-control') && line.includes('.zip'))
+    expect(uploads).toHaveLength(1)
+    expect(uploads[0]).toContain('win-arm64.zip')
+    const manifest = log(root).split('\n').filter((line) => line.includes('application/json'))
+    expect(manifest).toHaveLength(1)
+    expect(manifest[0]).toContain('gs://s3-autonomous-upgrade-3/harness/staging/runtime/metadata.json')
   })
 })

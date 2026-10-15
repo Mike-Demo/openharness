@@ -42,24 +42,10 @@ if [ "$DRY_RUN" != 1 ]; then
   command -v gcloud >/dev/null 2>&1 || { echo "error: gcloud not found; install and authenticate the gcloud SDK" >&2; exit 1; }
 fi
 
-sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
-  else shasum -a 256 "$1" | awk '{print $1}'
-  fi
-}
+source "$(dirname "${BASH_SOURCE[0]}")/lib/gcs.sh"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
-
-# exists <gs url>: 0 if the object exists, 1 if it is confirmed absent, exit 1 on any other failure (auth, network,
-# permission), so a failed lookup is never mistaken for "not there".
-exists() {
-  local err
-  if err="$(gcloud storage ls "$1" 2>&1 >/dev/null)"; then return 0; fi
-  if [[ "$err" =~ (matched\ no\ objects|404|[Nn]ot\ [Ff]ound|[Nn]o\ URLs\ matched) ]]; then return 1; fi
-  echo "error: could not check $1: $err" >&2
-  exit 1
-}
 
 curl -fsSL "$KEYRING_URL" -o "$WORK/pubring.kbx"
 [ "$(sha256_of "$WORK/pubring.kbx")" = "$KEYRING_SHA256" ] || {
@@ -111,12 +97,7 @@ else
     fi
   done
   # The existing manifest: start from {} only when it is confirmed absent; any other failure aborts.
-  if exists "gs://${GCS_BUCKET}/${METADATA_PATH}"; then
-    gcloud storage cp "gs://${GCS_BUCKET}/${METADATA_PATH}" "$WORK/metadata.json" >/dev/null
-  else
-    echo "   (no existing ${METADATA_PATH}: creating it)"
-    printf '{}' > "$WORK/metadata.json"
-  fi
+  fetch_manifest "gs://${GCS_BUCKET}/${METADATA_PATH}" "$WORK/metadata.json" "$METADATA_PATH"
   for item in ${TO_UPLOAD[@]+"${TO_UPLOAD[@]}"}; do
     IFS='|' read -r archive object actual size <<< "$item"
     echo ">> uploading $archive ($size bytes)"
