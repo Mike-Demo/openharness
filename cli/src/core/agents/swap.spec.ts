@@ -89,11 +89,15 @@ describe('the pane-process swap', () => {
       }))
       // In the agent's folder, which no launch script enters there, and the pane a shell after the engine.
       expect(tmuxBackend.respawn).toHaveBeenLastCalledWith(runtime, expect.objectContaining({ cwd: '/work', afterExit: windowsAfterExit('claude') }))
-      // A grid swap's vendor keys, beside the retarget's pane names: the host keeps both from what the engine inherits.
-      await swap.paneSwapDeps(session(), place(), { clearEnv: ['ANTHROPIC_API_KEY'], clearPaneEnv: ['OLD', 'ANTHROPIC_API_KEY'] }).respawn(['claude'])
-      expect(tmuxBackend.respawn).toHaveBeenLastCalledWith(runtime, expect.objectContaining({ clearEnv: ['OLD', 'ANTHROPIC_API_KEY'] }))
+      // A grid swap's vendor keys: this launch alone does not inherit them from the host.
       await swap.paneSwapDeps(session(), place(), { clearEnv: ['ANTHROPIC_API_KEY'] }).respawn(['claude'])
-      expect(tmuxBackend.respawn).toHaveBeenLastCalledWith(runtime, expect.objectContaining({ clearEnv: ['ANTHROPIC_API_KEY'] }))
+      expect(tmuxBackend.respawn).toHaveBeenLastCalledWith(runtime, expect.objectContaining({ clearInherited: ['ANTHROPIC_API_KEY'] }))
+      expect((tmuxBackend.respawn.mock.lastCall as unknown[])[1]).not.toHaveProperty('clearEnv')
+      // A retarget home (retarget.ts: `clearPaneEnv` = the grid's own variables) clears the pane's create env alone,
+      // never the person's own variables the host inherited: no provider key, and its list sent apart.
+      await swap.paneSwapDeps(session(), place(), { clearPaneEnv: ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'] }).respawn(['claude'])
+      expect(tmuxBackend.respawn).toHaveBeenLastCalledWith(runtime, expect.objectContaining({ clearEnv: ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN'] }))
+      expect((tmuxBackend.respawn.mock.lastCall as unknown[])[1]).not.toHaveProperty('clearInherited')
       Object.defineProperty(process, 'platform', { ...platform, value: 'linux' })
       await swap.paneSwapDeps(session(), place(), { native }).respawn(['claude'])
       expect((tmuxBackend.respawn.mock.lastCall as unknown[] | undefined)?.[1]).not.toHaveProperty('env')

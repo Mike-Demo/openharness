@@ -162,11 +162,12 @@ pub enum Op {
         hold: bool,
         #[serde(rename = "afterExit", default)]
         after_exit: Option<AfterExit>,
-        /// Names the pane's children do not get from the host's own environment (case-insensitive on
-        /// Windows): a grid launch's provider keys, which tmux's script unsets, and the host would
-        /// otherwise hand down. What `env` sets is still set.
-        #[serde(rename = "clearEnv", default)]
-        clear_env: Vec<String>,
+        /// Names this child, and the `afterExit` shell it hands the pane to, do not get from the
+        /// host's own environment (case-insensitive on Windows): a grid launch's provider keys, which
+        /// a Unix launch script unsets for its own launch. Per launch: the next respawn sends its own.
+        /// What `env` sets is still set.
+        #[serde(rename = "clearInherited", default)]
+        clear_inherited: Vec<String>,
     },
     Kill {
         pane: String,
@@ -199,10 +200,14 @@ pub enum Op {
         #[serde(rename = "expectedHeldToken")]
         expected_held_token: Option<String>,
         /// Names taken out of the pane's create-time environment before this child, and for every
-        /// later one: tmux's `set-environment -u` on the pane's session ahead of `respawn-pane`. Nor
-        /// do those children get them from the host's own environment.
+        /// later one: tmux's `set-environment -u` on the pane's session ahead of `respawn-pane`.
+        /// Never what the host itself inherited (`clearInherited`).
         #[serde(rename = "clearEnv", default)]
         clear_env: Vec<String>,
+        /// `create`'s `clearInherited`, for this child and its `afterExit` shell alone, in place of
+        /// the last launch's; none when absent.
+        #[serde(rename = "clearInherited", default)]
+        clear_inherited: Vec<String>,
         /// The new child's hand-off, in place of any the pane had (none when absent).
         #[serde(rename = "afterExit", default)]
         after_exit: Option<AfterExit>,

@@ -112,14 +112,18 @@ describe('PtyHostBackend create', () => {
   it('gives the host what the pane runs after its command, without its env when it has none', async () => {
     const { backend, calls } = await ready({ create: { state: 'ok', value: { pane: '%4' } } })
     await backend.create({ command: ['codex.exe'], afterExit: { command: ['pwsh.exe'], env: { HARNESS_ENGINE_COMMAND: 'codex' } } })
-    await backend.create({ command: ['codex.exe'], afterExit: { command: ['cmd.exe'] }, clearEnv: ['ANTHROPIC_API_KEY'] })
+    await backend.create({ command: ['codex.exe'], afterExit: { command: ['cmd.exe'] }, clearInherited: ['ANTHROPIC_API_KEY'] })
     expect(calls.map((call) => (call as { afterExit?: unknown }).afterExit)).toEqual([
       { command: ['pwsh.exe'], env: { HARNESS_ENGINE_COMMAND: 'codex' } }, { command: ['cmd.exe'] },
     ])
     // What the pane must not inherit from the host's environment; none sent when there is none.
-    expect(calls.map((call) => (call as { clearEnv?: unknown }).clearEnv)).toEqual([undefined, ['ANTHROPIC_API_KEY']])
+    expect(calls.map((call) => (call as { clearInherited?: unknown }).clearInherited)).toEqual([undefined, ['ANTHROPIC_API_KEY']])
     await backend.respawn(PANE, { command: ['codex.exe'], afterExit: { command: ['pwsh.exe'], env: { A: 'b' } } })
     await backend.respawn(PANE, { command: ['codex.exe'], afterExit: { command: ['cmd.exe'] } })
+    // The two lists stay apart: the create env's names, and this launch's inherited ones.
+    await backend.respawn(PANE, { command: ['codex.exe'], clearEnv: ['ANTHROPIC_BASE_URL'], clearInherited: ['ANTHROPIC_API_KEY'] })
+    expect(calls.at(-1)).toEqual({ op: 'respawn', pane: '%1', command: ['codex.exe'], clearEnv: ['ANTHROPIC_BASE_URL'], clearInherited: ['ANTHROPIC_API_KEY'] })
+    calls.pop()
     expect(calls.slice(2)).toEqual([
       { op: 'respawn', pane: '%1', command: ['codex.exe'], afterExit: { command: ['pwsh.exe'], env: { A: 'b' } } },
       { op: 'respawn', pane: '%1', command: ['codex.exe'], afterExit: { command: ['cmd.exe'] } },

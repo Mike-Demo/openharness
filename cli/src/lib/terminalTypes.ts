@@ -118,9 +118,10 @@ export interface TerminalCreateRequest extends TerminalDispatchControl {
   env?: Record<string, string>
   /** What the pane runs when `command` exits by itself (`TerminalAfterExit`); the pty host's alone. */
   afterExit?: TerminalAfterExit
-  /** Names the pane's processes do not get from the backend's own environment (a grid launch's provider keys, on
-   *  Windows: lib/windows/engineStart.ts); the pty host's alone, whose panes inherit the host's environment. */
-  clearEnv?: readonly string[]
+  /** Names this process, and its `afterExit` shell, do not get from the backend's own environment (a grid launch's
+   *  provider keys, on Windows: lib/windows/engineStart.ts); the pty host's alone, whose panes inherit the host's
+   *  environment. Per launch: the next respawn sends its own. */
+  clearInherited?: readonly string[]
 }
 
 /**
@@ -139,6 +140,9 @@ export interface TerminalRespawnRequest extends TerminalDispatchControl {
   /** Names taken out of what the pane was created with, for this child and every later one. The pty host does it
    *  in the respawn; a backend with `clearEnv()` (tmux) is cleared through that instead, before the respawn. */
   clearEnv?: readonly string[]
+  /** `TerminalCreateRequest.clearInherited`, for the new process alone, in place of the last launch's: never the same
+   *  list as `clearEnv`, which takes names out of what the pane was created with. */
+  clearInherited?: readonly string[]
   /** The new process's hand-off (`TerminalAfterExit`), replacing any the pane had; the pty host's alone. */
   afterExit?: TerminalAfterExit
 }

@@ -31,10 +31,10 @@ fn str_of(v: &Value) -> Option<String> {
 /// as its default: compare every optional or defaulted field with the fixture.
 fn assert_every_field_read(op: &Op, v: &Value) {
     match op {
-        Op::Create { cwd, env: e, label, after_exit: after, clear_env, .. } => {
+        Op::Create { cwd, env: e, label, after_exit: after, clear_inherited, .. } => {
             assert_eq!(*after, after_exit(&v["afterExit"]));
-            let cleared: Vec<String> = serde_json::from_value(v["clearEnv"].clone()).unwrap();
-            assert_eq!(*clear_env, cleared);
+            let cleared: Vec<String> = serde_json::from_value(v["clearInherited"].clone()).unwrap();
+            assert_eq!(*clear_inherited, cleared);
             assert_eq!(cwd.clone(), str_of(&v["cwd"]));
             assert_eq!(*e, env(&v["env"]));
             assert_eq!(label.clone(), str_of(&v["label"]));
@@ -43,8 +43,10 @@ fn assert_every_field_read(op: &Op, v: &Value) {
         Op::Capture { history_lines, .. } => {
             assert_eq!(history_lines.map(u64::from), v["historyLines"].as_u64())
         }
-        Op::Respawn { cwd, env: e, expected_held_token, clear_env, after_exit: after, .. } => {
+        Op::Respawn { cwd, env: e, expected_held_token, clear_env, clear_inherited, after_exit: after, .. } => {
             assert_eq!(*after, after_exit(&v["afterExit"]));
+            let inherited: Vec<String> = serde_json::from_value(v["clearInherited"].clone()).unwrap();
+            assert_eq!(*clear_inherited, inherited);
             assert_eq!(cwd.clone(), str_of(&v["cwd"]));
             assert_eq!(*e, env(&v["env"]));
             assert_eq!(expected_held_token.clone(), str_of(&v["expectedHeldToken"]));

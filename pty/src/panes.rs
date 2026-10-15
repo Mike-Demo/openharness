@@ -137,9 +137,11 @@ struct PaneEntry {
     engine_exit: Option<i32>,
     /// What the current child hands the pane to once it exits by itself (`AfterExit`).
     after_exit: Option<AfterExit>,
-    /// Names no child of the pane gets from the host's own environment: `create`'s `clearEnv` and
-    /// every respawn's since (a grid launch's provider keys, which the host may have inherited).
-    cleared: Vec<String>,
+    /// Names the current child, and the shell it hands the pane to, do not get from the host's own
+    /// environment: the launch's `clearInherited` (a grid launch's provider keys). Per launch, as a
+    /// Unix launch script unsets them for its own launch: each create and respawn replaces it, so an
+    /// agent moved off a grid gets the person's own variables back.
+    clear_inherited: Vec<String>,
 }
 
 pub struct Panes {
@@ -312,10 +314,14 @@ impl Panes {
         env.extend(after.env);
         env.insert("HARNESS_ENGINE_EXIT".into(), code.to_string());
         let env = self.child_env(id, env);
-        match entry
-            .pane
-            .respawn(spec(after.command.clone(), None, env, 0, 0, &entry.cleared))
-        {
+        match entry.pane.respawn(spec(
+            after.command.clone(),
+            None,
+            env,
+            0,
+            0,
+            &entry.clear_inherited,
+        )) {
             Ok(generation) => {
                 entry.generation = generation;
                 entry.start_command = after.command.join(" ");
@@ -392,6 +398,7 @@ impl Panes {
         env: HashMap<String, String>,
         expected_held_token: Option<String>,
         clear_env: Vec<String>,
+        clear_inherited: Vec<String>,
         after_exit: Option<AfterExit>,
     ) -> Result<Reply, OpError> {
         let held = |entry: &PaneEntry| match &expected_held_token {
@@ -452,37 +459,35 @@ impl Panes {
         }
         // As tmux builds a respawned child's: the session's (the create env, less what this asks
         // cleared, which stays cleared), then the request's own, which wins.
-        // Nor from the host's own environment, for this child or any later one.
         for name in clearable(clear_env) {
             entry.env.retain(|key, _| !same_name(key, &name));
-            if !entry.cleared.iter().any(|known| same_name(known, &name)) {
-                entry.cleared.push(name);
-            }
         }
         let mut child = entry.env.clone();
         child.extend(env);
         let env = self.child_env(&pane, child);
-        let generation = match handle.respawn(spec(command.clone(), cwd, env, 0, 0, &entry.cleared))
-        {
-            Ok(generation) => generation,
-            Err(e) => {
-                // The table follows the pane: a generation used up by the failed spawn, or the
-                // current one when the child would not die.
-                entry.generation = handle.generation();
-                // Killed, and nothing replaced it: its exit applies after all, once, under that
-                // generation (its own exit, of the retired one, is ignored whenever it comes).
-                if running && let Some(status) = handle.exit_status() {
-                    let _ = self.sink.send((
-                        pane.clone(),
-                        PaneEvent::Exited {
-                            generation: entry.generation,
-                            status,
-                        },
-                    ));
+        // What the host inherited, less this launch's own names: never the last launch's.
+        let clear_inherited = clearable(clear_inherited);
+        let generation =
+            match handle.respawn(spec(command.clone(), cwd, env, 0, 0, &clear_inherited)) {
+                Ok(generation) => generation,
+                Err(e) => {
+                    // The table follows the pane: a generation used up by the failed spawn, or the
+                    // current one when the child would not die.
+                    entry.generation = handle.generation();
+                    // Killed, and nothing replaced it: its exit applies after all, once, under that
+                    // generation (its own exit, of the retired one, is ignored whenever it comes).
+                    if running && let Some(status) = handle.exit_status() {
+                        let _ = self.sink.send((
+                            pane.clone(),
+                            PaneEvent::Exited {
+                                generation: entry.generation,
+                                status,
+                            },
+                        ));
+                    }
+                    return Err(OpError::new("spawn_failed", e.to_string()));
                 }
-                return Err(OpError::new("spawn_failed", e.to_string()));
-            }
-        };
+            };
         entry.generation = generation;
         entry.start_command = command.join(" ");
         entry.command = command;
@@ -490,6 +495,7 @@ impl Panes {
         entry.exit_status = None;
         entry.engine_exit = None;
         entry.after_exit = after_exit;
+        entry.clear_inherited = clear_inherited;
         Ok(Reply::new())
     }
 
@@ -505,9 +511,9 @@ impl Panes {
                 label,
                 hold,
                 after_exit,
-                clear_env,
+                clear_inherited,
             } => {
-                let cleared = clearable(clear_env);
+                let cleared = clearable(clear_inherited);
                 // A child given no directory starts in the user's home (`Pane::spawn`).
                 let number = lock(&self.ids)
                     .take()
@@ -544,7 +550,7 @@ impl Panes {
                         exit_status: None,
                         engine_exit: None,
                         after_exit,
-                        cleared,
+                        clear_inherited: cleared,
                     },
                 );
                 reply(json!({ "pane": id }))
@@ -718,6 +724,7 @@ impl Panes {
                 env,
                 expected_held_token,
                 clear_env,
+                clear_inherited,
                 after_exit,
             } => self.respawn(
                 pane,
@@ -726,6 +733,7 @@ impl Panes {
                 env,
                 expected_held_token,
                 clear_env,
+                clear_inherited,
                 after_exit,
             ),
             Op::SetEngineExit { pane, status } => {
@@ -1489,9 +1497,10 @@ mod tests {
     }
 
     /// A grid launch's provider keys must not reach its engine from the host's own environment, which
-    /// only adds what a pane is given (cli/src/lib/windows/engineStart.ts).
+    /// only adds what a pane is given (cli/src/lib/windows/engineStart.ts). Per launch, as a Unix
+    /// launch script unsets them for its own: an agent moved off the grid gets the person's back.
     #[test]
-    fn cleared_names_never_reach_a_child_from_the_host_environment() {
+    fn inherited_names_are_cleared_per_launch_and_for_its_hand_off_alone() {
         // SAFETY: names of this test's own; nothing else reads or writes them.
         unsafe {
             std::env::set_var("HN_PTY_CLEARED_KEY", "secret");
@@ -1499,38 +1508,54 @@ mod tests {
         }
         let (panes, _notices) = table();
         let show = "echo \"c=${HN_PTY_CLEARED_KEY-unset} k=${HN_PTY_KEPT_KEY-unset} s=${HN_PTY_SET-unset}.\"; sleep 30";
+        let after = json!({"command": ["/bin/sh", "-c", "echo \"after=${HN_PTY_CLEARED_KEY-unset}.\"; sleep 30"]});
         let r = panes
-            .handle(op(json!({"op": "create", "command": ["/bin/sh", "-c", show],
+            .handle(op(json!({"op": "create", "command": ["/bin/sh", "-c", "echo up; exit 0"],
                 "cols": 60, "rows": 10, "owner": "o", "hold": true,
-                "clearEnv": ["HN_PTY_CLEARED_KEY", "HN_PTY_SET", "", "A=B"], "env": {"HN_PTY_SET": "given"},
-                "afterExit": {"command": ["/bin/sh", "-c", "echo \"after=${HN_PTY_CLEARED_KEY-unset}.\"; sleep 30"]}})))
+                "clearInherited": ["HN_PTY_CLEARED_KEY", "HN_PTY_SET", "", "A=B"], "env": {"HN_PTY_SET": "given"},
+                "afterExit": after})))
             .unwrap();
         let pane = r["pane"].as_str().unwrap().to_owned();
+        // The shell the engine hands the pane to keeps its launch's list.
+        until("hand-off", || {
+            capture(&panes, &pane).unwrap().contains("after=unset.")
+        });
+        let respawn = |extra: Value| {
+            let mut request =
+                json!({"op": "respawn", "pane": pane, "command": ["/bin/sh", "-c", show]});
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            panes.handle(op(request)).unwrap();
+        };
         // Cleared from what the host has; what the pane is given is still set.
-        until("create", || {
+        respawn(json!({"clearInherited": ["HN_PTY_CLEARED_KEY"]}));
+        until("its own list", || {
             capture(&panes, &pane)
                 .unwrap()
                 .contains("c=unset k=kept s=given.")
         });
-        // A respawn's children, and what follows them, stay without it.
-        panes
-            .handle(op(json!({"op": "respawn", "pane": pane, "command": ["/bin/sh", "-c", "exit 0"],
-                "afterExit": {"command": ["/bin/sh", "-c", "echo \"after=${HN_PTY_CLEARED_KEY-unset}.\"; sleep 30"]}})))
-            .unwrap();
-        until("hand-off", || {
-            capture(&panes, &pane).unwrap().contains("after=unset.")
-        });
-        // A respawn's own clear adds to the pane's.
-        panes
-            .handle(op(
-                json!({"op": "respawn", "pane": pane, "command": ["/bin/sh", "-c", show],
-                "clearEnv": ["HN_PTY_KEPT_KEY"]}),
-            ))
-            .unwrap();
-        until("respawn", || {
+        // A respawn that sends none clears nothing the host inherited.
+        respawn(json!({}));
+        until("none", || {
             capture(&panes, &pane)
                 .unwrap()
-                .contains("c=unset k=unset s=given.")
+                .contains("c=secret k=kept s=given.")
+        });
+        // Another list, alone: the last one's names are back.
+        respawn(json!({"clearInherited": ["HN_PTY_KEPT_KEY"]}));
+        until("another", || {
+            capture(&panes, &pane)
+                .unwrap()
+                .contains("c=secret k=unset s=given.")
+        });
+        // `clearEnv` takes names out of the create env alone, never what the host inherited.
+        respawn(json!({"clearEnv": ["HN_PTY_SET", "HN_PTY_KEPT_KEY"]}));
+        until("create env", || {
+            capture(&panes, &pane)
+                .unwrap()
+                .contains("c=secret k=kept s=unset.")
         });
         panes
             .handle(op(json!({"op": "kill", "pane": pane})))

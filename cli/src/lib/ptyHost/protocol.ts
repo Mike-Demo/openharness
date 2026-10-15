@@ -174,7 +174,7 @@ export interface PtyAfterExit {
 }
 
 export type PtyOp =
-  | { op: 'create'; command: string[]; cwd?: string; env?: Record<string, string>; cols: number; rows: number; owner: string; label?: string; hold: boolean; afterExit?: PtyAfterExit; clearEnv?: string[] }
+  | { op: 'create'; command: string[]; cwd?: string; env?: Record<string, string>; cols: number; rows: number; owner: string; label?: string; hold: boolean; afterExit?: PtyAfterExit; clearInherited?: string[] }
   | { op: 'kill'; pane: string; graceMs?: number }
   | { op: 'inventory' }
   | { op: 'titles' }
@@ -187,7 +187,7 @@ export type PtyOp =
   | { op: 'setTitle'; pane: string; title: string }
   | { op: 'holdOpen'; pane: string }
   | { op: 'releaseHold'; pane: string }
-  | { op: 'respawn'; pane: string; command: string[]; cwd?: string; env?: Record<string, string>; expectedHeldToken?: string; clearEnv?: string[]; afterExit?: PtyAfterExit }
+  | { op: 'respawn'; pane: string; command: string[]; cwd?: string; env?: Record<string, string>; expectedHeldToken?: string; clearEnv?: string[]; clearInherited?: string[]; afterExit?: PtyAfterExit }
   | { op: 'jobPids'; pane: string }
   | { op: 'processes' }
   | { op: 'setEngineExit'; pane: string; status: number }

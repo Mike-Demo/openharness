@@ -87,7 +87,7 @@ describe('the shell a Windows engine\'s pane becomes', () => {
     expect(windowsPaneLaunch('claude', { cwd: '/work' }, 'win32')).toEqual({ cwd: '/work', afterExit: windowsAfterExit('claude') })
     // A grid launch's provider keys and the native launch's cleared locations, once each.
     expect(windowsPaneLaunch('codex', { cwd: null, clearEnv: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'], native }, 'win32'))
-      .toEqual({ clearEnv: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_HOME'], afterExit: windowsAfterExit('codex') })
+      .toEqual({ clearInherited: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_HOME'], afterExit: windowsAfterExit('codex') })
     expect(windowsPaneLaunch('codex', { clearEnv: [], native: { clearEnvironment: [] } }, 'win32')).toEqual({ afterExit: windowsAfterExit('codex') })
     // The command a person would type names it: Command Code's is `cmd`.
     expect(windowsPaneLaunch('commandcode', {}, 'win32').afterExit?.env).toEqual({ HARNESS_ENGINE_COMMAND: 'cmd' })

@@ -111,11 +111,12 @@ export interface WindowsPaneLaunch {
   cwd?: string
   afterExit?: TerminalAfterExit
   /**
-   * Names the pane's processes must not get from the host's own environment: the launch's `clearEnv` (a grid launch's
-   * provider keys, lib/gridLaunch.ts) and the native launch's `clearEnvironment`, which the script unsets elsewhere.
-   * The host inherited the daemon's environment, so without this a grid launch saw the person's ANTHROPIC_API_KEY.
+   * Names this launch's engine, and the shell it hands the pane to, must not get from the host's own environment: the
+   * launch's `clearEnv` (a grid launch's provider keys, lib/gridLaunch.ts) and the native launch's `clearEnvironment`,
+   * which the script unsets elsewhere. The host inherited the daemon's environment, so without this a grid launch saw
+   * the person's ANTHROPIC_API_KEY. Per launch, as the script's unset is: an agent moved home gets them back.
    */
-  clearEnv?: string[]
+  clearInherited?: string[]
 }
 
 /** The launch facts `windowsPaneLaunch` reads: its options (lib/engineLaunch.ts `LaunchCommandOptions`). */
@@ -136,10 +137,10 @@ export interface WindowsPaneLaunchOptions {
 export function windowsPaneLaunch(engine: AgentEngine, launch: WindowsPaneLaunchOptions,
   platform: NodeJS.Platform = process.platform): WindowsPaneLaunch {
   if (platform !== 'win32') return {}
-  const clearEnv = [...new Set([...(launch.clearEnv ?? []), ...(launch.native?.clearEnvironment ?? [])])]
+  const clearInherited = [...new Set([...(launch.clearEnv ?? []), ...(launch.native?.clearEnvironment ?? [])])]
   return {
     ...(launch.cwd ? { cwd: launch.cwd } : {}),
-    ...(clearEnv.length ? { clearEnv } : {}),
+    ...(clearInherited.length ? { clearInherited } : {}),
     ...(isTerminalEngine(engine) || launch.held ? {} : { afterExit: windowsAfterExit(engineBin(engine).split(/[\\/]/).pop() || engine) }),
   }
 }

@@ -492,7 +492,7 @@ describe('creating an agent', () => {
       // The launch's cleared names too, which the host must keep from its own environment (a grid launch's keys).
       const cleared = (vi.mocked(buildEngineLaunchArgv).mock.calls.at(-1)![1] as { clearEnv?: string[] }).clearEnv ?? []
       expect(vi.mocked(createAndRegisterPane).mock.calls[0][0].paneLaunch).toEqual({ cwd: input.cwd, afterExit: windowsAfterExit('claude'),
-        ...(cleared.length ? { clearEnv: cleared } : {}) })
+        ...(cleared.length ? { clearInherited: cleared } : {}) })
       expect(await setup().create(request())).toMatchObject({ ok: true })
       expect(vi.mocked(createAndRegisterPane).mock.calls[1][0].paneLaunch).toEqual({})
     })
@@ -617,7 +617,7 @@ describe('creating an agent', () => {
         Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
         await setup().create(request({ grid }))
       } finally { Object.defineProperty(process, 'platform', platform) }
-      expect(vi.mocked(createAndRegisterPane).mock.calls[0][0].paneLaunch).toMatchObject({ clearEnv: ['ANTHROPIC_API_KEY', 'HARNESS_OLD'] })
+      expect(vi.mocked(createAndRegisterPane).mock.calls[0][0].paneLaunch).toMatchObject({ clearInherited: ['ANTHROPIC_API_KEY', 'HARNESS_OLD'] })
     })
 
     it('installs the hooks a Codex profile and a new OpenCode need, unless hooks are off', async () => {

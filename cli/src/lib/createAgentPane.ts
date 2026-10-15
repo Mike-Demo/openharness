@@ -113,7 +113,7 @@ export async function createAndRegisterPane<Ref extends TerminalRuntimeRef = Ter
       // the pane's OWN shell starts, not the workspace the agent ends up in.
       cwd: deps.spawnCwd ?? deps.paneLaunch?.cwd ?? homedir(),
       ...(deps.paneLaunch?.afterExit ? { afterExit: deps.paneLaunch.afterExit } : {}),
-      ...(deps.paneLaunch?.clearEnv?.length ? { clearEnv: deps.paneLaunch.clearEnv } : {}),
+      ...(deps.paneLaunch?.clearInherited?.length ? { clearInherited: deps.paneLaunch.clearInherited } : {}),
       label,
       command: deps.argv,
       ...(deps.current ? { current: deps.current } : {}),

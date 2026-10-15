@@ -337,7 +337,7 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
       // Windows: the shell the pane becomes when its engine exits, made by the host (lib/windows/engineStart.ts).
       ...(request.afterExit ? { afterExit: { command: request.afterExit.command, ...(request.afterExit.env ? { env: request.afterExit.env } : {}) } } : {}),
       // Windows: what the pane must not inherit from the host's environment (a grid launch's provider keys).
-      ...(request.clearEnv?.length ? { clearEnv: [...request.clearEnv] } : {}),
+      ...(request.clearInherited?.length ? { clearInherited: [...request.clearInherited] } : {}),
     })
     if (result.state !== 'ok') return actionOf(result) as TerminalCreateResult<PtyRuntimeRef>
     // Recorded here, before any other await: an exit that overtook this reply is released by the client
@@ -523,6 +523,8 @@ export class PtyHostBackend implements TerminalBackend<PtyRuntimeRef> {
       ...(request.expectedHeldToken ? { expectedHeldToken: request.expectedHeldToken } : {}),
       // The host keeps each pane's create env, as tmux keeps its session's: a respawn inherits it, less these.
       ...(request.clearEnv?.length ? { clearEnv: [...request.clearEnv] } : {}),
+      // Windows: what this launch must not inherit from the host's environment, this launch alone.
+      ...(request.clearInherited?.length ? { clearInherited: [...request.clearInherited] } : {}),
       ...(request.afterExit ? { afterExit: { command: request.afterExit.command, ...(request.afterExit.env ? { env: request.afterExit.env } : {}) } } : {}),
     })
     if (result.state === 'ok') {

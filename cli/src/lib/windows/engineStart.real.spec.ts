@@ -103,7 +103,7 @@ async function created(backend: PtyHostBackend, engine: AgentEngine) {
 
   // A grid launch's provider keys: the host inherited them from the daemon, and a pane told to clear them must not see
   // them, in any case of the name, while the rest of what it inherits stays (security; lib/windows/engineStart.ts).
-  it('keeps the names a pane clears from what the host inherited, in any case, for every child of it', async () => {
+  it('keeps the names a launch clears from what the host inherited, in any case, for that launch and its hand-off', async () => {
     const saved = { key: process.env.ANTHROPIC_API_KEY, kept: process.env.HN_KEPT_VARIABLE }
     process.env.ANTHROPIC_API_KEY = 'sk-person-secret'
     process.env.HN_KEPT_VARIABLE = 'kept'
@@ -111,7 +111,7 @@ async function created(backend: PtyHostBackend, engine: AgentEngine) {
       await withBackend(async (backend) => {
         const show = ['cmd.exe', '/d', '/k', 'echo [%ANTHROPIC_API_KEY%][%HN_KEPT_VARIABLE%][%GRID_KEY%]']
         for (const clearEnv of [['ANTHROPIC_API_KEY'], ['anthropic_api_key']]) {
-          const created = await backend.create({ command: show, env: { GRID_KEY: 'grid' }, clearEnv })
+          const created = await backend.create({ command: show, env: { GRID_KEY: 'grid' }, clearInherited: clearEnv })
           if (created.state !== 'succeeded') throw new Error(`create failed: ${JSON.stringify(created)}`)
           const seen = await until(() => backend.capture(created.runtime, { mode: 'visible', ansi: false }),
             (s) => s.state === 'succeeded' && s.value.includes('][kept][grid]'))
@@ -127,16 +127,22 @@ async function created(backend: PtyHostBackend, engine: AgentEngine) {
         expect(leaked.state === 'succeeded' && leaked.value).toContain('[sk-person-secret][kept]')
         await backend.kill(plain.runtime)
         // The engine's respawn and the shell it hands the pane to stay without it.
-        const engine = await backend.create({ command: ['cmd.exe', '/c', 'exit 4'], clearEnv: ['ANTHROPIC_API_KEY'],
+        const engine = await backend.create({ command: ['cmd.exe', '/c', 'exit 4'], clearInherited: ['ANTHROPIC_API_KEY'],
           afterExit: { command: show } })
         if (engine.state !== 'succeeded') throw new Error('create failed')
         const handed = await until(() => backend.capture(engine.runtime, { mode: 'visible', ansi: false }),
           (s) => s.state === 'succeeded' && s.value.includes('][kept]'))
         expect(handed.state === 'succeeded' && handed.value).toContain('[%ANTHROPIC_API_KEY%][kept]')
-        await backend.respawn(engine.runtime, { command: show, clearEnv: ['HN_KEPT_VARIABLE'] })
+        // Per launch: a respawn with its own list clears that list alone; the last launch's names are back.
+        await backend.respawn(engine.runtime, { command: show, clearInherited: ['HN_KEPT_VARIABLE'] })
         const respawned = await until(() => backend.capture(engine.runtime, { mode: 'visible', ansi: false }),
           (s) => s.state === 'succeeded' && s.value.includes('[%HN_KEPT_VARIABLE%]'))
-        expect(respawned.state === 'succeeded' && respawned.value).toContain('[%ANTHROPIC_API_KEY%][%HN_KEPT_VARIABLE%]')
+        expect(respawned.state === 'succeeded' && respawned.value).toContain('[sk-person-secret][%HN_KEPT_VARIABLE%]')
+        // And one that sends none (an agent moved off its grid) clears nothing the host inherited.
+        await backend.respawn(engine.runtime, { command: show })
+        const home = await until(() => backend.capture(engine.runtime, { mode: 'visible', ansi: false }),
+          (s) => s.state === 'succeeded' && s.value.includes('[sk-person-secret][kept]'))
+        expect(home.state === 'succeeded' && home.value).toContain('[sk-person-secret][kept]')
         await backend.kill(engine.runtime)
       })
     } finally {
@@ -181,9 +187,11 @@ async function created(backend: PtyHostBackend, engine: AgentEngine) {
 
   for (const engine of ['claude', 'codex', 'opencode'] as const) {
     it(`starts ${engine} with no POSIX shell, its process in the pane's Job, and the pane a shell after it`, async (context) => {
-      // Found as the launch finds it (engines/kit/launchExecutable.ts); a machine without it (CI's runners) skips, saying so.
+      // Found as the launch finds it (engines/kit/launchExecutable.ts). Only an engine that is not installed (CI's
+      // runners, where the launch would install it first) skips, saying so; any other hold is a failure to read.
       const found = await captureLaunchExecutable(engine)
-      if (found.state !== 'ready') context.skip(`${engine} is not installed here (${found.state === 'held' ? found.detail : 'it would be installed first'})`)
+      if (found.state === 'install') context.skip(`${engine} is not installed here`)
+      if (found.state === 'held') throw new Error(`${engine}'s launch could not resolve its executable: ${found.detail}`)
       await withBackend(async (backend) => {
         const home = process.env.HOME
         if (engine === 'codex') {

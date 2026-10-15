@@ -137,7 +137,7 @@ describe('ptyHost protocol messages', () => {
 type FieldType = 'string' | 'number' | 'boolean' | 'string[]' | 'env' | 'afterExit'
 type OpFields = { [K in PtyOp['op']]: { [F in keyof Omit<PtyOpOf<K>, 'op'>]-?: FieldType } }
 const OP_FIELDS: OpFields = {
-  create: { command: 'string[]', cwd: 'string', env: 'env', cols: 'number', rows: 'number', owner: 'string', label: 'string', hold: 'boolean', afterExit: 'afterExit', clearEnv: 'string[]' },
+  create: { command: 'string[]', cwd: 'string', env: 'env', cols: 'number', rows: 'number', owner: 'string', label: 'string', hold: 'boolean', afterExit: 'afterExit', clearInherited: 'string[]' },
   kill: { pane: 'string', graceMs: 'number' },
   inventory: {},
   titles: {},
@@ -150,7 +150,7 @@ const OP_FIELDS: OpFields = {
   setTitle: { pane: 'string', title: 'string' },
   holdOpen: { pane: 'string' },
   releaseHold: { pane: 'string' },
-  respawn: { pane: 'string', command: 'string[]', cwd: 'string', env: 'env', expectedHeldToken: 'string', clearEnv: 'string[]', afterExit: 'afterExit' },
+  respawn: { pane: 'string', command: 'string[]', cwd: 'string', env: 'env', expectedHeldToken: 'string', clearEnv: 'string[]', clearInherited: 'string[]', afterExit: 'afterExit' },
   jobPids: { pane: 'string' },
   processes: {},
   setEngineExit: { pane: 'string', status: 'number' },
