@@ -103,7 +103,7 @@ harness close <name> [--now]                        # when you are done with one
   you, is no exception: outside your tab, or with Agent Messages off, put everything in the task and read the answer
   with `show`.
 - **Outside Harness** (Claude Code or Codex in a terminal app, an editor or the person's own tmux): Harness tells
-  you by your session. `harness whoami` (and the top of `harness ps`) says "You: Claude Code, outside Harness, on
+  you by your session. `harness whoami` (and the top of `harness ps`) says "You: <agent>, outside Harness, on
   <machine>.", and `harness ps` marks what this session started as `you`; the limits below apply; and you may close only what this session started. Nothing can
   message you, and `harness send` is not available: put everything in the task, and for a follow-up start a new
   harness with the fuller task.

@@ -113,12 +113,12 @@ harness on another of your machines: `harness new claude --machine office --name
 `context`); the top of an agent's `harness ps` begins with it, and `harness mcp` puts it in its instructions:
 
 ```
-You: Claude Code "lead" (94d984ee), inside Harness, on Mac Auto.
-Can start harnesses: no. The person has not turned on "Agents can start other agents". Ask them to run: harness settings agents-start-agents on
-Yours: 1 open of 4 · 3 of 20 starts in the last 10 minutes · other machines: office (running)
+You: <agent> "<name>" (<id>), inside Harness, on <machine>.
+Can start harnesses: <yes, or no and why>. <who can change it, and the command>
+Yours: <open> open of <max> · <starts> of <max starts> starts in the last <minutes> minutes · other machines: <machine> (<state>), …
 ```
 
-Run by the person, it prints the first line only: `You: the person, on Mac Auto.`
+Run by the person, it prints the first line only: `You: the person, on <machine>.`
 
 ## Your devices
 

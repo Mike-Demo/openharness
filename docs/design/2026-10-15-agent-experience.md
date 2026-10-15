@@ -61,9 +61,9 @@ Read at summary level: [gh auth status](https://cli.github.com/manual/gh_auth_st
 Three lines at most:
 
 ```
-You: Claude Code "lead" (94d984ee), inside Harness, on Mac Auto.
-Can start harnesses: no. The person has not turned on "Agents can start other agents". Ask them to run: harness settings agents-start-agents on
-Yours: 1 open of 4 · 3 of 20 starts in the last 10 minutes · other machines: office, grid-dev (running)
+You: <agent> "<name>" (<id>), inside Harness, on <machine>.
+Can start harnesses: <yes, or no and why>. <who can change it, and the command>
+Yours: <open> open of <max> · <starts> of <max starts> starts in the last <minutes> minutes · other machines: <machine> (<state>), …
 ```
 
 Line 2, by case, in the order `spawnRefusal()` checks them:
@@ -71,15 +71,16 @@ Line 2, by case, in the order `spawnRefusal()` checks them:
 | Case | Line 2 |
 |---|---|
 | allowed | `Can start harnesses: yes.` |
-| switch off | as above |
+| switch off | `Can start harnesses: no. The person has not turned on "Agents can start other agents". Ask them to run: harness settings agents-start-agents on` |
 | this computer signed out | `Can start harnesses: no. This computer is signed out of Harness, and starting is the account's choice. Ask the person to run: harness login, then harness settings agents-start-agents on` |
 | started by an agent (depth) | `Can start harnesses: no. An agent started you, and only one level is allowed. Do the work yourself, or say in your answer what else is needed.` |
-| 4 open | `Can start harnesses: no. You have 4 open, the most. Close one you are done with: harness close <name>` |
-| 20 starts in 10 minutes | `Can start harnesses: not until 14:32 (20 starts in 10 minutes).` |
+| the most open (4) | `Can start harnesses: no. You have <open> open, the most. To free a place: harness close <name>` |
+| the most starts (20 in 10 minutes) | `Can start harnesses: not until <time> (<max starts> starts in <minutes> minutes).` |
+| the most on this machine (40) | `Can start harnesses: no. Agents have <n> harnesses running on this machine, the most allowed. Close some first.` |
 | a pane whose harness is gone | `Can start harnesses: no. This pane's harness is no longer running. Only the person can start or close harnesses here.` |
 | a person | line 2 and 3 left out |
 
-Outside Harness, line 1 reads `You: Codex, outside Harness, on Mac Auto. Nothing can message you here.`
+Outside Harness, line 1 reads `You: <agent>, outside Harness, on <machine>. Nothing can message you here.`
 
 **Where it is shown**
 
@@ -93,18 +94,19 @@ Outside Harness, line 1 reads `You: Codex, outside Harness, on Mac Auto. Nothing
 
 ```json
 "context": {
-  "caller": { "kind": "agent", "agent": "Claude Code", "name": "lead", "id": "94d984ee…", "inside": true, "machine": "Mac Auto" },
-  "canStart": { "ok": false, "reason": "SWITCH_OFF", "fix": "harness settings agents-start-agents on", "fixBy": "person" },
-  "quota": { "open": 1, "maxOpen": 4, "starts": 3, "maxStarts": 20, "windowMinutes": 10, "depth": 0, "maxDepth": 1 },
-  "machines": [ { "name": "office", "state": "running" }, { "name": "grid-dev", "state": "running" } ]
+  "caller": { "kind": "agent" | "person", "agent": "<agent>" | null, "name": "<name>" | null, "id": "<id>" | null, "inside": <boolean>, "machine": "<machine>" },
+  "canStart": { "ok": <boolean>, "reason": "<reason>" | null, "message": "<why>", "fix": "<command>" | null, "fixBy": "person" | "you" | null } | null,
+  "quota": { "open": <n>, "maxOpen": <n>, "starts": <n>, "maxStarts": <n>, "windowMinutes": <n>, "depth": <n>, "maxDepth": <n>, "nextStartAt": "<ISO time>" | null } | null,
+  "machines": [ { "name": "<machine>", "state": "<state>" } ]
 }
 ```
 
-`reason` is one of `SWITCH_OFF`, `DEPTH`, `OPEN_LIMIT`, `START_RATE`, `ORPHAN`; `fixBy` is `person` or `you`.
+`reason` is one of `SIGNED_OUT`, `SWITCH_OFF`, `ORPHAN`, `DEPTH`, `OPEN_LIMIT`, `MACHINE_LIMIT`, `START_RATE`;
+`fixBy` is `person` or `you`.
 
 **Cost.** Switches and the record of starts are local files. The machines line uses the account's machine list
 the daemon already holds; it does not ask each machine, so `ps` stays fast. The count of this agent's harnesses
-on other machines stays exact only in `new`, as today, so the header can say "1 of 4" where `new` counts 2; `new`
+on other machines stays exact only in `new`, as today, so the header can count fewer open than `new` does; `new`
 still refuses correctly and says so.
 
 ## Part 2. Every verb answers the same way: result, effect, Next
@@ -117,13 +119,13 @@ Each verb's text ends with:
 
 | Verb | Result and effect | Next |
 |---|---|---|
-| `new` | `reviewer on office: starting. Codex, in ~/harnesses/review. The person sees it in Harness, beside you.` | `Next: harness wait --machine office reviewer` (then read it with `harness show`) |
-| `new`, held for an install | `reviewer on office: installing Codex (about 1 minute).` | `Next: harness wait --machine office reviewer. Do not start it again.` |
+| `new` | `<name> on <machine>: starting. <agent>, in <folder>. The person sees it in Harness, beside you.` | `Next: harness wait --machine <machine> <name>` (then read it with `harness show`) |
+| `new`, held for an install | `<name> on <machine>: installing <agent> (about <time>).` | `Next: harness wait --machine <machine> <name>. Do not start it again.` |
 | `ps` | the block, then rows: yours first, then working or waiting, then the rest (part 4) | none open: `Next: harness new …`; one idle: `Next: harness show <name>, then harness close <name>` |
-| `show` | `reviewer on office: idle · asked … · answer …` | yours and idle: `Next: harness close --machine office reviewer`; working: `Next: harness wait …`; needs the person: `Next: tell the person; only they answer it` |
-| `wait` | one line per harness (today's lines) | adds a Next to `gone`: `Next: harness ps --all --machine office, to see if it was closed` |
-| `close` | `reviewer on office: closed. Its conversation is kept; the person can resume it.` | `Next: nothing; you have 0 open of 4.` |
-| `send` | `sent to tests (read 14:02)` | `Next: harness wait tests` |
+| `show` | `<name> on <machine>: idle · asked … · answer …` | yours and idle: `Next: harness close --machine <machine> <name>`; working: `Next: harness wait …`; needs the person: `Next: tell the person; only they answer it` |
+| `wait` | one line per harness (today's lines) | adds a Next to `gone`: `Next: harness ps --all --machine <machine>, to see if it was closed` |
+| `close` | `<name> on <machine>: closed. Its conversation is kept; the person can resume it.` | `Next: nothing; you have <open> open of <max>.` |
+| `send` | `sent to <name> (read <time>)` | `Next: harness wait <name>` |
 | `whoami` | the block | when it cannot start: who must do what |
 
 Rules:
@@ -145,7 +147,7 @@ One set of states, the same words in `ps`, `show`, `wait`, `--json` and MCP:
 | `starting` | the agent is opening | 124 | wait again |
 | `working` | busy | 124 | wait again |
 | `needs-person` | a question or a permission only the person answers | 3 | tell the person |
-| `signed-out` (new) | the agent on that machine is not signed in to its provider | 3 | tell the person: `codex login` on office |
+| `signed-out` (new) | the agent on that machine is not signed in to its provider | 3 | tell the person: `<agent's login command>` on `<machine>` |
 | `idle` | finished its turn | 0 | `show`, then `close` |
 | `closed` | the caller closed it | 0 | none |
 | `stopped` | stopped by the person, or by the idle cleanup | 4 | `show` still reads its answer |
@@ -190,7 +192,7 @@ this machine can reach it now: `yes`, `offline`, `older Harness (0.3.x): update 
 - **Clean up across machines**: closing a harness closes the harnesses it started on other machines too, through
   the same relay `close --machine` uses. Today each machine's cleanup sees only its own.
 - **Older Harness on the other machine**: `new --machine` says so before it starts and names the update
-  (`harness update` on office), instead of a vague failure.
+  (`harness update` on `<machine>`), instead of a vague failure.
 - **Fix from #1333**: `ps`/`show --machine` label a harness that machine's own agent started as "started by person";
   read who started it from that machine's record.
 
@@ -234,9 +236,9 @@ Extends the eval in the agent-client design (`cli/scripts/route-eval/` style).
 
 - **Agents**: Claude Code and Codex, a fresh session each, given only `llms.txt` (outside Harness) or nothing but
   being in a pane (inside).
-- **Tasks** (8): get a second opinion from Codex on this machine; run tests on `office` and report; the switch is
-  off (right answer: tell the person); the limit is full; a harness needs the person; read a harness the person
-  started (right answer: read, do not close); a machine is offline; the agent on `office` is signed out.
+- **Tasks** (8): get a second opinion from Codex on this machine; run tests on another `<machine>` and report; the switch
+  is off (right answer: tell the person); the limit is full; a harness needs the person; read a harness the person
+  started (right answer: read, do not close); a machine is offline; the agent on another `<machine>` is signed out.
 - **Measured from the transcript**: commands until the first useful one, wrong commands, commands run only to find
   where it is, retries after a refusal (should be 0), harnesses left open at the end (should be 0), task done.
 - **Before and after**: run on today's CLI first for the baseline, then after each phase. Real machines, the
