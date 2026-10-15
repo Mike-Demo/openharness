@@ -1,6 +1,7 @@
 /** A launch resolves once, then keeps that executable through probes and dispatch. */
 import { execFile } from 'node:child_process'
 import { accessSync, closeSync, constants, openSync, readSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { engineBin, enginePathOverride } from '../../lib/engineBin.js'
 import { engineInstallPaths, engineInstallRecipe, type EngineInstallRecipe } from '../../lib/engineInstall.js'
@@ -23,6 +24,14 @@ export { LAUNCH_LOCATION_VARIABLES } from './nativeLocations.js'
 const pickLocations = (environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv => Object.fromEntries(
   LAUNCH_LOCATION_VARIABLES.filter(key => environment[key] !== undefined).map(key => [key, environment[key]]),
 )
+/**
+ * Windows sets no HOME of its own. OpenSSH for Windows does, so the first VM runs (all over SSH) had one; a daemon
+ * started any other way (WMI, a scheduled task, the desktop app) held every native launch at "Waiting to read the
+ * engine's launch environment" (the Windows VM E2E, 2026-10-15). The profile is the home there, as os.homedir() says.
+ */
+function withWindowsHome(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return process.platform === 'win32' && !environment.HOME ? { ...environment, HOME: homedir() } : environment
+}
 let probing = 0
 const MAX_PROBES = 8
 
@@ -30,7 +39,7 @@ const MAX_PROBES = 8
  * actual child until its callback, including timeout/oversized-output kills. */
 export async function launchEnvironment(shell?: string): Promise<NodeJS.ProcessEnv | null> {
   const interactive = interactiveEngineShell(shell)
-  if (!interactive) return pickLocations(process.env)
+  if (!interactive) return withWindowsHome(pickLocations(process.env))
   if (probing >= MAX_PROBES) return null
   const code = `process.stdout.write(${JSON.stringify(ENV_MARKER)}+JSON.stringify(Object.fromEntries(${JSON.stringify(LAUNCH_LOCATION_VARIABLES)}.filter(k=>process.env[k]!==undefined).map(k=>[k,process.env[k]]))))`
   const argv = engineShellArgv(interactive, [`exec ${shellSingleQuote(managedNodePath())} -e ${shellSingleQuote(code)}`, 'harness-launch-environment'])

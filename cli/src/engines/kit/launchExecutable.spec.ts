@@ -113,3 +113,17 @@ it('finds a Windows engine by its program file, never the sh script npm writes b
     expect(await again.captureLaunchExecutable('opencode', '')).toMatchObject({ state: 'ready', executable: { command: join(bin, 'opencode.exe') } })
   } finally { Object.defineProperty(process, 'platform', platform) }
 })
+it('takes the profile as the home on Windows, which sets no HOME of its own', async () => {
+  const { launchEnvironment } = await fixture()
+  vi.stubEnv('HOME', undefined)
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  try {
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+    const { homedir } = await import('node:os')
+    expect((await launchEnvironment())?.HOME).toBe(homedir())
+    vi.stubEnv('HOME', root)
+    expect((await launchEnvironment())?.HOME).toBe(root)
+  } finally {
+    Object.defineProperty(process, 'platform', platform)
+  }
+})
