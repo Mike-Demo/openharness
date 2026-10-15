@@ -29,7 +29,10 @@ export function readHookCredential(dataDir: string): string | null {
     const uid = typeof process.getuid === 'function' ? process.getuid() : null
     if (!stat.isFile() || stat.size > 128) return null
     if (uid !== null && stat.uid !== uid) return null
-    if ((stat.mode & 0o777) !== 0o600) return null
+    // Windows reports every file as 0o666 (or 0o444), so this check refused the credential the daemon had written,
+    // the next create was EEXIST and the daemon's second start ended in safe mode (Task 23, the VM E2E). There the
+    // file's protection is the folder's ACL, which secureDataDirectory checked by location (secureState.ts).
+    if (process.platform !== 'win32' && (stat.mode & 0o777) !== 0o600) return null
     const value = readFileSync(fd, 'utf8').trim()
     return TOKEN_RE.test(value) ? value : null
   } catch {

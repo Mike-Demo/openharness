@@ -33,6 +33,26 @@ describe('hook channel credential', () => {
     expect(readHookCredential(dir)).toBeNull()
   })
 
+  it('reuses the credential on Windows, where every file reads as mode 0o666', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hook-auth-'))
+    dirs.push(dir)
+    const first = loadOrCreateHookCredential(dir)
+    chmodSync(hookCredentialPath(dir), 0o666)
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+    const configured = process.env.ADAPTER_DATA_DIR
+    try {
+      Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+      // The Windows state roots are the profile and the configured data folder (secureState.ts).
+      process.env.ADAPTER_DATA_DIR = dir
+      expect(readHookCredential(dir)).toBe(first)
+      expect(loadOrCreateHookCredential(dir)).toBe(first)
+    } finally {
+      Object.defineProperty(process, 'platform', platform)
+      if (configured === undefined) delete process.env.ADAPTER_DATA_DIR
+      else process.env.ADAPTER_DATA_DIR = configured
+    }
+  })
+
   it('refuses to read or create credentials in a group-writable state directory', () => {
     const dir = mkdtempSync(join(tmpdir(), 'hook-auth-'))
     dirs.push(dir)
