@@ -105,9 +105,9 @@ describe('complete bounded evidence before choosing a conversation', () => {
     await expect(scan()).resolves.toEqual({ sessionId: SID, transcriptPath: path })
   })
 
-  it('binds a Muse session whose folder also holds its tool outputs', async () => {
-    // Muse Code 1.4 writes `tool-outputs/` beside `session.jsonl`, one level below the 4 the tree allows:
-    // walked into, it held every Muse pane on "the transcript depth limit was reached".
+  it('binds a Muse session whatever folders it keeps beside its transcript', async () => {
+    // Muse Code 1.4 keeps folders of its own beside `session.jsonl` (`tool-outputs/`, `approval-review/`, …), one
+    // level below the 4 the tree allows: walked into, each held every Muse pane on "the transcript depth limit was reached".
     const work = join(root, 'work')
     mkdirSync(work)
     const folder = join(root, 'muse', 'sessions', '2026', '10', '09', SID)
@@ -116,7 +116,21 @@ describe('complete bounded evidence before choosing a conversation', () => {
       JSON.stringify({ payload: { kind: 'run', event: { kind: 'started', prompt: 'hi' } } }),
     ].join('\n') + '\n', START + 5_000)
     file(join(folder, 'tool-outputs', 'call_1.txt'), 'output')
+    file(join(folder, 'approval-review', 'note.txt'), 'x')
+    file(join(folder, 'a-folder-muse-adds-next', 'deeper', 'x.jsonl'), body())
     file(join(folder, 'subagent', 'child', 'session.jsonl'), 'x')
+    await expect(repair.findLiveSession('muse', work, START)).resolves.toEqual({ sessionId: SID, transcriptPath: path })
+  })
+
+  it('binds a Muse 1.4 session whose transcript opens with a retained permission frame', async () => {
+    const work = join(root, 'work')
+    mkdirSync(work)
+    const folder = join(root, 'muse', 'sessions', '2026', '10', '09', SID)
+    const path = file(join(folder, 'session.jsonl'), [
+      JSON.stringify({ retained_frame: 'session_permission_transaction', frame_schema_version: 1, children: [] }),
+      JSON.stringify({ payload: { kind: 'session', record: { workspace_root: work } } }),
+      JSON.stringify({ payload: { kind: 'run', event: { kind: 'started', prompt: 'hi' } } }),
+    ].join('\n') + '\n', START + 5_000)
     await expect(repair.findLiveSession('muse', work, START)).resolves.toEqual({ sessionId: SID, transcriptPath: path })
   })
 
