@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { addressOf, agentOrigin, AGENTS_START_AGENTS_OFF, closeCommand, DEPTH_REFUSAL, EXIT, parseDuration, psCommand, showCommand, spawnCheck, spawnCount, spawnRefusal, SPAWN_LIMITS, waitCommand, type ClientDeps } from './commands.js'
+import { addressOf, agentOrigin, AGENTS_START_AGENTS_OFF, closeCommand, DEPTH_REFUSAL, EXIT, parseDuration, psCommand, showCommand, spawnCheck, spawnCount, spawnRefusal, SPAWN_LIMITS, waitCommand, whoamiCommand, type ClientDeps } from './commands.js'
 import { AgentClientError, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath } from './ledger.js'
 import { agentSettingsPath } from '../lib/agentSettings.js'
@@ -1345,5 +1345,66 @@ describe('spawnCheck and spawnCount', () => {
     for (let i = 0; i < SPAWN_LIMITS.perWindow; i++) started(ledger, 'lead', `k${i}`, 'm', NOW - 60_000 + i)
     expect(spawnCheck(lead, new Set(), ledger, 'm', NOW)?.reason).toBe('START_RATE')
     expect(spawnCount(lead, new Set(), ledger, NOW)).toMatchObject({ open: 0, starts: SPAWN_LIMITS.perWindow, oldestStartAt: NOW - 60_000 })
+  })
+})
+
+describe('harness whoami', () => {
+  const office = { machineId: 'o', label: 'office', status: 'running', current: false }
+
+  it('tells an agent in a pane who and where it is, that it may start, and its counts', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' }), frame('kid')]
+    const h = harness(d, { machines: async () => [office] })
+    started(h.ledger, 'lead', 'kid')
+    expect(await whoamiCommand([], h.deps)).toBe(EXIT.ok)
+    expect(h.out.join('\n')).toBe([
+      'You: Claude Code "lead" (lead), inside Harness, on studio.',
+      'Can start harnesses: yes.',
+      'Yours: 1 open of 4 · 1 of 20 starts in the last 10 minutes · other machines: office (running)',
+    ].join('\n'))
+    expect(d.closed).toBe(true)
+  })
+
+  it('says the switch is off, and gives the context as JSON', async () => {
+    setAgentSettingsForTest(dir, { agentsStartAgents: false })
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' })]
+    const h = harness(d)
+    expect(await whoamiCommand(['--json'], h.deps)).toBe(EXIT.ok)
+    const { context } = JSON.parse(h.out.join('\n'))
+    expect(context.canStart).toEqual({ ok: false, reason: 'SWITCH_OFF', message: 'The person has not turned on "Agents can start other agents".', fix: 'harness settings agents-start-agents on', fixBy: 'person' })
+    expect(context.machines).toEqual([])
+  })
+
+  it('signed out: says to sign in first, and lists no machines', async () => {
+    signedOutForTest()
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' })]
+    const h = harness(d, { machines: async () => { throw new AgentClientError('MACHINES_UNAVAILABLE', 'no') } })
+    expect(await whoamiCommand([], h.deps)).toBe(EXIT.ok)
+    expect(h.out.join('\n').split('\n')[1]).toMatch(/^Can start harnesses: no\. This computer is signed out of Harness/)
+    expect(h.out.join('\n')).not.toContain('other machines')
+  })
+
+  it('does not wait long for the account\'s machines', async () => {
+    const d = new FakeDaemon()
+    d.frames = [frame('lead', { engine: 'claude' })]
+    const h = harness(d, { machines: () => new Promise(() => {}), contextMachinesMs: 5 })
+    const t0 = Date.now()
+    expect(await whoamiCommand([], h.deps)).toBe(EXIT.ok)
+    expect(Date.now() - t0).toBeLessThan(1_000)
+    expect(h.out.join('\n')).not.toContain('other machines')
+  })
+
+  it('says why when Harness cannot be reached, as ps does', async () => {
+    const h = harness(new FakeDaemon(), { open: async () => { throw new AgentClientError('DAEMON_UNREACHABLE', 'Harness is not running here.') } })
+    expect(await whoamiCommand([], h.deps)).toBe(EXIT.failed)
+    expect(h.err).toEqual(['Harness is not running here.'])
+  })
+
+  it('takes no names and no --machine', async () => {
+    const h = harness(new FakeDaemon())
+    expect(await whoamiCommand(['x'], h.deps)).toBe(EXIT.usage)
+    expect(h.err[0]).toBe('harness whoami takes no names and no --machine: it is about you, here.')
   })
 })

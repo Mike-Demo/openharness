@@ -145,6 +145,7 @@ Machine:
                                every harness, live or stopped (--limit=N, --json)
   harness send <name> "text"   from an agent's pane: message a teammate in this tab (Agent Messages,
                                Settings ▸ Experimental); \`harness send\` alone lists who is here
+  harness whoami               who you are to Harness: which agent, which machine, whether you may start harnesses
   harness ps [--all]           the harnesses here: state, who started each, what each is about
   harness show <name>          a harness's state and last turn: what it was asked and what it answered
   harness wait <name>[,<name>] wait until they stop working (--any, --timeout 30m); exit 3 = needs the person
@@ -2497,7 +2498,7 @@ async function logsExportCommand(json: boolean): Promise<void> {
 
 import { orchestratorCommand } from './orchestrator/command.js'
 import { paneOwner, sendCommand } from './messages/command.js'
-import { agentOrigin, closeCommand, psCommand, showCommand, waitCommand } from './agentClient/commands.js'
+import { agentOrigin, closeCommand, psCommand, showCommand, waitCommand, whoamiCommand } from './agentClient/commands.js'
 import { openUrlCommand } from './agentClient/openUrl.js'
 import { harnessRunner, mcpCommand } from './agentClient/mcp.js'
 import { settingsCommand } from './agentClient/settings.js'
@@ -2538,6 +2539,9 @@ switch (cmd) {
   // A pane's BROWSER script asking whether a phone takes the page (agentClient/openUrl.ts). Not for people.
   case 'open-url':
     openUrlCommand(rest).then(code => { process.exitCode = code }).catch(() => { process.exitCode = 1 })
+    break
+  case 'whoami':
+    whoamiCommand(rest, { machines: ownedMachines }).then(code => { process.exitCode = code }).catch(onError)
     break
   case 'ps':
     psCommand(rest, { machines: ownedMachines }).then(code => { process.exitCode = code }).catch(onError)

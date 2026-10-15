@@ -22,7 +22,8 @@ import { readAgentSettings } from '../lib/agentSettings.js'
 import { MAX_FIRST_PROMPT_CHARS } from '../lib/engineLaunch.js'
 import { NewUsageError, resolveNewMachine, type NewMachine, type NewOrigin } from '../lib/newCommand.js'
 import { engineName } from '../messages/model.js'
-import type { SpawnCount, SpawnReason } from './context.js'
+import { readAuthSession } from '../lib/authSession.js'
+import { buildContext, formatContext, type Context, type SpawnCount, type SpawnReason } from './context.js'
 import { AgentClientError, openDaemon, whereFor, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath, type Pending, type Started } from './ledger.js'
 import { messagesRpc, type Rpc } from '../messages/rpc.js'
@@ -45,6 +46,8 @@ export interface ClientDeps {
   record?: Rpc
   /** The account's machines, for `--machine` (cli.ts asks the backend, as `harness new` does). */
   machines?: () => Promise<NewMachine[]>
+  /** How long the context block waits for the account's machines (2 s); tests shorten it. */
+  contextMachinesMs?: number
 }
 
 const ON_MACHINE = '--machine <name> is another of your machines, by its name or id as harness new takes it; this one when left out.'
@@ -70,6 +73,10 @@ export const CLOSE_USAGE = `Usage: harness close [--machine <name>] <name> [--no
 Saves the harness's screen and stops it. Its conversation is kept: the person can resume it.
 It is refused while the harness is working, unless --now. An agent may close only harnesses it started.
 ${ON_MACHINE}`
+export const WHOAMI_USAGE = `Usage: harness whoami [--json]
+
+Who you are to Harness: which agent, on which machine, inside Harness or not; whether you may start harnesses now
+and, if not, who can change that; how many of yours are open, and how many starts are left.`
 
 export const EXIT = { ok: 0, failed: 1, usage: 2, needsInput: 3, stopped: 4, timeout: 124 } as const
 
@@ -142,6 +149,7 @@ function setup(deps: ClientDeps) {
     machines: deps.machines ?? (async (): Promise<NewMachine[]> => {
       throw new AgentClientError('MACHINES_UNAVAILABLE', 'Harness could not list your machines here.')
     }),
+    contextMachinesMs: deps.contextMachinesMs ?? 2_000,
   }
 }
 type Setup = ReturnType<typeof setup>
@@ -534,6 +542,44 @@ export function openNote(env: NodeJS.ProcessEnv, rows: readonly Row[]): string |
   const idle = open.filter((r) => r.state === 'idle').length
   return `You have ${open.length} harness${open.length === 1 ? '' : 'es'} of your own open${idle ? `, ${idle} idle` : ''}. `
     + `Close each once you have its answer: ${step(env, 'close', '<name>')}.`
+}
+
+/** The account's machines for the context block, or none: the block never holds a verb up (2 s at most). */
+async function machinesForContext(s: Setup): Promise<NewMachine[]> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([s.machines(), new Promise<NewMachine[]>((done) => { timer = setTimeout(() => done([]), s.contextMachinesMs); timer.unref?.() })])
+  } catch { return [] } finally { clearTimeout(timer) }
+}
+
+/** Where the caller is and what it may do (context.ts), from what `opened` read: this machine's live harnesses only,
+ *  so it costs no other machine a question; `new` still counts the other machines' exactly. */
+async function contextFor(s: Setup, o: Opened): Promise<Context> {
+  const live = new Set(o.frames.filter((f) => f.status === 'active').map((f) => memberKey(o.where.machineId, f.id)))
+  const waiting = o.asked.filter((a) => a.state !== 'failed').map((a) => a.row)
+  const caller = o.caller
+  return buildContext({
+    caller, orphan: o.orphan, machine: o.machine,
+    signedIn: !!readAuthSession(), switchOn: readAgentSettings(o.where.dataDir).agentsStartAgents,
+    check: caller ? spawnCheck(caller, live, o.ledger, o.where.machineId, s.now(), waiting) : null,
+    count: caller ? spawnCount(caller, live, o.ledger, s.now(), waiting) : null,
+    limits: SPAWN_LIMITS, machines: await machinesForContext(s), closeStep: step(s.env, 'close', '<name>'),
+  })
+}
+
+// ── whoami ─────────────────────────────────────────────────────────────────────────────────────────
+
+export function whoamiCommand(argv: readonly string[], deps: ClientDeps = {}): Promise<number> {
+  return run(WHOAMI_USAGE, deps, wantsJson, argv, async (s) => {
+    const { names, flags, machine } = words(argv, { '--json': 'flag' })
+    if (names.length || machine !== null) throw new UsageError('harness whoami takes no names and no --machine: it is about you, here.')
+    const o = await opened(s)
+    try {
+      const context = await contextFor(s, o)
+      s.out(flags.has('--json') ? JSON.stringify({ context }, null, 1) : formatContext(context))
+      return EXIT.ok
+    } finally { o.daemon.close() }
+  })
 }
 
 // ── show ───────────────────────────────────────────────────────────────────────────────────────────
