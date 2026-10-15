@@ -7,16 +7,19 @@
  * user's processes can connect. A request that arrives over it is from this user, and needs none of
  * the address checks a TCP request does — its peer has no address at all.
  *
- * TCP stays: the CLI, engine hooks and scripts still use
- * it, as do app builds that predate this. Windows has no socket here; there everything is TCP.
+ * TCP stays: the CLI, engine hooks and scripts still use it, as do app builds that predate this. On Windows the
+ * daemon serves a named pipe instead (`listenAuthenticated` below). Reaching that pipe is no credential, so every
+ * request over it proves the daemon's token (lib/windows/pipeAuth.ts).
  */
 import { randomBytes } from 'node:crypto'
 import http from 'node:http'
 import { connect } from 'node:net'
 import type { IncomingMessage } from 'node:http'
 import type { Socket } from 'node:net'
+import type { Duplex } from 'node:stream'
 import { chmodSync, linkSync, lstatSync, renameSync, unlinkSync, type Stats } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { checkPipeAuth, NonceWindow, PIPE_AUTH_HEADER, PIPE_PROOF_HEADER, pipeIdOf, pipeProofValue } from './windows/pipeAuth.js'
 
 /**
  * One socket per configured port in this OS user's data directory: `daemon-<port>.sock`. Its name
@@ -37,6 +40,8 @@ export function isLocalSocketName(name: string): boolean {
 const MAX_SOCKET_PATH_BYTES = 96
 
 const trustedSockets = new WeakSet<Socket>()
+/** Requests over the daemon's pipe whose auth checked out, and the proof each answer to them carries. */
+const pipeProofs = new WeakMap<IncomingMessage, string>()
 
 /** Where the socket for the daemon on `port` lives in this data directory, or null where there is none. */
 export function localSocketPath(dataDir: string, port: number, platform: NodeJS.Platform = process.platform): string | null {
@@ -45,11 +50,25 @@ export function localSocketPath(dataDir: string, port: number, platform: NodeJS.
   return Buffer.byteLength(path) <= MAX_SOCKET_PATH_BYTES ? path : null
 }
 
-/** Whether this request (or raw socket) came in over the daemon's own Unix socket. */
+/** Whether this request (or raw socket) came in over the daemon's own Unix socket, or over its pipe with valid auth. */
 export function isTrustedLocal(target: IncomingMessage | Socket | null | undefined): boolean {
   if (!target) return false
+  if (pipeProofs.has(target as IncomingMessage)) return true
   const socket = 'socket' in target && target.socket ? target.socket : target as Socket
   return trustedSockets.has(socket)
+}
+
+/** The proof every answer to [req] must carry, for a request over the daemon's pipe whose auth checked out. */
+export function pipeProofOf(req: IncomingMessage): string | undefined {
+  return pipeProofs.get(req)
+}
+
+export interface ListenLocalSocketOptions {
+  /**
+   * The daemon's token (lib/windows/pipeAuth.ts). When given, `path` is a pipe (in the tests, a socket with a pipe's
+   * name) whose every request must prove the token: Windows. Absent: the Unix socket, trusted by its file mode.
+   */
+  token?: Buffer
 }
 
 export interface LocalSocketServer {
@@ -66,7 +85,8 @@ export interface LocalSocketServer {
  * only a stale socket. CLI startup is serialized by the per-user spawn lock; two daemons that start at
  * once anyway (two masters) get one socket between them, never one each.
  */
-export async function listenLocalSocket(handler: http.RequestListener, path: string): Promise<LocalSocketServer> {
+export async function listenLocalSocket(handler: http.RequestListener, path: string, options: ListenLocalSocketOptions = {}): Promise<LocalSocketServer> {
+  if (options.token) return listenAuthenticated(handler, path, options.token)
   // A TCP collision can now move this user to another port. Holding a TCP port no longer proves
   // an existing Unix socket is stale: never unlink a live daemon belonging to this user.
   await refuseLiveSocket(path)
@@ -112,6 +132,50 @@ export async function listenLocalSocket(handler: http.RequestListener, path: str
         try { unlinkSync(staging) } catch { /* renamed into place */ }
         resolve({ server, path, close: async () => closeNow(), closeSync: closeNow })
       })()
+    })
+  })
+}
+
+/**
+ * The daemon's Windows pipe: the same handler, for requests that prove the token. Node cannot set a pipe's DACL,
+ * and the default one lets every account open it for reading, so reaching the pipe is no credential. A request
+ * without valid auth gets a 401 and never reaches the handler. An upgrade without valid auth is dropped here,
+ * before the local WS server's listener (localWsServer.ts), which then finds its socket destroyed. Every answer
+ * carries the proof; the local WS server adds it to a 101. There is no file to claim or remove: the name is new on
+ * each start (localSocketListenPath), and a pipe goes with its last handle.
+ */
+function listenAuthenticated(handler: http.RequestListener, path: string, token: Buffer): Promise<LocalSocketServer> {
+  const pipeId = pipeIdOf(path)
+  if (!pipeId) return Promise.reject(new Error(`${path} is not a Harness pipe name`))
+  const seen = new NonceWindow()
+  const admit = (req: IncomingMessage): boolean => {
+    const header = req.headers[PIPE_AUTH_HEADER]
+    const auth = checkPipeAuth(token, typeof header === 'string' ? header : undefined, seen, pipeId)
+    if (auth) pipeProofs.set(req, pipeProofValue(token, auth.nonce))
+    return auth !== null
+  }
+  const server = http.createServer((req, res) => {
+    if (!admit(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json', Connection: 'close' })
+      res.end(JSON.stringify({ error: 'PIPE_AUTH_REQUIRED' }))
+      return
+    }
+    res.setHeader(PIPE_PROOF_HEADER, pipeProofs.get(req)!)
+    handler(req, res)
+  })
+  server.prependListener('upgrade', (req: IncomingMessage, socket: Duplex) => {
+    // Alone, this listener would leave an upgrade nobody takes hanging: nothing serves upgrades here yet.
+    if (!admit(req) || server.listenerCount('upgrade') === 1) socket.destroy()
+  })
+  const closeNow = (): void => {
+    server.closeAllConnections()
+    server.close()
+  }
+  return new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(path, () => {
+      server.off('error', reject)
+      resolve({ server, path, close: async () => closeNow(), closeSync: closeNow })
     })
   })
 }
