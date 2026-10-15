@@ -70,14 +70,18 @@ export interface RepairedSession {
   hermesHome?: string
 }
 
+/** The folders beside a Muse `session.jsonl` that are not conversations: skipped, not walked into (and so
+ *  never counted against MAX_DEPTH). */
+const MUSE_NON_TRANSCRIPT_FOLDERS = ['subagent', 'tool-outputs'] as const
+
 interface TranscriptFile { path: string; mtimeMs: number; birthMs: number }
 
 /** Collect a complete bounded pool. Truncation must never make two conversations look like one. */
-async function transcripts(root: string, budget: { remaining: number }, out: TranscriptFile[], excluded?: string, depth = 0): Promise<void> {
+async function transcripts(root: string, budget: { remaining: number }, out: TranscriptFile[], excluded: readonly string[] = [], depth = 0): Promise<void> {
   for await (const entry of identityEntries(root, budget, depth === 0)) {
     const full = join(root, entry.name)
     if (entry.isDirectory()) {
-      if (entry.name === excluded) continue
+      if (excluded.includes(entry.name)) continue
       if (depth >= MAX_DEPTH) throw new IdentityReadUnavailable('the transcript depth limit was reached')
       await transcripts(full, budget, out, excluded, depth + 1)
       continue
@@ -222,7 +226,7 @@ async function fileEngineSession(
   cwd: string,
   startedAtMs: number,
   readMeta: (path: string) => Promise<TranscriptMeta | null>,
-  opts?: { bornOnly?: boolean; excludedDirectory?: string; excludedSessionId?: string },
+  opts?: { bornOnly?: boolean; excludedDirectories?: readonly string[]; excludedSessionId?: string },
 ): Promise<RepairedSession | null> {
   const since = startedAtMs - START_SLACK_MS
   const born: RepairedSession[] = []
@@ -231,7 +235,7 @@ async function fileEngineSession(
   const files: TranscriptFile[] = []
   const budget = identityScanBudget()
   for (const directory of typeof root === 'string' ? [root] : root) {
-    await transcripts(directory, budget, files, opts?.excludedDirectory)
+    await transcripts(directory, budget, files, opts?.excludedDirectories)
   }
   files.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
   for (const file of files) {
@@ -343,7 +347,7 @@ async function storeSession(
     ? await openFileSessionOf(engine, opts.pid, sessions, cwd,
       { expected: opts.expectedProcess, budget: opts.nativeBudget, excludedSessionId: opts.excludedSessionId })
     : await fileEngineSession(sessions, cwd, startedAtMs, scan,
-      { ...opts, ...(store.scan.from === 'head' ? { excludedDirectory: store.scan.childFolder } : {}) })
+      { ...opts, ...(store.scan.from === 'head' ? { excludedDirectories: [store.scan.childFolder] } : {}) })
   // The login shell may adopt another home during any native read. Its unseen candidates
   // invalidate this pool; an explicit profile remains independent of unrelated homes.
   if (repairRoots(engine, opts?.codexHome).join('\0') !== sessions.join('\0')) {
@@ -379,7 +383,8 @@ export async function findLiveSession(
       // Muse's hooks never fire, so this scan is the ONLY way a muse pane is ever bound. The tree is
       // `sessions/YYYY/MM/DD/<session-uuid>/session.jsonl` (4 levels — exactly MAX_DEPTH) and nothing in
       // the path names the project: `workspace_root` in the first record is the only link. Sub-agent
-      // files live one level deeper under `subagent/`, and must never be adopted as agents of their own.
+      // files live one level deeper under `subagent/`, and must never be adopted as agents of their own;
+      // `tool-outputs/` (Muse Code 1.4) sits there too and holds no conversation.
       return fileEngineSession(join(env.MUSE_HOME, 'sessions'), cwd, startedAtMs, async (path) => {
         if (path.includes(`${sep}subagent${sep}`)) return null
         // Muse opens sessions of its OWN under the same workspace_root — memory reminders
@@ -390,7 +395,7 @@ export async function findLiveSession(
         // being conversed in has opened a RUN.
         const identity = await museSessionIdentity(path, root => sameDir(root, cwd))
         return identity ? { ...identity, sessionId: basename(dirname(path)) } : null
-      }, { ...opts, excludedDirectory: 'subagent' })
+      }, { ...opts, excludedDirectories: MUSE_NON_TRANSCRIPT_FOLDERS })
     }
     case 'amp':
       // The transcripts scanned here are the adapter's own — Amp keeps no conversation on disk, so its
