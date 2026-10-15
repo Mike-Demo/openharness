@@ -80,6 +80,14 @@ describe('probes spawned from a worker thread', () => {
     expect(await call('echo', ['again'])).toMatchObject({ error: null, stdout: 'again\n' })
   })
 
+  it('keeps a process alive while a probe is in flight, as a child of its own would', () => {
+    // Found by CI: a signed-out `harness start` awaited a probe with nothing else holding its loop yet, and
+    // exited 0 mid-start, because the worker was unref'd even while it owed an answer.
+    const module = fileURLToPath(new URL('./offThreadExec.ts', import.meta.url))
+    const script = `import(${JSON.stringify(module)}).then(m => m.execFileOffThread('sh', ['-c', 'sleep 0.3; echo answered'], {}, (e, out) => process.stdout.write(out)))`
+    expect(execFileSync(process.execPath, ['--import', 'tsx', '-e', script], { timeout: 10_000, encoding: 'utf8' })).toBe('answered\n')
+  })
+
   it('lets a script that used it exit: the worker never keeps a process alive', () => {
     const module = fileURLToPath(new URL('./offThreadExec.ts', import.meta.url))
     const script = `import(${JSON.stringify(module)}).then(m => m.execFileOffThread('echo', ['x'], {}, () => {}))`

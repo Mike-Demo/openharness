@@ -134,6 +134,16 @@ export async function stopProbeWorkerForTest(): Promise<void> {
   await exited
 }
 
+/**
+ * The worker holds the process open exactly while it owes an answer. Found by CI (2026-10-15): unref'd
+ * throughout, a signed-out `harness start` awaited a probe while nothing else held its loop yet and exited 0
+ * in the middle of starting.
+ */
+function settle(): void {
+  if (pending.size === 0) worker?.unref()
+  else worker?.ref()
+}
+
 function failAll(reason: string): void {
   for (const [id, done] of [...pending]) {
     pending.delete(id)
@@ -147,6 +157,7 @@ function start(): Worker {
     const done = pending.get(reply.id)
     if (!done) return
     pending.delete(reply.id)
+    settle()
     const error = reply.error ? Object.assign(new Error(reply.error.message), reply.error) as ExecFileException : null
     done(error, reply.stdout, reply.stderr, { timedOut: reply.timedOut, killed: reply.killed })
   })
@@ -164,8 +175,9 @@ function start(): Worker {
       console.warn('[probes] the probe worker exited twice within a minute; probes run on the main thread from now on')
     }
   })
-  // A probe in flight never keeps the process alive: the core has its sockets for that. After the
-  // listeners, since adding a 'message' listener refs the worker again (measured on Node 23).
+  // Idle, the worker never keeps the process alive; a probe in flight does (`settle`), as a child spawned on
+  // this thread would. After the listeners, since adding a 'message' listener refs the worker again
+  // (measured on Node 23).
   started.unref()
   return started
 }
@@ -179,6 +191,7 @@ export function execFileOffThread(file: string, args: readonly string[], options
     done(error, stdout, stderr, { timedOut: outcome.timedOut })
   })
   const target = worker ?? (worker = start())
+  settle()
   target.postMessage({ id, file, args: [...args], options: { ...options, env: { ...(options.env ?? process.env) }, encoding: 'utf8' } })
   return {
     get killed() { return killed },

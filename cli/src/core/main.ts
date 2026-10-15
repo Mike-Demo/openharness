@@ -407,8 +407,6 @@ function primaryTerminalLabel(session: RegisteredSession): string {
 /** The daemon body: hooks + watcher + process discovery + backend socket. */
 async function runForeground(session: AuthSession | null): Promise<void> {
   installTimestampedConsole() // daemon-only: every harness.log line gets a wall-clock timestamp
-  // The core's probes spawn from a worker, so a terminal's keystrokes never wait behind one (lib/offThreadExec.ts).
-  enableOffThreadExec()
   const startedAt = Date.now()
   // Set when the restore pass could not run. The reconciler reads it at call time (its deps are built
   // long before this is decided) and keeps rows it would otherwise retire — see `onRemoved`.
@@ -444,6 +442,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // move (it tears down two dozen subsystems declared further down). Until it is ready, a staged update is
   // applied by `bootHandoff`, which hands the machine over without finishing start-up.
   coreLink.onUpdate((version) => { void daemonBoot.applyStagedUpdate(version) })
+  // The core's probes spawn from a worker, so a terminal's keystrokes never wait behind one (lib/offThreadExec.ts).
+  enableOffThreadExec()
   // What the master told this core, read from here: runCore took it out of process.env before anything
   // could hand it to a child (lib/harnessdEnv.ts).
   const harnessd = harnessdEnv()
