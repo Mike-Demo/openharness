@@ -58,10 +58,10 @@ jobs:
         run: pwsh pty/scripts/fetch-conpty.ps1
       - name: Rust tests
         working-directory: pty
-        run: cargo test --target ${{ matrix.target }}
+        run: cargo test --locked --target ${{ matrix.target }}
       - name: Build release
         working-directory: pty
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --target ${{ matrix.target }}
       # The host loads conpty.dll (and through it OpenConsole.exe) from its own folder, as it ships in dist/pty/
       # (cli/scripts/lib/ptyPayload.mjs): put them there so the contract suite tests what ships.
       - name: Place the ConPTY payload beside the host
