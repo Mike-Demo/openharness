@@ -3860,6 +3860,15 @@ jobs:
   (`merge-manifest.mjs`). install.sh writes `package.json {"type":"module"}` beside `cli.js`.
 - Verified: A's `currentPtyVersion` accepts only `^\d+(\.\d+)*$`, which is why the pty version is the CLI's `X.Y.Z`.
   `ptyHostBinary` looks at `runtime/pty/<v>/harness-pty.exe` first.
+- Verified (B1.8, VM, Win11 ARM64, Windows PowerShell 5.1): `set /p` under `chcp 65001` decodes a UTF-8 pointer
+  that holds a non-ASCII profile path (`Jo-umlaut CJK & co`), and PowerShell runs a `.cmd` whose path holds `&` and
+  spaces. `irm | iex` under `-ExecutionPolicy Restricted` installs, and a Restricted PowerShell runs `harness.cmd`.
+- Verified (B1.8): Windows' `tar.exe` reads its arguments in the ANSI code page, so a CJK letter in the profile path
+  reached it as `?` and it could not open the archive. `Expand-HarnessZip` now moves the archive into the
+  destination and runs tar there on an ASCII relative name (the working directory is passed in Unicode).
+- Verified (B1.8): under `cmd /c`, which every caller of `harness.cmd` goes through (Node, PowerShell, Explorer), a
+  batch line `node ... %* & exit /b` returns 0, not node's exit code. `& call exit /b %%errorlevel%%` returns node's
+  code; `set "ERRORLEVEL="` first, or a variable a person set named ERRORLEVEL becomes the exit code.
 - Verified: `breakaway.rs` exports `CREATE_BREAKAWAY_FROM_JOB`, `DETACHED_PROCESS` and `CREATE_NEW_PROCESS_GROUP` on
   every OS. `pty/tests/breakaway.rs` has the job and suspended-start helpers that `harness_launch_job.rs` copies.
 - Verified: the pty crate has no `[[bin]]` today (`src/main.rs` only), and `windows-sys` already enables `JobObjects`,
@@ -3869,15 +3878,15 @@ jobs:
   covers all three. `retireSuperseded` runs only for `followsPin` (grid), so it never runs on Windows.
 
 **Open risks**
-- `harness.cmd` reads the UTF-8 pointers under `chcp 65001`. Whether `set /p` then decodes a non-ASCII profile path
-  is proven only by B1.8's test (profile `Jo-umlaut CJK & co`). If it fails, the fallback is in B1.8 Step 4.
+- `harness uninstall` deleting `harness.cmd` while it runs (B5.9): cmd prints "The batch file cannot be found." once
+  node returns, and the exit code is 1, with every ending measured on the VM: `& exit /b`, `& call exit /b ...`, and
+  node on the last line. Ending node's line with an exit does not prevent it, so B5 must not delete the running
+  `harness.cmd` itself (for example, leave its removal to a process that outlives it).
 - `chcp`'s message differs by language. `tokens=2 delims=:.` covers "Active code page: 437" and
   "Aktive Codepage: 850."; a locale with another shape restores no code page, and the console stays at 65001 after
   `harness` runs. Record the locale if the E2E sees this.
 - The pinned active keyring must contain the key that signed v22.23.2's SHASUMS256.txt. B1.11 Step 5's real run is
   the check. If it fails, move the pin forward (commit and digest together).
-- PowerShell's quoting when it invokes a `.cmd` whose path holds `&` and spaces is exercised only by B1.8's test
-  profile. A failure there is a real finding for profiles like that.
 - Until B3, an installed Windows CLI runs from `cli\<ver>\cli.js`, not `ADAPTER_CLI_DIR\cli.js`, and the self-updater
   does not know that layout. `install.ps1`'s `harness service install` fails on win32 until B3, and is reported as a
   warning.
@@ -3906,8 +3915,10 @@ jobs:
   value, and every other reader trims.
 - Decision: `harness.cmd` finds the install from `%~dp0` and is rewritten only when its bytes change. cmd re-reads a
   running batch file from disk, so a rewrite could corrupt a `harness` that is running.
-- Decision: `harness.cmd` ends node's line with `& exit /b`. After `harness uninstall` deletes the file, cmd would
-  otherwise read the next line and print "The batch file cannot be found"; `exit /b` keeps node's exit code.
+- Decision (B1.8, replaces "ends node's line with `& exit /b`"): `harness.cmd` ends node's line with
+  `& call exit /b %%errorlevel%%`, after `set "ERRORLEVEL="`. A plain `exit /b` hands `cmd /c` 0; `call` reads the
+  code after node has run. Keeping the exit on node's line does not stop the "batch file cannot be found" message
+  when the file is deleted meanwhile (open risk above).
 - Decision: `-Manifest` is one document with the `cli`, `node` and `pty` keys, shaped as the published ones. Local
   relative paths are allowed only when the manifest is a local file. Without it, the installer reads the three
   published manifests under `$HarnessManifestBase`. That gives one local file for builds and tests, and no new
@@ -3951,7 +3962,12 @@ jobs:
   owned by B4.16. The installer simply installs no hn.
 - Decision: the characters `harness.cmd` cannot carry are listed here, and only here (no `harness help` change).
   B1.8 Step 6 pins each argument case; when a case comes back changed, its characters are added to this line.
-  Characters `harness.cmd` cannot carry: none known before B1.8 Step 6 runs.
+  Characters `harness.cmd` cannot carry (B1.8 Step 6, measured on the VM with each argument quoted as the C runtime
+  reads it, through `cmd.exe /d /s /c`): spaces, `&`, a lone `%`, `%%`, `^`, `!` and `"` arrive unchanged. Two
+  combinations do not: (1) `%name%` that names a defined environment variable is expanded by the caller's cmd
+  (`%OS%` arrives as `Windows_NT`); (2) an inner `"` ends cmd's quoting, so a `&`, `|`, `<` or `>` after it is cmd's
+  (`say "a&b"` arrives as `say "a ` and cmd runs `b\""` as a command of its own). Both are pinned in the spec. The
+  desktop and the daemon never call `harness.cmd`: nothing in `desktop/` or `cli/src` spawns it (checked at B1.8).
 
 
 ---

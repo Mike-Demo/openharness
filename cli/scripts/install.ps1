@@ -158,10 +158,25 @@ function Save-HarnessVerified {
 }
 
 function Expand-HarnessZip {
+  # Unpack the archive into the destination; the archive is moved there first and removed afterwards. tar.exe reads
+  # its arguments in the ANSI code page, so a profile path with a letter outside it (a CJK name on a Western
+  # Windows) reached it as '?' and the archive could not be opened (seen on the VM, 2026-10-16). It therefore runs
+  # inside the destination, on an ASCII relative name: a native command's working directory is PowerShell's current
+  # location, and is handed over in Unicode.
   param([string]$Tar, [string]$Archive, [string]$Destination)
   New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-  & $Tar -xf $Archive -C $Destination
-  if ($LASTEXITCODE -ne 0) { throw "Could not unpack $Archive (tar.exe exit code $LASTEXITCODE)." }
+  $name = ".harness-archive-$PID.zip"
+  $local = Join-Path $Destination $name
+  Move-Item -LiteralPath $Archive -Destination $local
+  Push-Location -LiteralPath $Destination
+  try {
+    & $Tar -xf $name
+    $code = $LASTEXITCODE
+  } finally {
+    Pop-Location
+    Remove-Item -LiteralPath $local -Force -ErrorAction SilentlyContinue
+  }
+  if ($code -ne 0) { throw "Could not unpack $Archive (tar.exe exit code $code)." }
 }
 
 function New-HarnessStaging {
@@ -209,8 +224,10 @@ function Write-HarnessPointer {
 function Add-HarnessUserPath {
   # Add the folder to the user's PATH in HKCU\Environment once. The value keeps its kind (REG_EXPAND_SZ, normally)
   # and every entry already in it. An entry is compared expanded, case-insensitively and without a trailing
-  # backslash, so %USERPROFILE%\.harness\bin counts as the same folder.
-  param([string]$Directory, [string]$SubKey = 'Environment')
+  # backslash, so %USERPROFILE%\.harness\bin counts as the same folder. With no -SubKey it is Environment, or
+  # HARNESS_INSTALL_ENV_KEY when that is set: a test that forgets -SubKey still never writes the real PATH.
+  param([string]$Directory, [string]$SubKey)
+  if (-not $SubKey) { $SubKey = if ($env:HARNESS_INSTALL_ENV_KEY) { $env:HARNESS_INSTALL_ENV_KEY } else { 'Environment' } }
   $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($SubKey)
   try {
     $current = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
@@ -244,7 +261,255 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
   }
 }
 
-# --- Install (Task B1.8) ---
+# --- Install ---
+
+# bin\harness.cmd, the `harness` command. It holds no path itself: it finds the install from its own folder
+# (%~dp0) and reads the two pointers the installer and the updater keep. Node and the CLI can therefore move on
+# without rewriting it. A running batch file is re-read from disk by cmd line by line, so it is rewritten only
+# when its bytes change. It uses no delayed expansion and no parenthesised blocks, so a `!` or `)` in a profile
+# folder's name cannot change what cmd parses. The pointers are UTF-8, so they are read in code page 65001 and
+# a non-ASCII profile name survives. The person's code page is restored before Node starts. It exits with node's
+# exit code.
+$HarnessCmd = @'
+@echo off
+rem Harness: the harness command, written by install.ps1. It runs the CLI that cli\current names on the Node
+rem that runtime\current-node names. The arguments pass through untouched; nothing here parses them.
+setlocal DisableDelayedExpansion
+rem A variable a person set named ERRORLEVEL would hide the real exit code below.
+set "ERRORLEVEL="
+set "HARNESS_ROOT=%~dp0.."
+set "HARNESS_CLI_VERSION="
+set "HARNESS_NODE="
+set "HARNESS_CODEPAGE="
+for /f "tokens=2 delims=:." %%C in ('chcp') do set "HARNESS_CODEPAGE=%%C"
+chcp 65001 >nul 2>&1
+set /p HARNESS_CLI_VERSION=<"%HARNESS_ROOT%\cli\current"
+set /p HARNESS_NODE=<"%HARNESS_ROOT%\runtime\current-node"
+if defined HARNESS_CODEPAGE chcp %HARNESS_CODEPAGE% >nul 2>&1
+if not defined HARNESS_CLI_VERSION goto broken
+if not defined HARNESS_NODE goto broken
+if not exist "%HARNESS_NODE%" goto broken
+if not exist "%HARNESS_ROOT%\cli\%HARNESS_CLI_VERSION%\cli.js" goto broken
+rem The exit is on node's line, and reads node's exit code through call, once node has run. A plain exit /b here
+rem hands cmd /c, which every caller goes through, 0 instead (seen on the VM, 2026-10-16).
+"%HARNESS_NODE%" "%HARNESS_ROOT%\cli\%HARNESS_CLI_VERSION%\cli.js" %* & call exit /b %%errorlevel%%
+:broken
+echo Harness is not installed completely. Install it again: irm https://cdn.autonomous.ai/harness/cli/install.ps1 ^| iex 1>&2
+exit /b 1
+'@
+
+function Test-HarnessPtyFolder([string]$Dir) {
+  foreach ($name in $HarnessPtyFiles) { if (-not (Test-Path -LiteralPath (Join-Path $Dir $name) -PathType Leaf)) { return $false } }
+  return $true
+}
+
+function Install-HarnessNode {
+  # runtime\node-<version>-<platform>\node.exe, from nodejs.org's own zip (node-<version>-win-<arch>\node.exe).
+  # current-node is written last, and only once node.exe has answered. The CLI, the desktop app and harness.cmd
+  # all execute what it names.
+  param([string]$Root, $Entry, [string]$Source, [string]$Tar, [string]$Platform)
+  $version = [string]$Entry.version
+  if ($version -notmatch '^v\d+\.\d+\.\d+$') { throw "The Node runtime manifest names an unexpected version '$version'." }
+  $archiveRoot = [string]$Entry.archiveRoot
+  if ($archiveRoot -notmatch '^node-v\d+\.\d+\.\d+-win-(x64|arm64)$') { throw "The Node runtime manifest names an unexpected archive folder '$archiveRoot'." }
+  $runtime = Join-Path $Root 'runtime'
+  New-Item -ItemType Directory -Force -Path $runtime | Out-Null
+  $target = Join-Path $runtime "node-$version-$Platform"
+  $node = Join-Path $target 'node.exe'
+  if (-not (Test-Path -LiteralPath $node -PathType Leaf)) {
+    Write-Host "  Downloading Node $version ($Platform)..."
+    $staging = New-HarnessStaging $runtime 'node'
+    try {
+      $archive = Join-Path $staging 'node.zip'
+      Save-HarnessVerified -Source (Resolve-HarnessRef ([string]$Entry.url) $Source) -Destination $archive -Sha256 ([string]$Entry.sha256) -Size $Entry.size
+      Expand-HarnessZip -Tar $Tar -Archive $archive -Destination $staging
+      $unpacked = Join-Path $staging $archiveRoot
+      if (-not (Test-Path -LiteralPath (Join-Path $unpacked 'node.exe') -PathType Leaf)) { throw "The Node archive has no $archiveRoot\node.exe." }
+      # A folder without node.exe is what a stopped install leaves; nothing can be running from it.
+      if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+      Move-Item -LiteralPath $unpacked -Destination $target
+    } finally { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  $said = & $node --version
+  if ($LASTEXITCODE -ne 0) { throw "The Node runtime at $node does not run on this computer." }
+  Write-HarnessPointer -Path (Join-Path $runtime 'current-node') -Value $node
+  Write-Host "  OK Node $said -> $target"
+}
+
+function Install-HarnessCli {
+  # cli\<version>\cli.js, notify.mjs and package.json, written into staging and renamed into place, then
+  # cli\current and the stable cli\notify.mjs. A version folder whose cli.js already has the manifest's digest
+  # is kept: it is that version, and a running daemon may be using it.
+  param([string]$Root, $Entry, [string]$Source)
+  $version = [string]$Entry.version
+  if ($version -notmatch $HarnessCliVersionPattern) { throw "The CLI manifest names an unexpected version '$version'." }
+  foreach ($part in 'cli', 'notify') { if (-not (Get-HarnessProperty $Entry $part)) { throw "The CLI manifest has no '$part' file." } }
+  $cliRoot = Join-Path $Root 'cli'
+  New-Item -ItemType Directory -Force -Path $cliRoot | Out-Null
+  $target = Join-Path $cliRoot $version
+  $installed = Join-Path $target 'cli.js'
+  $current = (Test-Path -LiteralPath $installed -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $target 'notify.mjs') -PathType Leaf) -and ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ieq [string]$Entry.cli.sha256)
+  if (-not $current) {
+    Write-Host "  Downloading Harness $version..."
+    $staging = New-HarnessStaging $cliRoot 'cli'
+    try {
+      Save-HarnessVerified -Source (Resolve-HarnessRef ([string]$Entry.cli.url) $Source) -Destination (Join-Path $staging 'cli.js') -Sha256 ([string]$Entry.cli.sha256) -Size $Entry.cli.size
+      Save-HarnessVerified -Source (Resolve-HarnessRef ([string]$Entry.notify.url) $Source) -Destination (Join-Path $staging 'notify.mjs') -Sha256 ([string]$Entry.notify.sha256) -Size $Entry.notify.size
+      # The bundle is an ES module, and Node decides that from the nearest package.json. install.sh writes the same file.
+      [IO.File]::WriteAllText((Join-Path $staging 'package.json'), "{""type"":""module""}`n", (New-Object Text.UTF8Encoding $false))
+      if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+      Move-Item -LiteralPath $staging -Destination $target
+    } finally { if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue } }
+  }
+  Write-HarnessPointer -Path (Join-Path $cliRoot 'current') -Value $version
+  Copy-HarnessFile -Source (Join-Path $target 'notify.mjs') -Destination (Join-Path $cliRoot 'notify.mjs')
+  Write-Host "  OK Harness $version -> $target"
+  return $version
+}
+
+function Install-HarnessPty {
+  # runtime\pty\<version>\ with the host, the launcher and ConPTY, then current-pty and bin\harness-launch.exe. A
+  # complete version folder is never replaced: a host may be running from it, and a running .exe cannot be
+  # overwritten on Windows (A's spec, host upgrade).
+  param([string]$Root, $Entry, [string]$Source, [string]$Tar)
+  $version = [string]$Entry.version
+  if ($version -notmatch $HarnessPtyVersionPattern) { throw "The terminal host manifest names an unexpected version '$version'." }
+  $ptyRoot = Join-Path $Root 'runtime\pty'
+  New-Item -ItemType Directory -Force -Path $ptyRoot | Out-Null
+  $target = Join-Path $ptyRoot $version
+  if (-not (Test-HarnessPtyFolder $target)) {
+    Write-Host "  Downloading the terminal host $version..."
+    $staging = New-HarnessStaging $ptyRoot 'pty'
+    try {
+      $archive = Join-Path $staging 'pty.zip'
+      Save-HarnessVerified -Source (Resolve-HarnessRef ([string]$Entry.url) $Source) -Destination $archive -Sha256 ([string]$Entry.sha256) -Size $Entry.size
+      $unpacked = Join-Path $staging 'payload'
+      Expand-HarnessZip -Tar $Tar -Archive $archive -Destination $unpacked
+      if (-not (Test-HarnessPtyFolder $unpacked)) { throw "The terminal host archive lacks one of $($HarnessPtyFiles -join ', ')." }
+      if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Recurse -Force }
+      Move-Item -LiteralPath $unpacked -Destination $target
+    } finally { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+  }
+  Write-HarnessPointer -Path (Join-Path $ptyRoot 'current-pty') -Value $version
+  $bin = Join-Path $Root 'bin'
+  New-Item -ItemType Directory -Force -Path $bin | Out-Null
+  Copy-HarnessFile -Source (Join-Path $target 'harness-launch.exe') -Destination (Join-Path $bin 'harness-launch.exe')
+  Write-Host "  OK terminal host $version -> $target"
+}
+
+function Write-HarnessLaunchers {
+  param([string]$Root)
+  $bin = Join-Path $Root 'bin'
+  New-Item -ItemType Directory -Force -Path $bin | Out-Null
+  $command = Join-Path $bin 'harness.cmd'
+  $text = ($HarnessCmd -replace "`r?`n", "`r`n") + "`r`n"
+  $bytes = [Text.Encoding]::ASCII.GetBytes($text)
+  $same = (Test-Path -LiteralPath $command -PathType Leaf) -and ([Convert]::ToBase64String([IO.File]::ReadAllBytes($command)) -eq [Convert]::ToBase64String($bytes))
+  if (-not $same) {
+    $temp = "$command.tmp-$PID"
+    [IO.File]::WriteAllBytes($temp, $bytes)
+    Move-HarnessFile -Source $temp -Destination $command
+  }
+  return $command
+}
+
+function Add-HarnessPath {
+  # The user's PATH for every new terminal, and this session's own PATH so `harness` works in this window now.
+  # Under `irm | iex` that is the person's own session. HARNESS_INSTALL_ENV_KEY (tests only) moves the registry
+  # write to a throwaway key and skips the broadcast.
+  param([string]$Root)
+  $bin = Join-Path $Root 'bin'
+  $subKey = 'Environment'
+  if ($env:HARNESS_INSTALL_ENV_KEY) { $subKey = $env:HARNESS_INSTALL_ENV_KEY }
+  if (Add-HarnessUserPath -Directory $bin -SubKey $subKey) {
+    if (-not $env:HARNESS_INSTALL_ENV_KEY) { Send-HarnessEnvironmentChange }
+    Write-Host "  OK added $bin to your PATH"
+  }
+  if (-not (@($env:Path -split ';') | Where-Object { $_.TrimEnd('\') -ieq $bin })) { $env:Path = "$env:Path;$bin" }
+}
+
+function Register-HarnessService {
+  # The task that starts Harness at sign-in and keeps it running (harness service install, sub-project B3). A
+  # computer whose policy forbids user tasks still has a working Harness, so a failure here is a sentence and
+  # not a failed install.
+  param([string]$Command)
+  $exit = 1
+  try {
+    & $Command service install | ForEach-Object { Write-Host "  $_" }
+    $exit = $LASTEXITCODE
+  } catch { }
+  if ($exit -ne 0) {
+    Write-Host "  Harness could not set itself to start when you sign in (harness service install exited $exit)."
+    Write-Host "  It still works: run 'harness start' to connect this computer."
+    return
+  }
+  try { & $Command status | ForEach-Object { Write-Host "  $_" } } catch { }
+}
+
+function Write-HarnessDone {
+  param([string]$Version, [switch]$Desktop, [switch]$NoService)
+  Write-Host ''
+  if ($Desktop) { Write-Host "  harness $Version installed."; return }
+  Write-Host "  OK harness $Version installed."
+  Write-Host ''
+  Write-Host '  Set this computer up with three commands, in this order:'
+  Write-Host ''
+  Write-Host '      harness login                  # 1. sign in with your Autonomous account (opens a browser)'
+  Write-Host '      harness start                  # 2. connect this computer as a machine (runs in the background)'
+  Write-Host '      harness remote-password set    # 3. let your OTHER machines reach this one (asked once, kept)'
+  Write-Host ''
+  Write-Host '  Useful:'
+  Write-Host '      harness status                 # is the daemon running, and which machine this is'
+  Write-Host '      harness --help                 # everything else'
+  Write-Host ''
+  Write-Host '  harness works in this window now. Terminals that were already open see it once they are reopened.'
+}
+
+function Install-Harness {
+  # install.sh's steps, in its order. Each step is named, so a failure says which one in a sentence a first-time
+  # user can act on. Nothing outside %USERPROFILE%\.harness and the user's PATH is ever changed.
+  param([switch]$Desktop, [string]$Manifest, [switch]$NoService)
+  $ErrorActionPreference = 'Stop'
+  $ProgressPreference = 'SilentlyContinue'   # Windows PowerShell 5.1 downloads many times slower with the bar drawn
+  $root = Join-Path $env:USERPROFILE '.harness'
+  $step = 'Checking this computer'
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $tar = Test-HarnessHost
+    $platform = Get-HarnessPlatform
+    Write-Host "Installing Harness for $platform into $root"
+
+    $step = 'Reading the release manifests'
+    $sources = Get-HarnessManifests -Manifest $Manifest -Platform $platform
+
+    $step = 'Installing the Node runtime'
+    Install-HarnessNode -Root $root -Entry $sources.node.entry -Source $sources.node.source -Tar $tar -Platform $platform
+    $step = 'Installing the Harness CLI'
+    $version = Install-HarnessCli -Root $root -Entry $sources.cli.entry -Source $sources.cli.source
+    # The terminal host is installed in -Desktop mode too: the daemon the app starts runs its terminals on it.
+    $step = 'Installing the terminal host'
+    Install-HarnessPty -Root $root -Entry $sources.pty.entry -Source $sources.pty.source -Tar $tar
+    $step = 'Writing the harness command'
+    $command = Write-HarnessLaunchers -Root $root
+    $step = 'Adding Harness to your PATH'
+    Add-HarnessPath -Root $root
+    $step = 'Checking the installed CLI'
+    $said = [string](@(& $command version) | Select-Object -First 1)
+    if ($LASTEXITCODE -ne 0 -or $said.Trim() -ne $version) { throw "harness version answered '$said' (exit code $LASTEXITCODE), not $version." }
+    if (-not $Desktop -and -not $NoService) {
+      $step = 'Starting Harness when you sign in'
+      Register-HarnessService -Command $command
+    }
+  } catch {
+    Write-Host ''
+    Write-Host "Harness could not be installed. The step that failed: $step." -ForegroundColor Red
+    Write-Host "  $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "  Nothing outside $root and your PATH was changed. Run the installer again, or send this message to Harness support."
+    return 1
+  }
+  Write-HarnessDone -Version $version -Desktop:$Desktop -NoService:$NoService
+  return 0
+}
 
 # --- Run ---
 if ($env:HARNESS_INSTALL_LIBRARY -ne '1') {
