@@ -277,5 +277,16 @@ CLI end to end once for phases 4, 5 and 9.
 1. `harness whoami`: the word agents already try (`gh`, `vercel`, `wrangler`); `status` stays the daemon's.
 2. Refusals exit 5, with the JSON `code`.
 3. `ps` for agents: up to 15 rows, ordered as in part 4.
+4. Agents start harnesses only on a signed-in account, as today. The switch is the account's: the same on every
+   machine and shown in Settings in every app. A second, local-only switch for a signed-out computer would split one
+   consent into two places, and signing in is one browser step the person also needs for their other machines and
+   the phone.
+5. Only the person turns a setting on. `harness settings <name> on` run by an agent (its shell says so: Claude Code,
+   Codex, `AI_AGENT`) is refused with exit 5 and told to ask the person; turning one off stays open to agents. An
+   agent refused a start would otherwise turn on the very setting that refused it. This is a guard against a
+   helpful agent, not a security boundary: an agent that hides what its shell says is not stopped by it.
+6. From zero: the installer ends with what an agent runs next (`harness start`, then `harness whoami`) and what only
+   the person does, first when an agent ran it; `/agents` and `llms.txt` say when to use Harness rather than running
+   `codex` yourself, and who does each install step.
 
 Open: phase 10's npm and registry steps need the owner's accounts (who and when).

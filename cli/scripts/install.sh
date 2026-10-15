@@ -855,8 +855,8 @@ print_for_agents() {
   echo "      Then: harness whoami     (whether you may start harnesses, and if not, what to ask the person)"
   echo ""
   echo "  Only the person can let an agent start harnesses: they sign in (harness login, in a browser)"
-  echo "  and turn on agents starting agents (harness settings agents-start-agents on). Ask them; do not"
-  echo "  run these yourself. How: https://harness.autonomous.ai/agents"
+  echo "  and turn on agents starting agents (harness settings agents-start-agents on, in their own"
+  echo "  terminal; an agent is refused). Ask them. How: https://harness.autonomous.ai/agents"
 }
 
 if [ "$INSTALL_MODE" = "desktop" ]; then

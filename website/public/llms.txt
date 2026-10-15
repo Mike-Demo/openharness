@@ -19,7 +19,7 @@ Step by step, for an agent (who does each):
 4. You: `harness start`. No account is needed.
 5. You: `harness whoami`. It says whether you may start harnesses, and if not, what to ask the person.
 6. The person: `harness login`, in a browser.
-7. The person: turns on "Agents can start other agents", an experiment of their Harness account (Settings ▸ Experimental, or `harness settings agents-start-agents on`), off by default. Ask them; do not turn it on yourself. Until then `harness new` refuses (exit 5) and says how: tell the person, and do the work yourself.
+7. The person: turns on "Agents can start other agents", an experiment of their Harness account (Settings ▸ Experimental, or `harness settings agents-start-agents on`), off by default. It is their consent: run by an agent, `harness settings … on` is refused (exit 5). Until then `harness new` refuses (exit 5) and says how: tell the person, and do the work yourself.
 8. You: `harness whoami` says `Can start harnesses: yes.`
 
 The commands an agent uses:

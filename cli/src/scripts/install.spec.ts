@@ -227,7 +227,7 @@ describe("scripts/install.sh: what it says once it is done", () => {
   }, 20_000);
 
   it("puts that first when an agent ran it, before the person's guide", () => {
-    for (const agent of [{ CLAUDECODE: "1" }, { CODEX_THREAD_ID: "t" }, { AI_AGENT: "cursor" }]) {
+    for (const agent of [{ CLAUDECODE: "1" }, { CODEX_THREAD_ID: "t" }, { AI_AGENT: "cursor" }] as Array<Record<string, string>>) {
       const out = runFinale("standalone", true, finaleOf, agent).stdout;
       expect(out.indexOf("Next: harness start")).toBeGreaterThan(0);
       expect(out.indexOf("Next: harness start")).toBeLessThan(out.indexOf("harness login  "));
