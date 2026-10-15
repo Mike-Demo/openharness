@@ -35,7 +35,8 @@ export type ResumeReason = typeof RESUME_REASONS[number]
 export const PRODUCT_HEALTH_METRICS = [
   ...CLI_REPORT_FAILURES.map(reason => `health_cli_report_failure_${reason}` as const),
   ...HEALTH_SOURCES.flatMap(source => RESUME_REASONS.map(reason => `request_${source}_resume_reason_${reason}` as const)),
-  ...(['cli', 'desktop'] as const).flatMap(surface => HEALTH_MEASURES.map(m => `health_${surface}_${m}` as const)),
+  // hn's (`tui`) come through its daemon's queue, under that daemon's context, never one of their own.
+  ...(['cli', 'desktop', 'tui'] as const).flatMap(surface => HEALTH_MEASURES.map(m => `health_${surface}_${m}` as const)),
   ...HEALTH_SOURCES.flatMap(source => HEALTH_ACTIONS.flatMap(action => [
     ...HEALTH_RESULTS.map(result => `request_${source}_${action}_${result}` as const),
     ...HEALTH_FAILURES.map(failure => `request_${source}_${action}_error_${failure}` as const),

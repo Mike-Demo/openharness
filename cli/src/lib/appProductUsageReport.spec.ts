@@ -19,9 +19,10 @@ it('admits the current native report and every fixed Desktop health measure', ()
   }
 })
 
+const appMetrics = PRODUCT_USAGE_UI_METRICS.filter(metric => !metric.startsWith('ui_tui_'))
 it('keeps all legacy app UI counters compatible, in bounded batches', () => {
-  for (let i = 0; i < PRODUCT_USAGE_UI_METRICS.length; i += 32) {
-    const counters = Object.fromEntries(PRODUCT_USAGE_UI_METRICS.slice(i, i + 32).map(key => [key, 1000]))
+  for (let i = 0; i < appMetrics.length; i += 32) {
+    const counters = Object.fromEntries(appMetrics.slice(i, i + 32).map(key => [key, 1000]))
     expect(isAppProductUsageReport({ ...old, counters })).toBe(true)
   }
   expect(isAppProductUsageReport({ ...native, counters: old.counters })).toBe(true)
@@ -40,6 +41,9 @@ it('refuses arbitrary context, non-Desktop attribution, daemon counts and malfor
     context({ channel: 'PRIVATE_CANARY' }), context({ release: undefined }),
     counters('turns_started'), counters('request_app_create_started'), counters('health_cli_collector_days'),
     counters('setup_desktop_sign_in_ok'), counters('ui_phone_sign_in_ok'), counters('ui_web_sign_in_ok'),
+    // hn's are the daemon's to count from hn's own frame, never an app's report.
+    counters('ui_tui_sign_in_ok'), counters('health_tui_funnel_first_work'),
+    { ...old, counters: { ui_tui_sign_in_ok: 1 } }, { ...old, counters: { health_tui_funnel_first_work: 1 } },
     counters('PRIVATE_CANARY'), counters('health_desktop_collector_days', 'PRIVATE_CANARY'),
     ...[0, -1, 1001, 1.5, NaN, Infinity].map(value => counters('health_desktop_collector_days', value)),
     { ...old, counters: { health_desktop_collector_days: 1 } },

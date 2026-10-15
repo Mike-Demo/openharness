@@ -1,4 +1,4 @@
-import { PRODUCT_FEEDBACK, PRODUCT_FEEDBACK_REASONS, PRODUCT_FEEDBACK_OUTCOMES, PRODUCT_USAGE_ACTIONS, PRODUCT_USAGE_AUTOMATIC_ACTIONS, PRODUCT_USAGE_FLOWS, PRODUCT_USAGE_SETUP_FLOWS, PRODUCT_USAGE_SURFACES, PRODUCT_USAGE_USER_OPENED_ACTIONS } from '../types/productUsage.js'
+import { PRODUCT_FEEDBACK, PRODUCT_FEEDBACK_REASONS, PRODUCT_FEEDBACK_OUTCOMES, PRODUCT_USAGE_ACTIONS, PRODUCT_USAGE_AUTOMATIC_ACTIONS, PRODUCT_USAGE_FLOWS, PRODUCT_USAGE_SETUP_FLOWS, PRODUCT_USAGE_SURFACES, PRODUCT_USAGE_UI_SURFACES, PRODUCT_USAGE_USER_OPENED_ACTIONS } from '../types/productUsage.js'
 import { DAILY_PRODUCT_METRICS } from './dailyProductUsage.js'
 
 type Row = { dayUtc: Date; metric: string; value: number }
@@ -89,7 +89,8 @@ export function dailyProductReview(rows: Row[], now: Date) {
       percent: completeMonth.counters.monthly_working_installations ? rate(monthReturn, monthDenominator) : null,
       definition: 'Participating installations with work in two consecutive complete UTC calendar months; late uploads and measurement rollout affect coverage.',
     },
-    flows: ['setup', 'ui'].flatMap(channel => PRODUCT_USAGE_SURFACES.flatMap(surface => PRODUCT_USAGE_FLOWS
+    // hn has app flows but no signed-out setup channel.
+    flows: ['setup', 'ui'].flatMap(channel => ((channel === 'setup' ? PRODUCT_USAGE_SURFACES : PRODUCT_USAGE_UI_SURFACES) as readonly string[]).flatMap(surface => PRODUCT_USAGE_FLOWS
       .filter(flow => channel !== 'setup' || (PRODUCT_USAGE_SETUP_FLOWS as readonly string[]).includes(flow))
       .map(flow => {
         const prefix = `${channel}_${surface}_${flow}_`

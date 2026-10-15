@@ -45,8 +45,9 @@ export function dailyProductHealth(rows: Row[], now: Date) {
         interpretation: 'Start and result reports can arrive separately or cross a choice/day boundary. A difference is incomplete observation, not a failed action.' }
     }),
     signals: Object.fromEntries(Object.entries(c).filter(([k]) => k.startsWith('health_') || k.startsWith('request_'))),
-    activation: ['setup_desktop', 'health_desktop'].map(prefix => ({
-      population: prefix === 'setup_desktop' ? 'Voluntary signed-out setup episodes' : 'Consented signed-in app sessions',
+    activation: ['setup_desktop', 'health_desktop', 'health_tui'].map(prefix => ({
+      population: prefix === 'setup_desktop' ? 'Voluntary signed-out setup episodes'
+        : prefix === 'health_tui' ? 'Consented signed-in hn sessions' : 'Consented signed-in app sessions',
       milestones: Object.fromEntries(['setup_seen', 'sign_in_seen', 'workspace_ready', 'first_work', 'first_response'].map(step => [step, c[`${prefix}_funnel_${step}`] ?? null])),
       waitBuckets: Object.fromEntries(['first_work', 'first_response'].flatMap(step => ['under_1m', '1m_to_5m', 'over_5m'].map(bucket => [`${step}_${bucket}`, c[`${prefix}_${step}_${bucket}`] ?? null]))),
       definition: 'Locally deduplicated episodes, not a joined per-person funnel. Stages can cross UTC days; no daily conversion ratio is inferred.',

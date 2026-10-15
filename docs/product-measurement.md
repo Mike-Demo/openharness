@@ -113,6 +113,21 @@ for all three phases. Counts expire after
 yesterday; app exit loses RAM counts. Update-stage outcomes may be lost during immediate exit;
 never delay an update to flush analytics. There is no persistent app identifier or local event log.
 
+hn reports as the `tui` surface: fixed `ui_tui_*` flow and `health_tui_*` milestone counters only,
+sent as one-way `product_observe` frames to this computer's daemon, which accepts them only from hn
+over the owner's socket, never relays them, and adds them to its own queue under the account's
+choice; those arriving before its first choice read wait in RAM (64 at most) until it is known.
+hn records only while signed in: nothing observed before sign-in is kept or sent, and a sign-in,
+sign-out or account change discards what is waiting, so its own sign-in is not observed. Flows are
+workspace and remote connections, computer linking, viewer opening (in a browser, or its link shown
+over SSH), app start, workspace ready and resume recovery, each started when it begins as on the
+Desktop; milestones are workspace ready, first work and first response, once per app session, with
+the Desktop's definitions. Milestones are not reset when the sharing choice changes within a session.
+At most 64 observations wait in hn's RAM (a full queue drops the rest and says so once per session,
+`health_tui_observation_overflow`); nothing is written to disk. Its counters travel in reports of
+their own. A backend that predates `tui` refuses only those, and the daemon then drops hn's counts
+until the next UTC day or its own restart, without counting a failed delivery.
+
 The signed-out endpoint permits only setup counters and explicit consent, rejects auth/cookie
 headers, limits bodies to 4 KiB and values to 1,000, and admits at most 120 writes/minute and four
 concurrent writes per server process. No IP-based analytics or new rate-limit identity is stored.

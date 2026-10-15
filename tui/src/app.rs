@@ -903,6 +903,8 @@ pub struct App {
     pub controls: crate::workspace_controls::State,
     pub agent_switch: crate::agent_switch::State,
     pub hardware: crate::hardware::State,
+    /// hn's product measurement, waiting for this computer's daemon (measure.rs).
+    pub measure: crate::measure::State,
 }
 
 impl App {
@@ -1132,6 +1134,7 @@ impl App {
             controls: Default::default(),
             agent_switch: Default::default(),
             hardware: Default::default(),
+            measure: Default::default(),
         }
     }
 
@@ -1371,6 +1374,7 @@ impl App {
         let attempts = self.links.get(machine_id).map(|s| s.attempts).unwrap_or(0);
         self.links.insert(machine_id.to_string(), LinkState { link: Some(link), generation: self.generation, attempts, retry_at: None });
         if let Some(machine) = self.fleet.machine_mut(machine_id) { machine.reach = Reach::Connecting }
+        crate::measure::dialling(self, machine_id);
     }
 
     /// This computer's daemon can come back under another machine id: `harness login` restarts it
@@ -1387,6 +1391,7 @@ impl App {
     /// what was read in them. Its link and harness rows go; the daemon lists them again under `id`.
     fn move_machine(&mut self, old: &str, id: &str) {
         if let Some(state) = self.links.remove(old) { if let Some(link) = state.link { link.close() } }
+        crate::measure::forget(self, old);
         self.rtt.remove(old);
         self.homes.remove(old);
         self.seen_rostered.remove(old);
@@ -1441,6 +1446,12 @@ impl App {
         // before the replacement connection has a new generation.
         let current = self.links.get(&machine_id).is_some_and(|s| s.generation == generation && s.link.is_some());
         if !current { return }
+        // A dial's answer (a link closing after it connected is not one).
+        match &event {
+            MachineEvent::Connected => crate::measure::dialled(self, &machine_id, true),
+            MachineEvent::Failed(_) => crate::measure::dialled(self, &machine_id, false),
+            _ => {}
+        }
         match event {
             MachineEvent::Connected => {
                 if let Some(state) = self.links.get_mut(&machine_id) { state.attempts = 0 }
@@ -1594,6 +1605,15 @@ impl App {
                 self.relist(machine_id);
             }
             "turn_started" | "turn_heartbeat" | "tool_start" | "tool_end" | "text_delta" | "thinking_title" => {
+                // A live turn and its text (not a re-read): first work, first response and a resume's
+                // outcome, as the desktop app reads them (measure.rs). Text is looked at only while a
+                // first response is still being watched for: nothing per delta otherwise.
+                let measured = match ty { "turn_started" => true, "text_delta" => crate::measure::watching(self), _ => false };
+                if measured && payload["replay"] != true {
+                    if let Some(agent) = payload.get("agentId").and_then(Value::as_str) {
+                        if ty == "turn_started" { crate::measure::turn_started(self, machine_id, agent) } else { crate::measure::text(self, machine_id, agent) }
+                    }
+                }
                 if let Some(agent) = self.fleet.event_agent(machine_id, &payload) {
                     let now = fleet::now_ms();
                     // A turn begun (or found running): the state's clock starts, what it says anew.
@@ -1637,6 +1657,8 @@ impl App {
                 }
             }
             "turn_ended" => {
+                // Its turn is no longer live: later text is not the first response (measure.rs).
+                if let Some(agent) = payload.get("agentId").and_then(Value::as_str) { crate::measure::turn_ended(self, machine_id, agent) }
                 let visible = self.visible_agents();
                 let looking = self.focused().filter(|_| self.terminal_focused).and_then(|f| self.panes.get(&f)).map(|p| (p.machine_id.clone(), p.agent_id.clone()));
                 let opened: Vec<(String, String)> = self.panes.values().map(|p| (p.machine_id.clone(), p.agent_id.clone())).collect();
@@ -2132,10 +2154,19 @@ impl App {
         let epoch = self.account_epoch;
         let generation = link.generation;
         let expected_agent = agent_id.clone();
+        // resume_recovery is ok at the harness's next live turn (measure.rs), as the desktop app counts it.
+        crate::measure::resuming(self, &machine_id, &agent_id);
         self.spawn(async move { link.rpc("agent_resume", json!({ "agentId": agent_id }), Duration::from_secs(120)).await }, move |app, reply| {
             if let Some(visit) = visit { crate::shell_context::resumed(app, &visit); }
             if app.account_epoch != epoch || app.connection_generation(&machine_id) != Some(generation)
                 || app.panes.get(&pane_id).is_none_or(|p| p.agent_id != expected_agent || p.machine_id != machine_id || p.open_token != token) { return }
+            // Failed only when the daemon refused it, as the desktop app reads a refusal. Its internal
+            // errors, no answer in time and a lost connection leave the outcome to the next turn.
+            let refused = match &reply {
+                Err(e) => !matches!(e.code.as_str(), "INTERNAL" | "CREATION_STORAGE_FAILED" | "RESTART_FAILED" | "TIMEOUT" | "DISCONNECTED"),
+                Ok(r) => r["state"] == "failed" && r.pointer("/failure/code").is_some_and(Value::is_string),
+            };
+            if refused { crate::measure::resume_failed(app, &machine_id, &expected_agent) }
             if let Some(pane) = app.panes.get_mut(&pane_id) { pane.opening = false; }
             match reply {
             Ok(_) => { app.relist(&machine_id); app.open_stream(pane_id, true) }
@@ -5675,6 +5706,7 @@ impl App {
     /// other harnesses go with the account.
     pub(crate) fn follow_account(&mut self, signed_in: bool) {
         let was = std::mem::replace(&mut self.signed_in, signed_in);
+        if was != signed_in { crate::measure::account_changed(self) }
         if self.desk_mode != DeskMode::Account || (was == signed_in && self.session_desk == signed_in) { return }
         if signed_in { self.enter_desk() } else { self.leave_desk() }
     }
@@ -6387,6 +6419,7 @@ impl App {
         crate::shell_context::tick(self);
         crate::agent_switch::tick(self);
         crate::hardware::tick(self);
+        crate::measure::tick(self);
         self.maybe_start_shell();
         self.release_waiting();
         self.release_cli();
@@ -6777,6 +6810,30 @@ mod recovery_tests {
         app.panes.get_mut(&3).unwrap().stream = None;
         app.shells.insert(("test-peer".into(), "agent-2".into()));
         app
+    }
+
+    /// Another account on this computer with no sign-out between (hn sees only the daemon's new
+    /// identity): none of the first account's measurement — its flows under way, its milestones,
+    /// what waits to be sent — is the second's (measure.rs).
+    #[tokio::test]
+    async fn an_account_switch_without_a_sign_out_ends_the_last_accounts_measurement() {
+        let (sink, _) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(19813, sink, (80, 24));
+        app.adopt_daemon_identity(&json!({"machineId":"account-a","computerId":"computer","signedIn":true}));
+        app.follow_account(true);
+        let flow = crate::measure::begin(&mut app, "computer_link");
+        crate::measure::turn_started(&mut app, "account-a", "a1");
+        app.adopt_daemon_identity(&json!({"machineId":"account-b","computerId":"computer","signedIn":true}));
+        app.follow_account(true);
+        flow.finish(&mut app, crate::measure::Outcome::Ok);
+        app.fleet.local_id = "account-b".into();
+        app.fleet.machines.push(Machine { shared: false, id: "account-b".into(), name: "b".into(), local: true, status: "running".into(), reach: Reach::Ready });
+        crate::measure::turn_started(&mut app, "account-b", "b1");
+        crate::measure::tick(&mut app);
+        let sent = &app.measure.sent;
+        assert!(!sent.iter().any(|v| v["flow"] == "computer_link"), "A's flow, start or outcome: {sent:?}");
+        assert_eq!(sent.iter().filter(|v| v["measure"] == "funnel_first_work").count(), 1, "B's own first work only: {sent:?}");
+        assert_eq!(sent.iter().filter(|v| **v == json!({ "flow": "workspace_ready" })).count(), 1, "B's own workspace_ready: {sent:?}");
     }
 
     /// `harness login` restarts this computer's daemon under the account's machine id. hn follows

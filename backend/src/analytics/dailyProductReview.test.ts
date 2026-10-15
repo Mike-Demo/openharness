@@ -56,6 +56,17 @@ it('keeps feedback denominators and setup coverage separate from daemon particip
   expect(r.flows.find(f => f.channel === 'setup' && f.surface === 'desktop' && f.flow === 'sign_in')).toMatchObject({ started: 5, unmatchedStarts: 3 })
   expect(r.flows.find(f => f.channel === 'ui' && f.flow === 'update_stage')?.started).toBeNull()
 })
+it('shows hn\'s app flows beside the other apps, with no signed-out setup row for it', () => {
+  // hn counts a start when the flow begins and its outcome when it ends, as the Desktop does: one still
+  // open (or ended under another account) is an unmatched start.
+  const r = dailyProductReview([
+    row('2026-10-12', 'ui_tui_workspace_connect_started', 4), row('2026-10-12', 'ui_tui_workspace_connect_ok', 3),
+    row('2026-10-12', 'ui_tui_workspace_connect_under_1s', 3),
+  ], new Date('2026-10-13'))
+  expect(r.flows.find(f => f.channel === 'ui' && f.surface === 'tui' && f.flow === 'workspace_connect'))
+    .toMatchObject({ started: 4, unmatchedStarts: 1, outcomes: { ok: 3, failed: 0 }, durationBuckets: { under_1s: 3, over_1m: 0 } })
+  expect(r.flows.some(f => f.channel === 'setup' && f.surface === 'tui')).toBe(false)
+})
 it('uses complete calendar months rather than adding daily installations into MAU', () => {
   const r = dailyProductReview([
     row('2026-08-12', 'monthly_working_installations', 10), row('2026-09-12', 'monthly_working_installations', 8),

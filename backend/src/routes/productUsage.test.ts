@@ -104,7 +104,9 @@ it('accepts only explicitly enabled setup counts without credentials or account 
   expect(methods.productUsageChoice).not.toHaveBeenCalled()
   expect(methods.ingestProductUsage).not.toHaveBeenCalled()
   for (const payload of [{ ...setup, consent: false }, { ...setup, account: 'PRIVATE_CANARY' },
-    { ...setup, counters: { turns_started: 1 } }, { ...setup, counters: { setup_desktop_sign_in_started: 1001 } }]) {
+    { ...setup, counters: { turns_started: 1 } }, { ...setup, counters: { setup_desktop_sign_in_started: 1001 } },
+    // hn has no signed-out channel: it counts only through its signed-in daemon.
+    { ...setup, counters: { setup_tui_sign_in_started: 1 } }, { ...setup, counters: { ui_tui_sign_in_started: 1 } }]) {
     const response = await sendSetup(payload)
     expect(response.statusCode).toBe(400)
     expect(response.body).not.toContain('PRIVATE_CANARY')

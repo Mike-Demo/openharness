@@ -42,6 +42,8 @@ export interface LocalWsBackend {
   handleLocalBinary: (connId: string, frame: TerminalBinaryClear) => Promise<void>
   /** The agent this window has focused, or null — which of its terminals gets the short output window. */
   setLocalTerminalFocus?: (connId: string, agentId: string | null) => void
+  /** hn's `product_observe`, from a connection on this computer's own socket bound to this machine. */
+  observeProduct?: (connId: string, payload: unknown) => void
 }
 
 export interface LocalWsServerOptions {
@@ -509,6 +511,15 @@ export function attachLocalWsServer(server: http.Server, options: LocalWsServerO
           if (!relay && boundMachineId === options.machineId && typeof p?.operationId === 'string'
             && /^[a-f0-9]{64}$/.test(p.operationId) && typeof p.agentId === 'string' && p.agentId.length > 0 && p.agentId.length <= 200) {
             options.onDevicePrepareOpened?.(p.operationId, p.agentId)
+          }
+          return
+        }
+        // hn's own measurement, for this computer's product-usage queue alone: one-way, never answered,
+        // never relayed to another machine or handed to the backend socket's dispatch. Over the owner's
+        // socket only, from a window (not a tool) bound to this machine; the backend checks it is hn's.
+        if (parsed?.type === 'product_observe') {
+          if (trusted && !tool && !relay && boundMachineId === options.machineId && windowSinks.has(connId)) {
+            options.backend.observeProduct?.(connId, parsed.payload)
           }
           return
         }

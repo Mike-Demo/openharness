@@ -773,6 +773,7 @@ pub fn link_connect(app: &mut App, machine: String, name: String, password: Stri
     if !name.is_empty() && name != machine { args.push(format!("--name={name}")) }
     note(app, format!("Linking {name}… it continues if you close this"));
     again(app);
+    let measured = crate::measure::begin(app, "computer_link");
     ask(app, Req::Cli { args, stdin: Some(password) }, Some(link_line), move |app, reply| {
         let result = match &reply {
             Reply::Cli { out, err, .. } => match last_json(out) {
@@ -783,6 +784,7 @@ pub fn link_connect(app: &mut App, machine: String, name: String, password: Stri
             },
             _ => Err("harness link connect failed".into()),
         };
+        measured.finish(app, if result.is_ok() { crate::measure::Outcome::Ok } else { crate::measure::Outcome::Failed });
         match &result {
             Ok(_) => {
                 note(app, format!("Linked {name}"));
