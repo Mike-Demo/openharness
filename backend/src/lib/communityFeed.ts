@@ -1,7 +1,7 @@
-import { likeCounts } from './communityLikes.js'
+import { likeCounts, likesSince } from './communityLikes.js'
 import { prisma } from './prisma.js'
 
-export const feedSorts = ['newest', 'popular'] as const
+export const feedSorts = ['newest', 'trending', 'popular'] as const
 export type FeedSort = typeof feedSorts[number]
 
 /** What a feed card reads: never the files or the cover's bytes. */
@@ -62,9 +62,38 @@ async function popularPage(where: FeedWhere, autonomousEnv: string, starters: re
   return { rows: found.map(({ likeCount: _likeCount, ...row }) => row), order }
 }
 
+const trendingWindowMs = 7 * 24 * 60 * 60 * 1000
+
 /**
- * A feed page in the reader's order, and the cursor for the next one (null on the last). A popular
- * page also returns `order`: its publications' and [starters]' ids as the reader should see them.
+ * One page most liked this week first (publications newest first among equals, then starters with as
+ * many in the Hub's order), then every other publication newest first, then the starters nobody liked
+ * this week. The week's likes are few, so they are ranked here; the rest is the newest feed's keyset.
+ * A cursor that moved since (a publication liked this week after it was read) may repeat a few cards.
+ */
+async function trendingPage(where: FeedWhere, autonomousEnv: string, starters: readonly string[], cursor?: string) {
+  const recent = await likesSince(autonomousEnv, new Date(Date.now() - trendingWindowMs))
+  const liked = await prisma.communityHarness.findMany({ where: { AND: [where, { id: { in: [...recent.keys()] } }] }, select: feedSelect, orderBy: newest })
+  // Array sort is stable: publications stay newest first, ahead of the starters, which keep the Hub's order.
+  const hot = [...liked.map(row => row.id), ...starters.filter(id => recent.has(id))].sort((a, b) => recent.get(b)! - recent.get(a)!)
+  const cold = starters.filter(id => !recent.has(id))
+  const hotAt = cursor ? hot.indexOf(cursor) : -1, coldAt = cursor ? cold.indexOf(cursor) : -1
+  const order = !cursor || hotAt >= 0 ? hot.slice(hotAt + 1) : []
+  let tail: typeof liked = []
+  if (coldAt < 0 && order.length <= feedPageSize) {
+    const after = cursor && hotAt < 0 ? cursor : undefined
+    tail = await prisma.communityHarness.findMany({
+      where: { AND: [where, { id: { notIn: liked.map(row => row.id) } }] }, select: feedSelect, orderBy: newest,
+      take: feedPageSize + 1 - order.length, ...(after ? { cursor: { id: after }, skip: 1 } : {}),
+    })
+    order.push(...tail.map(row => row.id))
+  }
+  order.push(...cold.slice(coldAt + 1))
+  return { rows: [...liked, ...tail], order: order.slice(0, feedPageSize + 1) }
+}
+
+/**
+ * A feed page in the reader's order, and the cursor for the next one (null on the last). A popular or
+ * trending page also returns `order`: its publications' and [starters]' ids as the reader should see them.
  */
 export async function feedPage(where: FeedWhere, autonomousEnv: string, sort: FeedSort, starters: readonly string[], cursor?: string) {
   if (sort === 'newest') {
@@ -72,7 +101,7 @@ export async function feedPage(where: FeedWhere, autonomousEnv: string, sort: Fe
     const page = rows.slice(0, feedPageSize)
     return { page, nextCursor: rows.length > feedPageSize ? page[page.length - 1].id : null }
   }
-  const { rows, order } = await popularPage(where, autonomousEnv, starters, cursor)
+  const { rows, order } = sort === 'popular' ? await popularPage(where, autonomousEnv, starters, cursor) : await trendingPage(where, autonomousEnv, starters, cursor)
   const shown = order.slice(0, feedPageSize)
   const byId = new Map(rows.map(row => [row.id, row]))
   return {

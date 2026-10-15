@@ -16,6 +16,7 @@ const db = vi.hoisted(() => {
         if ('notIn' in filter) return !(filter.notIn as unknown[]).includes(row[key])
         if ('gt' in filter) return (row[key] as Date) > (filter.gt as Date)
         if ('lt' in filter) return (row[key] as number | Date) < (filter.lt as number | Date)
+        if ('gte' in filter) return (row[key] as number | Date) >= (filter.gte as number | Date)
         if ('isSet' in filter || 'not' in filter) return (!filter.isSet || row[key] !== undefined) && (!('not' in filter) || row[key] !== filter.not)
         return matches(row, filter)
       }
@@ -414,6 +415,31 @@ describe('persistent social actions', () => {
     expect(seen.map(count)).toEqual(seen.map(count).slice().sort((a, b) => b - a))
     // Among equal likes the publications come first: the starter with two follows every publication with two.
     expect(seen.indexOf('starter-orbit')).toBe(seen.filter(id => count(id) >= 2).length - 1)
+  })
+  it('trends by this week’s likes, then every other publication newest first, then the unliked starters', async () => {
+    const [old, quiet, liked, likedMore] = [await publish('alice', { ...sample, title: 'Old favourite' }), await publish('alice', { ...sample, title: 'Quiet' }), await publish('bob', { ...sample, title: 'Liked' }), await publish('bob', { ...sample, title: 'Liked more' })]
+    db.communityHarness.rows.forEach((row, index) => { row.createdAt = new Date(Date.now() + index * 1000) })
+    const like = (harnessId: string, userId: string, daysAgo = 0) => db.communityLike.rows.push({ id: crypto.randomUUID(), autonomousEnv: 'prod', harnessId, userId, createdAt: new Date(Date.now() - daysAgo * 86_400_000) })
+    for (const user of ['a', 'b', 'c', 'd']) like(old, user, 30)
+    like(liked, 'a'); like(likedMore, 'a'); like(likedMore, 'b'); like('starter-orbit', 'a')
+    const cold = [...communityStarters].filter(id => id !== 'starter-orbit')
+    const first = (await call('GET', 'harnesses?sort=trending')).json().data
+    expect(first.order).toEqual([likedMore, liked, 'starter-orbit', quiet, old, ...cold])
+    expect(first.harnesses.map((row: Row) => row.id)).toEqual([likedMore, liked, quiet, old])
+    expect((await call('GET', `harnesses?sort=trending&cursor=${cold[3]}`)).json().data.order).toEqual(cold.slice(4))
+  })
+  it('pages a trending feed with every publication and starter once', async () => {
+    for (let i = 0; i < 45; i++) db.communityHarness.rows.push({ ...sample, id: crypto.randomUUID(), createdAt: new Date(Date.now() - i * 1000), autonomousEnv: 'prod', authorId: 'alice', authorName: 'Alice', deletedAt: null, credits: [] })
+    for (const row of db.communityHarness.rows.slice(10, 13)) db.communityLike.rows.push({ id: crypto.randomUUID(), autonomousEnv: 'prod', harnessId: row.id, userId: 'bob', createdAt: new Date() })
+    const seen: string[] = []
+    let cursor: string | null = null
+    do {
+      const page: { order: string[]; nextCursor: string | null } = (await call('GET', `harnesses?sort=trending${cursor ? `&cursor=${cursor}` : ''}`)).json().data
+      seen.push(...page.order); cursor = page.nextCursor
+    } while (cursor)
+    expect(seen).toHaveLength(45 + communityStarters.size)
+    expect(new Set(seen).size).toBe(seen.length)
+    expect(seen.slice(0, 3)).toEqual(db.communityHarness.rows.slice(10, 13).map(row => row.id))
   })
   it('counts and lists a harness’s public forks, and every comment beyond the latest hundred', async () => {
     const id = await publish('alice')

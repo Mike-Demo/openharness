@@ -4,7 +4,8 @@ import type { HarnessSummary } from './types';
 /** The longest feed search the backend accepts (`q` on GET /api/community/harnesses). */
 export const searchMaxChars = 80;
 
-export const feedSorts = ['newest', 'popular'] as const;
+/** As the backend's `feedSorts`; trending ranks this week's likes, popular every like. */
+export const feedSorts = ['newest', 'trending', 'popular'] as const;
 export type FeedSort = typeof feedSorts[number];
 
 /** How a reader narrows a feed: a search, one category and an order. Kept in the page's address. */

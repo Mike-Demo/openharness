@@ -32,3 +32,9 @@ export async function likeCounts(ids: readonly string[], autonomousEnv: string):
   const rows = await prisma.communityLike.groupBy({ by: ['harnessId'], where: { autonomousEnv, harnessId: { in: [...ids] } }, _count: { _all: true } })
   return new Map(rows.map(row => [row.harnessId, row._count._all]))
 }
+
+/** The likes each harness got since [since]: only those are read, so a week of them stays small. */
+export async function likesSince(autonomousEnv: string, since: Date): Promise<Map<string, number>> {
+  const rows = await prisma.communityLike.groupBy({ by: ['harnessId'], where: { autonomousEnv, createdAt: { gte: since } }, _count: { _all: true } })
+  return new Map(rows.map(row => [row.harnessId, row._count._all]))
+}

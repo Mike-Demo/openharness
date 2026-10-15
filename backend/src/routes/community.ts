@@ -172,7 +172,7 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
     following: z.enum(['true', 'false']).optional(), mine: z.enum(['true', 'false']).optional(),
     q: z.string().trim().min(1).max(searchMaxChars).optional(), category: z.enum(communityCategories).optional(),
     sort: z.enum(feedSorts).optional(), forkedFrom: identifier.optional(), author: identifier.optional(),
-  }).strict().refine(query => query.sort === 'popular' || !communityStarters.has(query.cursor ?? ''), 'Only a popular feed pages past a starter.')
+  }).strict().refine(query => query.sort === 'popular' || query.sort === 'trending' || !communityStarters.has(query.cursor ?? ''), 'Only a popular or trending feed pages past a starter.')
     .refine(query => !query.author || (query.mine !== 'true' && query.following !== 'true'), 'A creator’s feed is neither yours nor Following.')
   app.get<{ Querystring: z.infer<typeof feedQuery> }>('/api/community/harnesses', { preHandler: validateQuery(feedQuery) }, async (req, reply) => {
     const autonomousEnv = environment(req)
