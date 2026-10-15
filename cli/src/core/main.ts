@@ -44,6 +44,7 @@ import { isLocalOnly, withoutUpdate } from '../lib/cardUpdate.js'
 import { elapsedSecondsOf } from '../lib/footerTimer.js'
 import { sqlitePreflightMessage } from '../lib/sqliteAvailability.js'
 import { warmLoginShellEnvironment } from '../lib/loginShellEnv.js'
+import { enableOffThreadExec } from '../lib/offThreadExec.js'
 import type { AppSwarms } from '../cable/cableSession.js'
 import type { UnreadNotification } from '../lib/notificationRead.js'
 import { registry, projectDisplayName, validTranscriptPath, type RegisteredSession } from '../lib/registry.js'
@@ -406,6 +407,8 @@ function primaryTerminalLabel(session: RegisteredSession): string {
 /** The daemon body: hooks + watcher + process discovery + backend socket. */
 async function runForeground(session: AuthSession | null): Promise<void> {
   installTimestampedConsole() // daemon-only: every harness.log line gets a wall-clock timestamp
+  // The core's probes spawn from a worker, so a terminal's keystrokes never wait behind one (lib/offThreadExec.ts).
+  enableOffThreadExec()
   const startedAt = Date.now()
   // Set when the restore pass could not run. The reconciler reads it at call time (its deps are built
   // long before this is decided) and keeps rows it would otherwise retire — see `onRemoved`.

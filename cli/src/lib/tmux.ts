@@ -22,6 +22,7 @@ import { processStartTicks } from './processLiveness.js'
 import { nativeProcessImages } from './nativeProcessImages.js'
 import { neutralizePasteControls } from './pasteText.js'
 import { patientDeadline, patientExec } from './patientExec.js'
+import { probeExecFile } from './offThreadExec.js'
 import { inTmuxRoom } from './tmuxControlGate.js'
 import { tmuxFeatures, type TmuxFeatures } from './tmuxVersion.js'
 import { processIdentityOf, sameProcessIdentity } from './terminalRuntime.js'
@@ -382,7 +383,7 @@ function execText(command: string, args: string[], timeout: number): Promise<str
     // timeout, for a deadline shared across calls: `killed` without an error is that timeout throwing
     // away an answer that had arrived (patientExec.ts), so it is no answer, not an empty one.
     let child: { killed?: boolean } | undefined
-    child = execFile(command, args, { timeout }, (err, stdout) => resolve((err && !stdout) || child?.killed ? null : stdout))
+    child = probeExecFile(execFile)(command, args, { timeout }, (err, stdout) => resolve((err && !stdout) || child?.killed ? null : stdout))
   })
 }
 
