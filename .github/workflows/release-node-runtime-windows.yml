@@ -56,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           curl -fsSL "https://storage.googleapis.com/${GCS_BUCKET}/${METADATA_PATH}" -o manifest.json
-          node -e '
+          node --input-type=commonjs - <<'JS'
             const fs = require("node:fs"), crypto = require("node:crypto")
             const main = async () => {
               const node = JSON.parse(fs.readFileSync("manifest.json", "utf8")).node || {}
@@ -69,4 +69,4 @@ jobs:
               }
             }
             main().catch((error) => { console.error(`::error::${error.message}`); process.exit(1) })
-          '
+          JS
