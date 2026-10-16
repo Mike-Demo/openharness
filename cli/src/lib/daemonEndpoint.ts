@@ -1,10 +1,11 @@
 import { request } from 'node:http'
 import { lstatSync } from 'node:fs'
 import { localSocketPath } from './localSocket.js'
-import { daemonRecordPath, readDaemonRecord, writeDaemonRecord, type DaemonPipeRecord } from './daemonRecord.js'
-import { pidAlive, recordedProcessDead, type HostLiveness } from './processProof.js'
-import { readDaemonToken } from './windows/pipeAuth.js'
-import { pipeAbsent, pipeRequest, type PipeTarget } from './windows/pipeClient.js'
+import { readDaemonRecord, writeDaemonRecord, type DaemonPipeRecord } from './daemonRecord.js'
+import { daemonPipe, type LocalDaemonOptions } from './windows/daemonPipe.js'
+import { pipeAbsent, pipeRequest } from './windows/pipeClient.js'
+
+export { daemonPipe, type LocalDaemonOptions } from './windows/daemonPipe.js'
 
 // The configured port names the private socket. TCP may use another port when a different OS
 // user's daemon already holds that number; remember it in THIS user's data directory (lib/daemonRecord.ts).
@@ -15,36 +16,6 @@ export function savedDaemonPort(dataDir: string, configuredPort: number): number
 /** [pipe]: on Windows, the daemon's pipe and the core's pid, which a client cannot derive. */
 export function saveDaemonPort(dataDir: string, configuredPort: number, port: number, pipe?: DaemonPipeRecord): void {
   writeDaemonRecord(dataDir, configuredPort, port, pipe)
-}
-
-/**
- * How the daemon of a Windows record is proven gone before its pipe is dialled: its pid, and the process table
- * harness-pty reads (A's proof, processProof.ts). The table is loaded only when asked, because it brings the pty
- * host's launcher, which no Unix client needs.
- */
-const WINDOWS_LIVENESS: HostLiveness = {
-  alive: pidAlive,
-  rows: async () => (await import('./windows/processTable.js')).windowsProcessRows(null),
-}
-
-/**
- * The daemon's pipe and token for this data folder on Windows, or null when there is nothing to dial: no record of
- * a pipe and pid, no token, or the recorded process is proven gone. Once that process is gone, any user can create
- * a pipe of the recorded name.
- */
-export async function daemonPipe(dataDir: string, configuredPort: number, liveness: HostLiveness = WINDOWS_LIVENESS): Promise<PipeTarget | null> {
-  const record = readDaemonRecord(dataDir, configuredPort)
-  if (!record?.pipe || !record.pid) return null
-  const token = readDaemonToken(dataDir)
-  if (!token) return null
-  if (await recordedProcessDead(daemonRecordPath(dataDir, configuredPort), record.pid, liveness)) return null
-  return { pipe: record.pipe, token }
-}
-
-export interface LocalDaemonOptions {
-  platform?: NodeJS.Platform
-  /** The daemon's pipe on Windows; `daemonPipe` by default. */
-  pipe?: (dataDir: string, configuredPort: number) => Promise<PipeTarget | null>
 }
 
 function statusObject(statusCode: number | undefined, text: string): Record<string, unknown> | null {

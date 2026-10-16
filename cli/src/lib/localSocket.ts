@@ -19,8 +19,8 @@ import type { Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
 import { chmodSync, linkSync, lstatSync, renameSync, unlinkSync, type Stats } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { daemonPipe, type LocalDaemonOptions } from './daemonEndpoint.js'
 import { readDaemonRecord } from './daemonRecord.js'
+import { daemonPipe, type LocalDaemonOptions } from './windows/daemonPipe.js'
 import { checkPipeAuth, newPipePath, NonceWindow, PIPE_AUTH_HEADER, PIPE_PROOF_HEADER, pipeIdOf, pipeProofValue } from './windows/pipeAuth.js'
 import { pipeAbsent, pipeRequest, PipeUnproven } from './windows/pipeClient.js'
 
@@ -328,7 +328,7 @@ const SERVED_FOLDER_DEFAULTS: ServedFolderDeps = {
 
 /**
  * What `refuseServedDataFolder` asks with for the daemon of [dataDir] on [configuredPort]. On Windows it asks the
- * recorded pipe with that folder's token (daemonEndpoint.ts `daemonPipe`). Nothing serves it when there is no token
+ * recorded pipe with that folder's token (windows/daemonPipe.ts `daemonPipe`). Nothing serves it when there is no token
  * (the core makes the token before it listens), no record of a pipe and pid, or a recorded process proven gone: that
  * pipe is never dialled, so whatever took a dead daemon's name and hangs cannot keep every start down. Elsewhere it
  * asks as it always has.

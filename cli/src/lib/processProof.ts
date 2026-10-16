@@ -1,7 +1,7 @@
 /**
  * Whether the process a file names is proven gone, before anything dials the endpoint the file names. Used for the
  * pty host's discovery file (ptyHost/launch.ts `discoveredHostDead`) and the daemon's record on Windows
- * (daemonEndpoint.ts `daemonPipe`). Once its process is gone, any user can create a pipe of the name the file gives.
+ * (windows/daemonPipe.ts `daemonPipe`). Once its process is gone, any user can create a pipe of the name the file gives.
  */
 import { statSync } from 'node:fs'
 
@@ -20,7 +20,7 @@ export interface HostProcessRow { pid: number; executable: string; startMarker: 
 
 /**
  * How a recorded process is proven dead: whether its pid runs, and, when given, the process table. Callers pass the
- * table on Windows only (ptyHostBackend.ts, daemonEndpoint.ts).
+ * table on Windows only (ptyHostBackend.ts, windows/daemonPipe.ts).
  */
 export interface HostLiveness {
   alive(pid: number): boolean

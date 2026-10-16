@@ -9,7 +9,7 @@ import {
   askDataFolderServer, isLocalSocketName, isTrustedLocal, listenLocalSocket, localSocketListenPath, localSocketName, localSocketPath, ORPHAN_STILL_SERVING,
   ORPHAN_WAIT_MS, refuseServedDataFolder, servedFolderDeps, unixSocketPath, type DataFolderServer, type LocalSocketServer, type ServedFolderDeps,
 } from './localSocket.js'
-import { daemonPipe } from './daemonEndpoint.js'
+import { daemonPipe } from './windows/daemonPipe.js'
 import { writeDaemonRecord } from './daemonRecord.js'
 import { ensureDaemonToken, newPipePath } from './windows/pipeAuth.js'
 

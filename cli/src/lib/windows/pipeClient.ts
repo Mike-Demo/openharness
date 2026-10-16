@@ -1,7 +1,7 @@
 /**
  * One HTTP request to the daemon's Windows pipe (lib/localSocket.ts `listenAuthenticated`). It sends a fresh auth,
  * and takes the answer only when it proves the token. The request has reached whatever listens by then. That is
- * why callers first check that the daemon in the record is not proven gone (daemonEndpoint.ts `daemonPipe`).
+ * why callers first check that the daemon in the record is not proven gone (daemonPipe.ts `daemonPipe`).
  */
 import http, { type IncomingHttpHeaders } from 'node:http'
 import { newPipeNonce, PIPE_AUTH_HEADER, pipeAuthValue, pipeProven } from './pipeAuth.js'
