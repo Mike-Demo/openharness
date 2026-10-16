@@ -61,7 +61,7 @@ export function unixSocketPath(dataDir: string, port: number, platform: NodeJS.P
  * A caller that needs a filesystem socket (`ws+unix://`, the services) uses unixSocketPath.
  */
 export function localSocketPath(dataDir: string, port: number, platform: NodeJS.Platform = process.platform): string | null {
-  return platform === 'win32' ? readDaemonRecord(dataDir, port)?.pipe ?? null : unixSocketPath(dataDir, port, platform)
+  return platform === 'win32' ? readDaemonRecord(dataDir, port, platform)?.pipe ?? null : unixSocketPath(dataDir, port, platform)
 }
 
 /** Where a daemon starting on `port` listens: its Unix socket, or on Windows a pipe of a new random name. */

@@ -1,5 +1,6 @@
 import { createServer } from 'node:http'
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { legacyDaemonStatus, localDaemonStatus, saveDaemonPort, savedDaemonPort } from './daemonEndpoint.js'
@@ -71,7 +72,9 @@ describe('per-user daemon discovery', () => {
   })
 
   it('records the Windows pipe and the core\'s pid beside the port, and reads only a pipe name back', () => {
-    const dir = directory()
+    // os.tmpdir(), not directory()'s /tmp: this case runs on Windows too.
+    const dir = mkdtempSync(join(tmpdir(), 'hn-record-'))
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
     const pipe = `\\\\.\\pipe\\harness-${'a'.repeat(32)}`
     saveDaemonPort(dir, 18473, 24567, { pipe, pid: 4242 })
     expect(JSON.parse(readFileSync(join(dir, 'daemon-18473.json'), 'utf8'))).toEqual({ port: 24567, pipe, pid: 4242 })
@@ -82,6 +85,19 @@ describe('per-user daemon discovery', () => {
     saveDaemonPort(dir, 18473, 24568)
     expect(readDaemonRecord(dir, 18473)).toEqual({ port: 24568, pipe: null, pid: null })
     expect(readDaemonRecord(dir, 18474)).toBeNull()
+  })
+
+  it('on Windows, reads back only a local Harness pipe, never a file or another computer\'s pipe', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hn-record-'))
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
+    const id = 'b'.repeat(32)
+    const pipe = `\\\\.\\pipe\\harness-${id}`
+    saveDaemonPort(dir, 18473, 24567, { pipe, pid: 4242 })
+    expect(readDaemonRecord(dir, 18473, 'win32')).toEqual({ port: 24567, pipe, pid: 4242 })
+    for (const other of [`C:\\x\\harness-${id}`, `\\\\host\\pipe\\harness-${id}`, `\\\\.\\pipe\\evilharness-${id}`]) {
+      writeFileSync(join(dir, 'daemon-18473.json'), JSON.stringify({ port: 24567, pipe: other, pid: 4242 }))
+      expect(readDaemonRecord(dir, 18473, 'win32')).toEqual({ port: 24567, pipe: null, pid: 4242 })
+    }
   })
 
   it('accepts legacy CLI status only when both the saved PID and computer identity match', async () => {

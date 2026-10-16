@@ -1,6 +1,7 @@
 import { request } from 'node:http'
 import { connect } from 'node:net'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -67,7 +68,9 @@ describe('localSocketPath', () => {
   })
 
   it('on Windows, names the pipe the running daemon recorded, and a new pipe for each start', () => {
-    const dir = shortDir()
+    // os.tmpdir(), not shortDir()'s /tmp: this case runs on Windows too, and only names paths.
+    const dir = mkdtempSync(join(tmpdir(), 'hsock-'))
+    dirs.push(dir)
     expect(localSocketPath(dir, 18473, 'win32')).toBeNull()
     const pipe = newPipePath()
     writeDaemonRecord(dir, 18473, 24567, { pipe, pid: 4242 })

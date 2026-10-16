@@ -29,6 +29,8 @@ const AUTH_RE = /^([0-9a-f]{64})\.([0-9a-f]{64})$/
 const PIPE_ID = /^[0-9a-f]{32}$/
 /** `harness-<id>` as the whole last part of the name: `\\.\pipe\harness-<id>`, or a test socket's `/…/harness-<id>`. */
 const PIPE_ID_RE = /(?:^|[\\/])harness-([0-9a-f]{32})$/
+/** A pipe on this computer named harness-<id>, nothing else: not a file, not `\\host\pipe\` (an SMB connection). */
+const LOCAL_PIPE_RE = /^\\\\\.\\pipe\\harness-[0-9a-f]{32}$/
 
 function mac(token: Buffer, separator: number, nonce: string): string {
   return createHmac('sha256', token).update(Buffer.of(separator)).update(nonce, 'utf8').digest('hex')
@@ -99,6 +101,15 @@ export function newPipePath(): string {
 /** The 32-hex id that ends a Harness pipe name, or null for an endpoint that is not one. */
 export function pipeIdOf(endpoint: string): string | null {
   return PIPE_ID_RE.exec(endpoint)?.[1] ?? null
+}
+
+/**
+ * Whether [path] may be dialled as the daemon's pipe. On Windows only a local pipe named harness-<id>: a file, a
+ * longer name, or another computer's pipe (`\\host\pipe\…`, an outbound SMB connection that can carry this user's
+ * NTLM credentials) is none. Elsewhere only the tests record a pipe, a Unix socket whose name is harness-<id>.
+ */
+export function isPipePath(path: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === 'win32' ? LOCAL_PIPE_RE.test(path) : pipeIdOf(path) !== null
 }
 
 /** A nonce for one request to [endpoint]: its pipe id, then 128 random bits, as 64 hex digits. */

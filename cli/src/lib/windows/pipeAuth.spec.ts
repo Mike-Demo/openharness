@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
-  checkPipeAuth, newPipeNonce, newPipePath, NonceWindow, PIPE_AUTH_HEADER, PIPE_PROOF_HEADER, pipeAuthValue, pipeIdOf,
+  checkPipeAuth, isPipePath, newPipeNonce, newPipePath, NonceWindow, PIPE_AUTH_HEADER, PIPE_PROOF_HEADER, pipeAuthValue, pipeIdOf,
   pipeProofValue, pipeProven,
 } from './pipeAuth.js'
 
@@ -111,5 +111,20 @@ describe('pipe auth', () => {
     }
     expect(pipeIdOf(`harness-${'0'.repeat(32)}`)).toBe('0'.repeat(32))
     expect(() => newPipeNonce('/tmp/daemon.sock')).toThrow(/not a Harness pipe/)
+  })
+
+  it('takes as a Windows pipe only a local harness-<id> pipe, and off Windows a stand-in socket with that name', () => {
+    const id = 'a'.repeat(32)
+    expect(isPipePath(`\\\\.\\pipe\\harness-${id}`, 'win32')).toBe(true)
+    expect(isPipePath(newPipePath(), 'win32')).toBe(true)
+    // A file, another computer's pipe (dialling it is an SMB connection), or a name that only ends with harness-<id>.
+    for (const path of [`C:\\x\\harness-${id}`, `\\\\host\\pipe\\harness-${id}`, `\\\\.\\pipe\\evilharness-${id}`,
+      `\\\\.\\pipe\\x\\harness-${id}`, `//./pipe/harness-${id}`, `\\\\?\\pipe\\harness-${id}`, `\\\\.\\pipe\\harness-${id.toUpperCase()}`,
+      `\\\\.\\pipe\\harness-${id}\n`, `/tmp/x/harness-${id}`]) {
+      expect(isPipePath(path, 'win32')).toBe(false)
+    }
+    expect(isPipePath(`/tmp/x/harness-${id}`, 'darwin')).toBe(true)
+    expect(isPipePath(`/tmp/x/evilharness-${id}`, 'linux')).toBe(false)
+    expect(isPipePath('/tmp/daemon.sock', 'linux')).toBe(false)
   })
 })
