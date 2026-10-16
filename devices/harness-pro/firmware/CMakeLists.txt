@@ -4,7 +4,6 @@
 #   . ~/esp/esp-idf-5.5.4/export.sh
 #   idf.py -B build -DPROJECT_VER=0.0.99-pod build
 #
-# Every panel is mounted turned 180 degrees; the picture and touch are always turned (display/pro_turn.h).
 # Dev builds are safe from the daemon's OTA: a `-pod` version fails its plain X.Y.Z rule, so it is never offered an image.
 cmake_minimum_required(VERSION 3.16)
 

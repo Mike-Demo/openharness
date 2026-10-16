@@ -1,5 +1,5 @@
 // The frame path: ht_damage() between two scenes, then each damage rectangle (at its own width, no widening to full
-// rows) is rasterised in strips straight into one of two internal DMA buffers, turned in place by the panel layer, and
+// rows) is rasterised in strips straight into one of two internal DMA buffers and
 // handed to the panel. While the DMA of strip n runs, strip n+1 is rasterised into the other buffer (A/B).
 #include "pro_frame.h"
 
@@ -31,7 +31,6 @@ uint32_t pro_frame_present(const ht_scene_t *prev, const ht_scene_t *next, uint3
             uint16_t *px = pro_panel_strip(buffer);
             const int64_t t = esp_timer_get_time();
             ht_raster(next, (ht_rect_t){rect.x, (int16_t)y, rect.w, (int16_t)h}, px);
-            pro_panel_prepare(px, rect.w, h);
             raster_us += (uint32_t)(esp_timer_get_time() - t);
             if (pending) pro_panel_wait();   // the other buffer's DMA overlapped the raster above
             pro_panel_submit(rect.x, y, rect.w, h, px);

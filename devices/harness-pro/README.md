@@ -14,7 +14,7 @@ idf.py -B build -DPROJECT_VER=0.0.99-pod build
 ```
 
 - `PROJECT_VER=0.0.99-pod` keeps a dev build from being overwritten by the daemon's OTA update.
-- Every panel is mounted turned 180 degrees, so the picture and touch are always turned; there is no setting.
+- The picture and touch are drawn in the panel's own orientation; there is no turn and no setting.
 
 ## Flash
 
