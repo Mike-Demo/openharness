@@ -13,7 +13,7 @@ automatically proven improvement. Changes still need review, tests and a deliber
 | Which actions break? | Create, resume, restart, model-change, history, fork, close, delete, search, history paging, Store list/install/update/remove, model list/download/start/stop and browser-open requests, fixed outcomes/errors and latency buckets | Request acceptance is not task success. Pending/unknown requests are separate from completed replies. |
 | Does work get a response promptly? | First text response buckets; over-one-minute waits; error events; matched ends without text; interruptions | Includes automation. Tool-only turns, interruptions and missing lifecycle events can explain missing text. No message is inspected. |
 | Do installations return to work? | D1/D7/D28 working-day cohorts, consecutive complete-week and calendar-month returns, return after a seven-day gap | Any working day can be a cohort; not new-signup retention. Local date flags produce unlinked totals. Opt-outs, reinstallations, resets and missing uploads affect results. |
-| Was the task useful? | Optional Completed / Partly completed / Not completed plus five fixed reason choices, reachable from Rate task outcome and Privacy | Voluntary and self-selected; not representative success or satisfaction. There is no free-text input. |
+| Was the task useful? | Optional Completed / Partly completed / Not completed plus five fixed reason choices from clients that offer feedback; current Desktop Settings no longer exposes feedback controls | Voluntary and self-selected; not representative success or satisfaction. There is no free-text input. |
 | Is there usage at all? | Active and working computer counts; app opens; older-client relay totals | Background windows can count as active. An open is a surface going from no attached window to one, not each connection (the desktop holds one per machine and redials). Relay events are not distinct people; the populations must not be added together. |
 
 | Which features get tried and used again? | First measured installations and daily first/repeat feature reach | Locally deduplicated installation-days, not unique accounts. Reads the apps make on their own (history, history paging, Store list, model list; `PRODUCT_USAGE_AUTOMATIC_ACTIONS`) count reliability only. The Store and model lists get reach only from the request an app marks `userAction` when a person opens them (`<action>_user_*`, `PRODUCT_USAGE_USER_OPENED_ACTIONS`); history has none. |
@@ -22,8 +22,10 @@ automatically proven improvement. Changes still need review, tests and a deliber
 | Is measurement losing coverage? | Updated collector installation-days, pruned queues, full observation maps, unmatched app starts | Loss signals warrant caution. No signal does not prove complete collection. |
 | How many people use Harness, and do they come back? | People active / working / new per day and per app, and D1/D2/D3/D7 returns (backend rollup of 10-day pseudonymous marks) | Sharing accounts only, staff excluded; an app open across midnight counts on both days, so prefer working returns. Not available before `PRODUCT_USAGE_SUBJECT_KEY` is set. |
 
-Desktop setup and sign-in counts are enabled by default, with no onboarding checkbox. Users can
-turn them off in **Settings → Privacy → Share product usage data**, including before sign-in through
+Desktop setup and sign-in counts are enabled by default, with no onboarding checkbox. Desktop has
+one “Share product usage data” switch in Experimental, with no separate Privacy page or feedback
+controls. The browser keeps its existing Privacy page. Users can
+turn them off in **Settings → Experimental → Share product usage data**, including before sign-in through
 the app menu. Local booleans remember the preference and a pending opt-out across launches; reporting waits for
 that preference to load and stays off if it cannot be read. The confirmed account preference takes
 over after sign-in and is remembered for the next signed-out launch. An explicit Settings opt-out
@@ -233,7 +235,7 @@ Suggested visible release note:
 
 > Harness now shares limited product usage counts by default to help us find broken or slow flows.
 > These counts do not include your prompts, responses, code, files or project details. Turn sharing
-> off for your account in Settings → Privacy → Share product usage data, or use `harness privacy off`.
+> off for your account in Settings → Experimental → Share product usage data, or use `harness privacy off`.
 > Existing opt-outs stay off. Optional feedback sends only the answer you choose.
 > With sharing on, Harness also keeps which days you used it and through which app, under an
 > coded ID instead of your account, for 10 days, then only as combined totals.

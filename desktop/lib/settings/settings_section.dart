@@ -38,7 +38,11 @@ enum SettingsSection {
   shortcuts(AppIcons.keyboard, 'Keyboard shortcuts'),
   connectors(AppIcons.plug, 'Connectors'),
   usage(AppIcons.chartNoAxesColumn, 'Usage'),
-  experimental(AppIcons.flaskConical, 'Experimental'),
+  experimental(
+    AppIcons.flaskConical,
+    'Experimental',
+    keywords: kIsWeb ? [] : ['privacy', 'sharing', 'product usage data'],
+  ),
   about(AppIcons.info, 'About'),
   debug(AppIcons.bug, 'Debug');
 
@@ -95,6 +99,7 @@ List<SettingsGroup> settingsGroupsFor({required bool debugSurface}) {
   bool visible(SettingsSection section) =>
       // This computer's own: the services its agents use.
       (!kIsWeb || section != SettingsSection.connectors) &&
+      (kIsWeb || section != SettingsSection.privacy) &&
       (debugSurface || !_kDeveloperSections.contains(section));
   return [
     for (final group in _kSettingsGroups)

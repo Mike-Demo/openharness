@@ -12,10 +12,14 @@ import 'package:harness/core/config.dart';
 import 'package:harness/measurement/product_measurement.dart';
 import 'package:harness/measurement/setup_usage_choice.dart';
 import 'package:harness/settings/settings_screen.dart';
+import 'package:harness/settings/settings_section.dart';
+import 'package:harness/settings/settings_nav.dart';
+import 'package:harness/shared/theme/app_theme.dart' as grid;
 import 'package:harness/state/app_state.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'support/capture.dart';
+import 'support/experimental_settings.dart';
 import 'support/memory_key_value_store.dart';
 import 'support/real_fonts.dart';
 
@@ -142,7 +146,7 @@ void main() {
     AppStatus.preparingEnvironment,
   ]) {
     testWidgets(
-      'setup has no checkbox and its menu opens Privacy: ${status.name}',
+      'setup has no checkbox and its menu opens Experimental: ${status.name}',
       (tester) async {
         tester.view.devicePixelRatio = 1;
         tester.view.physicalSize = const Size(1100, 760);
@@ -189,15 +193,26 @@ void main() {
         await tester.pumpAndSettle();
         expect(find.byType(SettingsScreen), findsOneWidget);
         expect(find.text('Share product usage data'), findsOneWidget);
-        expect(tester.widget<Switch>(find.byType(Switch)).value, isTrue);
-        await tester.tap(find.byType(Switch));
+        expect(find.text('Privacy'), findsNothing);
+        expect(find.text('See what’s shared'), findsNothing);
+        expect(find.text('Rate task outcome'), findsNothing);
+        expect(find.text('How did your latest task go?'), findsNothing);
+        expect(
+          tester
+              .widget<Switch>(
+                find.byKey(const ValueKey('product-usage-sharing')),
+              )
+              .value,
+          isTrue,
+        );
+        await tester.tap(find.byKey(const ValueKey('product-usage-sharing')));
         await tester.pumpAndSettle();
         expect(usage.signedOutSharing, isFalse);
         expect(store.values, {
           ProductMeasurement.setupPreferenceKey:
               ProductMeasurement.pendingSetupOptOut,
         });
-        await captureWindow(tester, capture, 'privacy-${status.name}-off');
+        await captureWindow(tester, capture, 'experimental-${status.name}-off');
         await tester.tap(find.byKey(const Key('settings-back-button')));
         await tester.pump(const Duration(milliseconds: 100));
         await closed.future;
@@ -209,6 +224,75 @@ void main() {
       variant: TargetPlatformVariant.only(TargetPlatform.macOS),
     );
   }
+
+  testWidgets(
+    'signed-in sharing is one row in Experimental and persists account opt-out',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1100, 760);
+      addTearDown(tester.view.reset);
+      final storage = MemoryKeyValueStore();
+      final usage = ProductMeasurement(
+        surface: 'desktop',
+        automatic: false,
+        setupStorage: storage,
+        sendSetup: (_) async => {},
+      );
+      await usage.setupChoiceReady;
+      final api = _PreferenceApi()..fail = false;
+      final app =
+          AppNotifier(
+              config: AppConfig.dev,
+              authSession: AuthSession(storage: MemoryKeyValueStore()),
+              productMeasurement: usage,
+            )
+            ..api = api
+            ..signedIn = true
+            ..status = AppStatus.authenticated;
+      final experiments = MemoryExperimentalFeaturesStore(
+        storage: MemoryKeyValueStore(),
+      );
+      addTearDown(experiments.dispose);
+      usage.account(
+        'synthetic-account',
+        choice: () => app.productUsageSettings(),
+        send: (_) async => {},
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: grid.buildAppTheme(brightness: Brightness.dark),
+          home: SettingsScreen(
+            notifier: app,
+            // Existing deep links must land on the new row, with a selected rail entry.
+            initialSection: SettingsSection.privacy,
+            experimentalFeatures: experiments,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final toggle = find.byKey(const ValueKey('product-usage-sharing'));
+      expect(
+        tester.widget<SettingsNav>(find.byType(SettingsNav)).section,
+        SettingsSection.experimental,
+      );
+      expect(find.text('Privacy'), findsNothing);
+      expect(find.text('See what’s shared'), findsNothing);
+      expect(find.text('Rate task outcome'), findsNothing);
+      expect(find.text('How did your latest task go?'), findsNothing);
+      expect(tester.widget<Switch>(toggle).value, isTrue);
+      await captureWindow(tester, capture, 'experimental-signed-in-on');
+      await tester.tap(toggle);
+      await tester.pumpAndSettle();
+      expect(api.enabled, isFalse);
+      expect(usage.sharing, isFalse);
+      expect(usage.signedOutSharing, isFalse);
+      expect(storage.values, {ProductMeasurement.setupPreferenceKey: 'false'});
+      expect(tester.widget<Switch>(toggle).value, isFalse);
+      await tester.pumpWidget(const SizedBox.shrink());
+      app.dispose();
+    },
+  );
 
   testWidgets('failed opt-out save stays off and retries that same choice', (
     tester,
@@ -226,7 +310,7 @@ void main() {
         home: Scaffold(body: SetupUsageChoice(measurement: usage)),
       ),
     );
-    await tester.tap(find.byType(Switch));
+    await tester.tap(find.byKey(const ValueKey('product-usage-sharing')));
     await tester.pumpAndSettle();
     expect(usage.signedOutSharing, isFalse);
     expect(find.textContaining('PRIVATE_CANARY'), findsNothing);

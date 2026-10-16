@@ -276,7 +276,9 @@ class _RootShellState extends ConsumerState<RootShell>
           () => showSettingsScreen(
             context,
             app,
-            initialSection: SettingsSection.privacy,
+            initialSection: kIsWeb
+                ? SettingsSection.privacy
+                : SettingsSection.experimental,
             source: 'setup_menu',
           ),
         );
