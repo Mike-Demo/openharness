@@ -341,8 +341,40 @@ Future<(AppNotifier, _Daemon)> _started({_Daemon? daemon}) async {
   return (app, d);
 }
 
+/// A machine another account shares whole with Bob, holding one harness.
+const _studio = Machine(
+  machineId: 'studio',
+  authMode: MachineAuthMode.remote,
+  name: 'Studio',
+  machineShare: MachineShare(
+    ownerName: 'Dee',
+    ownerEmail: 'dee@acme.io',
+    via: 'email',
+    added: true,
+  ),
+);
+
+void _addStudio(AppNotifier app) {
+  app.machines = [...app.machines, _studio];
+  app.machineStates['studio'] = MachineState(_studio)
+    ..nodeOnline = true
+    ..connectionStatus = ConnectionStatus.connected
+    ..agentLoadStatus = AgentLoadStatus.loaded
+    ..agents = [
+      Agent(id: 's1', name: 'Studio 1', engine: 'codex', terminalAvailable: true),
+    ];
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('dragging a harness of a machine another account shares into a shared tab sends no share_add', () async {
+    final (app, daemon) = await _started();
+    _addStudio(app);
+    await app.assignAgentToPane(null, 'studio', 's1', swarmId: _deskTab, focus: false, intent: AttachIntent.person);
+    await _settle();
+    expect(daemon.named('share_add'), isEmpty);
+  });
 
   group('Add harnesses dialog', () {
     Future<void> open(WidgetTester tester, AppNotifier app) async {
@@ -392,6 +424,14 @@ void main() {
         ['a0', 'a2'],
       );
       expect(find.byKey(const Key('shared-add-confirm')), findsNothing);
+    });
+
+    testWidgets('does not list a harness of a machine another account shares', (tester) async {
+      final (app, _) = (await tester.runAsync(_started))!;
+      _addStudio(app);
+      await open(tester, app);
+      expect(find.text('Own 0 · codex · This Mac'), findsOneWidget);
+      expect(find.textContaining('Studio 1'), findsNothing);
     });
 
     testWidgets('a MACHINE_AWAY refusal shows in the dialog and keeps it open', (tester) async {

@@ -364,6 +364,13 @@ Map<String, dynamic> eventWithClearPayload(
 
 class MachineState {
   Machine machine;
+
+  /// Whether this is not the signed-in account's own computer: one harness
+  /// another account shares (`isShared`) or a whole machine another account
+  /// shares (`isSharedMachine`). Its daemon answers as its owner, so shared
+  /// tabs never ask it, and a harness on it is never this account's own.
+  bool get belongsToOtherAccount =>
+      machine.isShared || machine.isSharedMachine;
   int _agentRevision = 0;
   final _agentRemovals = <String, int>{};
   final _agentStopRevisions = <String, int>{};
@@ -1569,12 +1576,12 @@ class AppNotifier extends ChangeNotifier {
   MachineState? get sharedTabsTarget {
     if (viewer == null) return localMachineState;
     final owned = ownedActionMachine;
-    if (owned != null && !owned.machine.isShared && !owned.isOffline) {
+    if (owned != null && !owned.belongsToOtherAccount && !owned.isOffline) {
       return owned;
     }
     MachineState? best;
     for (final machine in machineStates.values) {
-      if (machine.machine.isShared || machine.isOffline) continue;
+      if (machine.belongsToOtherAccount || machine.isOffline) continue;
       if (machine.connectionStatus != ConnectionStatus.connected) continue;
       if (best == null ||
           machine.machine.machineId.compareTo(best.machine.machineId) < 0) {
@@ -1874,7 +1881,9 @@ class AppNotifier extends ChangeNotifier {
   /// (seam 1): its tab's status slot follows it, on the lease it was sent with.
   void applySharedActivity(SharedActivity a) {
     final machine = machineStates[a.machineId];
-    if (machine == null || !machine.machine.isShared) return;
+    // A machine another account shares whole counts too: a member's harness
+    // can sit on it, and the roster names it by that machine's id.
+    if (machine == null || !machine.belongsToOtherAccount) return;
     final applied = _applyReportedActivity(
       machine,
       a.agentId,
@@ -1923,7 +1932,7 @@ class AppNotifier extends ChangeNotifier {
       ?localMachineState?.machine.machineId,
       for (final pane in tab?.panes ?? const <TerminalPane>[])
         if (pane.agentId != null &&
-            machineStates[pane.machineId]?.machine.isShared != true)
+            machineStates[pane.machineId]?.belongsToOtherAccount != true)
           pane.machineId,
     };
   }
@@ -1932,7 +1941,7 @@ class AppNotifier extends ChangeNotifier {
   List<String> agentMessageMachines(String tabId) => [
     for (final id in _agentMessageMembers(tabId))
       if (machineStates[id] case final machine?
-          when !machine.machine.isShared &&
+          when !machine.belongsToOtherAccount &&
               !machine.needsLink &&
               machine.nodeOnline != false &&
               machine.connectionStatus == ConnectionStatus.connected)
@@ -1972,7 +1981,7 @@ class AppNotifier extends ChangeNotifier {
   int _messagingHarnesses(Swarm swarm) => {
     for (final pane in swarm.panes)
       if (pane.agentId case final agentId?
-          when machineStates[pane.machineId]?.machine.isShared != true)
+          when machineStates[pane.machineId]?.belongsToOtherAccount != true)
         agentMessageKey(pane.machineId, agentId),
   }.length;
 
@@ -15834,7 +15843,7 @@ class AppNotifier extends ChangeNotifier {
   /// account owns. In the tab this account shares, its harnesses follow the
   /// desk tab: moving the pane out is how one leaves.
   bool canRemoveFromSharedTab(String machineId, String agentId) {
-    if (machineStates[machineId]?.machine.isShared != false) return false;
+    if (machineStates[machineId]?.belongsToOtherAccount != false) return false;
     final tab = sharedTabHolding(machineId, agentId);
     return tab != null &&
         !_ownsSharedTab(tab) &&
@@ -15863,7 +15872,7 @@ class AppNotifier extends ChangeNotifier {
   }) {
     final tab = sharedTabs.tabForDesk(deskTabId);
     final state = machineStates[machineId];
-    if (tab == null || state == null || state.machine.isShared) return null;
+    if (tab == null || state == null || state.belongsToOtherAccount) return null;
     // The owner's harnesses join by being in its desk tab.
     if (_ownsSharedTab(tab) || _listedIn(tab, machineId, agentId)) return null;
     final agent = state.agents.where((a) => a.id == agentId).firstOrNull;
@@ -15881,7 +15890,7 @@ class AppNotifier extends ChangeNotifier {
     final tab = sharedTabs.tabForDesk(deskTabId);
     if (tab == null ||
         _ownsSharedTab(tab) ||
-        machineStates[machineId]?.machine.isShared != false ||
+        machineStates[machineId]?.belongsToOtherAccount != false ||
         !_inSharedTab(tab, machineId, agentId)) {
       return;
     }
@@ -15914,7 +15923,7 @@ class AppNotifier extends ChangeNotifier {
       final holder = machineStates[body['machineId'] ?? (body['harness'] as Map?)?['machineId']];
       _lastError = sharedTabErrorText(
         e,
-        machine: holder != null && !holder.machine.isShared
+        machine: holder != null && !holder.belongsToOtherAccount
             ? holder.machine.displayName
             : null,
       );

@@ -114,7 +114,7 @@ SharedTabMenu sharedTabMenu(AppNotifier app, String deskTabId) {
 /// says "That computer").
 String? _ownMachineName(AppNotifier app, SharedTab? tab) {
   final state = tab == null ? null : app.machineStates[tab.ownerMachineId];
-  if (state == null || state.machine.isShared) return null;
+  if (state == null || state.belongsToOtherAccount) return null;
   final name = state.machine.displayName;
   return name.isEmpty ? null : name;
 }
@@ -642,7 +642,7 @@ class _AddHarnessesState extends State<_AddHarnesses> {
     };
     return [
       for (final state in widget.app.machineStates.values)
-        if (!state.machine.isShared)
+        if (!state.belongsToOtherAccount)
           for (final agent in state.agents)
             if (!inTab.contains('${state.machine.machineId}\u0000${agent.id}'))
               _OwnHarness(

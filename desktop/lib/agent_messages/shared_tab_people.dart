@@ -90,7 +90,7 @@ class _SharedTabPeopleState extends State<SharedTabPeople> {
 
   String _machineName(String machineId, {required bool mine}) {
     final state = widget.app.machineStates[machineId];
-    if (mine && state != null && !state.machine.isShared) {
+    if (mine && state != null && !state.belongsToOtherAccount) {
       final name = shortSharedText(state.machine.displayName, 24);
       if (name.isNotEmpty) return name;
     }
@@ -121,7 +121,7 @@ class _SharedTabPeopleState extends State<SharedTabPeople> {
     final ownMachines = {
       me.machineId,
       for (final s in app.machineStates.values)
-        if (!s.machine.isShared) s.machine.machineId,
+        if (!s.belongsToOtherAccount) s.machine.machineId,
     };
     final alerts = [for (final a in snapshot.alerts) if (a.sharedTabId == tab.sharedTabId) a];
     final relay = [

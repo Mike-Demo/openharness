@@ -263,4 +263,49 @@ void main() {
     app.selectedMachineId = 'ma';
     expect(app.sharedTabsTarget?.machine.machineId, 'own');
   });
+
+  test('on the web a machine another account shares whole is never the target', () {
+    final storage = MemoryStore();
+    final session = AuthSession(storage: storage);
+    final app = AppNotifier(
+      config: AppConfig.dev,
+      authSession: session,
+      viewer: ViewerServices(
+        config: AppConfig.dev,
+        session: session,
+        keys: ViewerKeyStore(storage: storage),
+      ),
+    );
+    addTearDown(app.dispose);
+    const wholeShared = Machine(
+      machineId: 'studio',
+      authMode: MachineAuthMode.remote,
+      name: 'Studio',
+      machineShare: MachineShare(
+        ownerName: 'Dee',
+        ownerEmail: 'dee@acme.io',
+        via: 'email',
+        added: true,
+      ),
+    );
+    const own = Machine(
+      machineId: 'own',
+      authMode: MachineAuthMode.remote,
+      name: 'Mine',
+    );
+    app.machines = [wholeShared, own];
+    app.machineStates['studio'] = MachineState(wholeShared)
+      ..nodeOnline = true
+      ..connectionStatus = ConnectionStatus.connected;
+    app.selectedMachineId = 'studio';
+    expect(
+      app.sharedTabsTarget,
+      isNull,
+      reason: 'its daemon would answer as its owner',
+    );
+    app.machineStates['own'] = MachineState(own)
+      ..nodeOnline = true
+      ..connectionStatus = ConnectionStatus.connected;
+    expect(app.sharedTabsTarget?.machine.machineId, 'own');
+  });
 }
