@@ -1,81 +1,90 @@
-# Sample 2 — Desk assistant: email mới → Fo → máy tròn
+# Sample 2 — Desk assistant: new email → Fo → round device
 
-Một script Python nhỏ (`mail_to_fo.py`, chỉ dùng thư viện chuẩn) đọc hộp thư qua IMAP, cứ 30 giây xem có email mới
-chưa đọc không, rồi đưa từng email cho **một** harness Fo sống lâu tên **Fo inbox**. Fo tóm tắt email trong một câu và
-nói bạn nên làm gì. Khi Fo trả lời xong, lượt của nó kết thúc: máy tròn kêu bíp và tạo một Notice với recap. Email
-tìm việc còn cập nhật dòng `GLANCE …` để màn hình của [Sample 1](../01-fo-glance/README.md) vẽ số liệu.
+A small Python script (`mail_to_fo.py`, standard library only) reads your mailbox over IMAP, checks for new unread
+email every 30 seconds, and hands each email to **one** long-lived Fo harness named **Fo inbox**. Fo sums up the email
+in one sentence and tells you what to do about it. When Fo finishes answering, its turn ends: the round device beeps
+and creates a Notice with the recap. Job-hunt emails also update the `GLANCE …` line, so the
+[Sample 1](../01-fo-glance/README.md) screen can draw the numbers.
 
 ```
-Gmail ──IMAP/TLS──▶ mail_to_fo.py ──ws://127.0.0.1:18473/api/local-ws──▶ daemon Harness ──▶ Fo (cloud)
+Gmail ──IMAP/TLS──▶ mail_to_fo.py ──ws://127.0.0.1:18473/api/local-ws──▶ Harness daemon ──▶ Fo (cloud)
                                                                               │
-                                                     máy tròn ◀── recap ──────┘
+                                                 round device ◀── recap ──────┘
 ```
 
-Nội dung gửi cho Fo: người gửi, tiêu đề, ngày, phần thân dạng chữ thường (HTML bị lột bỏ, cắt còn 2.000 ký tự) và lời
-dặn tóm tắt. Script **không lưu email** xuống đĩa: `state.json` chỉ giữ id của harness và các UID đã xử lý. Nó
-**không đánh dấu đã đọc** trừ khi bạn chạy với `--mark-read`.
+What you'll see on the device (rendered by the firmware's own drawing code):
 
-## Các file
+| 1. Email arrives | 2. Tap the bell | 3. Open Fo inbox |
+|---|---|---|
+| <img src="../images/device-notice.png" width="220" alt="Bell with 1 beside the working pet"> | <img src="../images/device-inbox.png" width="220" alt="Notices page with Fo inbox's message"> | <img src="../images/device-glance.png" width="220" alt="Glance screen with the job-hunt numbers"> |
+| Fo answered: the bell and its count pop in beside whatever agent you're on | Notices: the machine, **Fo inbox**, and Fo's one-line summary | with Sample 1 flashed, a job-hunt email shows as numbers; without it, the recap card |
 
-| File | Là gì |
+What the script sends to Fo: the sender, subject, date, the body as plain text (HTML stripped, cut to 2,000
+characters) and the summarizing instructions. The script **doesn't save email** to disk: `state.json` only keeps the
+harness id and the UIDs it has handled. It **doesn't mark email as read** unless you run it with `--mark-read`.
+
+## The files
+
+| File | What it is |
 |---|---|
-| `mail_to_fo.py` | script chính: IMAP → chữ → harness (kèm một WebSocket client RFC 6455 tối giản) |
-| `test_mail_to_fo.py` | unit test (MIME multipart, lột HTML, giải mã header RFC 2047, cắt 2.000 ký tự, `state.json`, vòng IMAP giả) |
-| `sample.eml` | một email giả (thư mời phỏng vấn, HTML, header tiếng Việt) để thử không cần hộp thư |
-| `.env.example` | mẫu cấu hình; copy thành `.env` |
+| `mail_to_fo.py` | the main script: IMAP → text → harness (with a minimal RFC 6455 WebSocket client) |
+| `test_mail_to_fo.py` | unit tests (MIME multipart, HTML stripping, RFC 2047 header decoding, the 2,000-character cut, `state.json`, a fake IMAP loop) |
+| `sample.eml` | a fake email (an interview invitation, HTML, non-ASCII headers) to try without a mailbox |
+| `.env.example` | a config template; copy it to `.env` |
 
-## 1. Chuẩn bị
+## 1. Get ready
 
-1. Đã làm xong bước 1 và 3 của [hướng dẫn chung](../README.md): Harness đang chạy (`harness start`), đã đăng nhập,
-   và **Fo đã được kết nối** (Settings ▸ Connectors ▸ **Add custom**, `https://mcp.api.wajo.ai/fo`).
-2. Python 3.9 trở lên (`python3 --version`). Không cần `pip install` gì.
-3. Kiểm tra script nói chuyện được với daemon và Fo:
+1. Finish steps 1 and 3 of the [main guide](../README.md): Harness is running (`harness start`), you're signed in,
+   and **Fo is connected** (Settings ▸ Connectors ▸ **Add custom**, `https://mcp.api.wajo.ai/fo`).
+2. Python 3.9 or later (`python3 --version`). Nothing to `pip install`.
+3. Check that the script can talk to the daemon and Fo:
 
    ```bash
    cd samples/hackathon-fo/02-desk-assistant
    python3 mail_to_fo.py --check
    ```
 
-   **Bạn sẽ thấy:** `Fo is connected.` — Nếu thấy `NOT_CONNECTED` hay `DAEMON_UNREACHABLE`, xem [Kẹt?](#5-kẹt) ở dưới.
+   **You should see:** `Fo is connected.` If you see `NOT_CONNECTED` or `DAEMON_UNREACHABLE`, see
+   [Stuck?](#7-stuck) below.
 
 ## 2. Gmail app password
 
-Gmail không cho đăng nhập IMAP bằng mật khẩu thường. Cần một **app password** (16 chữ):
+Gmail doesn't allow IMAP sign-in with your regular password. You need an **app password** (16 letters):
 
-1. Bật **2-Step Verification** cho tài khoản Google: https://myaccount.google.com/security.
-2. Mở https://myaccount.google.com/apppasswords, đặt tên (ví dụ `harness-desk`), bấm **Create**.
-3. Google hiện 16 chữ dạng `abcd efgh ijkl mnop`. Copy ngay (chỉ hiện một lần).
-4. Tài khoản Google Workspace của công ty có thể bị admin tắt app password; khi đó dùng Gmail cá nhân.
+1. Turn on **2-Step Verification** for your Google account: https://myaccount.google.com/security.
+2. Open https://myaccount.google.com/apppasswords, enter a name (for example `harness-desk`), and click **Create**.
+3. Google shows 16 letters like `abcd efgh ijkl mnop`. Copy them right away (they're shown only once).
+4. Your company's Google Workspace admin may have turned off app passwords. If so, use a personal Gmail account.
 
-Nên dùng một hộp thư thử hoặc một label riêng (ví dụ tạo filter đưa thư tuyển dụng vào label `Jobs`) để không gửi cả
-hộp thư cá nhân cho Fo.
+Use a test mailbox or a separate label (for example, a filter that moves job email to a `Jobs` label) so you don't send
+your whole personal inbox to Fo.
 
-## 3. Cấu hình `.env`
+## 3. Set up `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-| Biến | Ví dụ | Ý nghĩa |
+| Variable | Example | Meaning |
 |---|---|---|
-| `IMAP_HOST` | `imap.gmail.com` | máy chủ IMAP (cổng 993, TLS) |
-| `IMAP_USER` | `you@gmail.com` | địa chỉ email |
-| `IMAP_APP_PASSWORD` | `abcd efgh ijkl mnop` | app password ở bước 2 |
-| `IMAP_FOLDER` | `INBOX` hoặc `Jobs` | thư mục / label cần theo dõi |
-| `POLL_SECONDS` | `30` | bao lâu xem một lần (tối thiểu 10) |
+| `IMAP_HOST` | `imap.gmail.com` | the IMAP server (port 993, TLS) |
+| `IMAP_USER` | `you@gmail.com` | your email address |
+| `IMAP_APP_PASSWORD` | `abcd efgh ijkl mnop` | the app password from step 2 |
+| `IMAP_FOLDER` | `INBOX` or `Jobs` | the folder / label to watch |
+| `POLL_SECONDS` | `30` | how often to check (at least 10) |
 
-`.env` và `state.json` đã có trong `.gitignore`: đừng commit chúng.
+`.env` and `state.json` are already in `.gitignore`: don't commit them.
 
-## 4. Chạy
+## 4. Run it
 
-Thử trước với email giả, không cần hộp thư:
+First try it with the fake email, no mailbox needed:
 
 ```bash
-python3 mail_to_fo.py --dry-run-message sample.eml --print-only   # chỉ in nội dung sẽ gửi
-python3 mail_to_fo.py --dry-run-message sample.eml                # gửi thật cho Fo
+python3 mail_to_fo.py --dry-run-message sample.eml --print-only   # only prints what would be sent
+python3 mail_to_fo.py --dry-run-message sample.eml                # really sends it to Fo
 ```
 
-**Bạn sẽ thấy** (khoảng 15–40 giây):
+**You should see** (in about 15–40 seconds):
 
 ```
 Started Fo inbox (cloud_…).
@@ -84,87 +93,91 @@ Fo: GLANCE applied=0 replies=0 interviews=1 goal=10
 A company invited you to interview for the Frontend Engineer role on Monday Oct 20 at 10:00 …
 ```
 
-Lần sau script không tạo harness mới mà viết tiếp vào **Fo inbox** (`Sent to Fo inbox (cloud_…)`). Id của nó nằm
-trong `state.json`. Nếu bạn đóng harness đó, lần sau script tự tạo cái mới.
+Next time, the script doesn't create a new harness; it keeps writing to **Fo inbox** (`Sent to Fo inbox (cloud_…)`).
+Its id is in `state.json`. If you close that harness, the script creates a new one next time.
 
-Rồi chạy thật với hộp thư:
+Then run it for real with your mailbox:
 
 ```bash
-python3 mail_to_fo.py              # chạy mãi, Ctrl-C để dừng
-python3 mail_to_fo.py --once       # xem một lần rồi thoát
-python3 mail_to_fo.py --mark-read  # đánh dấu đã đọc các email đã gửi cho Fo
+python3 mail_to_fo.py              # runs until you press Ctrl-C
+python3 mail_to_fo.py --once       # checks once, then exits
+python3 mail_to_fo.py --mark-read  # marks the emails sent to Fo as read
 ```
 
-**Bạn sẽ thấy:** `Watching INBOX of you@gmail.com every 30 s -> Fo inbox.` Gửi cho chính mình một email; trong vòng
-30 giây có `New mail 1234: <tiêu đề>`, rồi câu trả lời của Fo. Lần chạy đầu, **mọi** email chưa đọc trong thư mục đều
-được gửi, nên hãy bắt đầu với một thư mục ít thư chưa đọc.
+**You should see:** `Watching INBOX of you@gmail.com every 30 s -> Fo inbox.` Send yourself an email. Within 30
+seconds you get `New mail 1234: <subject>`, then Fo's answer. On the first run, **every** unread email in the folder is
+sent, so start with a folder that has few unread emails.
 
-Các tuỳ chọn khác: `--env PATH`, `--state PATH`, `--port N` (mặc định 18473, hoặc biến `HARNESS_PORT`), `--help`.
+Other options: `--env PATH`, `--state PATH`, `--port N` (default 18473, or the `HARNESS_PORT` variable), `--help`.
 
-### Khi Fo không dùng được: `--engine claude`
+### When Fo isn't available: `--engine claude`
 
 ```bash
 python3 mail_to_fo.py --engine claude --dry-run-message sample.eml
 python3 mail_to_fo.py --engine claude
 ```
 
-Cùng nội dung đó đi tới một harness **Claude Code** chạy trên máy này, tên **Mail inbox**, trong thư mục
-`~/harnesses/mail-inbox` do Harness tạo. Cần Claude Code đã cài và đăng nhập (`claude`). Email sau được gõ tiếp vào pane
-của nó. Script đợi Claude xong lượt rồi mới gửi email tiếp theo, và in `Claude finished its turn.`; câu trả lời đọc
-trong pane **Mail inbox** của Harness Desktop hoặc trên máy tròn.
+The same content goes to a **Claude Code** harness on this machine, named **Mail inbox**, in the
+`~/harnesses/mail-inbox` folder that Harness creates. Claude Code must be installed and signed in (`claude`). Later
+emails are typed into its pane. The script waits for Claude to finish its turn before it sends the next email, and
+prints `Claude finished its turn.`. Read the answer in the **Mail inbox** pane of Harness Desktop or on the round
+device.
 
-## 5. Trên máy tròn
+## 5. On the round device
 
-- Khi Fo đang làm, ô (tile) **Fo inbox** chuyển sang trạng thái working.
-- Khi Fo trả lời xong: máy **kêu bíp**, chuông **Notices** có thêm một mục; mở ra thấy **recap**, tức đoạn đầu tiên
-  trong câu trả lời của Fo (một câu tóm tắt + việc cần làm).
-- Email tìm việc: câu trả lời bắt đầu bằng `GLANCE applied=… replies=… interviews=… goal=10`. Với firmware của
-  Sample 1, máy vẽ màn glance (ba con số và vòng tiến độ) thay cho thẻ recap. Firmware gốc chỉ hiện dòng đó như chữ.
-- Nếu Fo hỏi lại và đưa ra các lựa chọn (danh sách 1., 2., …), câu hỏi hiện trên **màn hình câu hỏi** của máy: chạm
-  để chọn. Câu hỏi không có lựa chọn thì trả lời trong pane chat của Fo trên Harness Desktop.
-- Không có máy tròn: mở Harness Desktop, pane chat **Fo inbox** cho thấy cả cuộc trò chuyện.
+- While Fo works, the **Fo inbox** tile switches to the working state.
+- When Fo finishes answering: the device **beeps** and the **Notices** bell gets a new entry. Open it to see the
+  **recap**, the first paragraph of Fo's answer (a one-sentence summary + what to do).
+- Job-hunt emails: the answer starts with `GLANCE applied=… replies=… interviews=… goal=10`. With the Sample 1
+  firmware, the device draws the glance screen (three numbers and a progress ring) instead of the recap card. The stock
+  firmware just shows that line as text.
+- If Fo asks a question and offers choices (a list of 1., 2., …), the question appears on the device's **question
+  screen**: tap to choose. Answer questions without choices in Fo's chat pane in Harness Desktop.
+- No round device: open Harness Desktop. The **Fo inbox** chat pane shows the whole conversation.
 
-## 6. Cách script nói chuyện với Harness
+## 6. How the script talks to Harness
 
-Không có lệnh CLI nào gửi chữ vào một harness có sẵn từ một terminal thường (`harness send` chỉ dành cho agent trong
-cùng tab), nên script nói thẳng với daemon qua WebSocket loopback, giống `harness new`:
+No CLI command sends text to an existing harness from a regular terminal (`harness send` is only for agents in the
+same tab), so the script talks to the daemon directly over the loopback WebSocket, like `harness new` does:
 
-1. Mở `ws://127.0.0.1:18473/api/local-ws` (không gửi header `Origin`, không cần token; chỉ nhận kết nối từ máy này).
-2. Gửi `{"type":"machine_select","payload":{"machineId":"<id>","localProtocolVersion":1,"tool":true}}`. `machineId`
-   lấy từ `harness machines list --json` (dòng `"current":true`). Đợi frame `connected`.
-3. Mỗi yêu cầu là `{"type":"<tên>","payload":{…,"requestId":"<uuid>"}}`; câu trả lời là `<tên>_result` cùng
-   `requestId`, có `error`/`detail` nếu bị từ chối.
+1. Open `ws://127.0.0.1:18473/api/local-ws` (no `Origin` header, no token needed; it accepts connections from this
+   machine only).
+2. Send `{"type":"machine_select","payload":{"machineId":"<id>","localProtocolVersion":1,"tool":true}}`. Get the
+   `machineId` from `harness machines list --json` (the `"current":true` row). Wait for the `connected` frame.
+3. Each request is `{"type":"<name>","payload":{…,"requestId":"<uuid>"}}`. The answer is `<name>_result` with the same
+   `requestId`, with `error`/`detail` if it was rejected.
 
-| Yêu cầu | Dùng để |
+| Request | What it's for |
 |---|---|
-| `cloud_agents {}` | Fo đã kết nối chưa (`agents[].connected`) |
-| `agent_create {engine:"fo", name:"Fo inbox", prompt, creationId}` | tạo harness Fo với email đầu tiên (prompt rỗng bị từ chối: "Tell Fo what to do.") |
-| `cloud_send {agentId, text}` | gửi email tiếp theo cho Fo inbox |
-| `cloud_transcript {agentId}` | đọc câu trả lời của Fo để in ra terminal |
-| `agents_list {}` | harness còn sống không (`id`, `status`, `activity.state`) |
-| `agent_create {engine:"claude", name:"Mail inbox", projectSource:"new", projectName:"mail-inbox", prompt, creationId}` | harness Claude Code (`--engine claude`) |
-| `message {agentId, content}` | gõ chữ vào pane Claude (daemon không trả lời frame này) |
+| `cloud_agents {}` | whether Fo is connected (`agents[].connected`) |
+| `agent_create {engine:"fo", name:"Fo inbox", prompt, creationId}` | creates the Fo harness with the first email (an empty prompt is rejected: "Tell Fo what to do.") |
+| `cloud_send {agentId, text}` | sends the next email to Fo inbox |
+| `cloud_transcript {agentId}` | reads Fo's answer to print it in the terminal |
+| `agents_list {}` | whether the harness is still alive (`id`, `status`, `activity.state`) |
+| `agent_create {engine:"claude", name:"Mail inbox", projectSource:"new", projectName:"mail-inbox", prompt, creationId}` | the Claude Code harness (`--engine claude`) |
+| `message {agentId, content}` | types text into the Claude pane (the daemon doesn't answer this frame) |
 
-Recap trên máy tròn không do script gửi: daemon tự tạo khi lượt của Fo kết thúc (`cli/src/core/agents/cloud.ts`,
-`commander_event` loại `summary`). Muốn đào sâu: `cli/src/localWsServer.ts` (bắt tay), `cli/src/cloud/service.ts`
-(`cloud_*`), `cli/src/cloud/fo.ts` (Fo qua MCP), `cli/src/lib/newCommand.ts` (`harness new`).
+The script doesn't send the recap to the round device: the daemon creates it when Fo's turn ends
+(`cli/src/core/agents/cloud.ts`, `commander_event` of type `summary`). To dig deeper: `cli/src/localWsServer.ts` (the
+handshake), `cli/src/cloud/service.ts` (`cloud_*`), `cli/src/cloud/fo.ts` (Fo over MCP), `cli/src/lib/newCommand.ts`
+(`harness new`).
 
-## 7. Kẹt?
+## 7. Stuck?
 
-| Bạn thấy | Làm gì |
+| You see | What to do |
 |---|---|
-| `NOT_CONNECTED: Fo is not connected` | Kết nối Fo: Harness Desktop ▸ Settings ▸ Connectors ▸ **Add custom**, URL `https://mcp.api.wajo.ai/fo`, đăng nhập Wajo trong trình duyệt. Chạy lại `--check`. Tạm thời có thể dùng `--engine claude`. |
-| `DAEMON_UNREACHABLE: Harness is not running on port 18473` | Daemon chưa chạy: `harness start` (hoặc mở Harness Desktop). `harness status` phải ghi `● running`. |
-| `NOT_SIGNED_IN` | `harness login`, rồi `harness start`. |
-| `DISCONNECTED: closed 4404 NO_PEER_LINK` (hoặc `4403 machine mismatch`) | `machineId` sai: kiểm tra `harness machines list --json` có dòng `"current":true`. |
-| `Poll failed: b'[AUTHENTICATIONFAILED] Invalid credentials …'` | Sai app password, hoặc dùng mật khẩu thường. Tạo app password mới (bước 2). |
-| `Cannot open folder Jobs` | Tên label sai; label lồng nhau viết `Parent/Child`. |
-| `Fo has not answered yet; its reply still reaches the device.` | Fo trả lời chậm hơn 3 phút. Không sao: khi xong, máy tròn vẫn nhận Notice. |
-| Fo inbox không hiện ra | Mở Harness Desktop: pane **Fo inbox** nằm cùng các harness khác. Xoá `state.json` nếu muốn bắt đầu harness mới. |
-| `--engine claude` đứng yên | Claude Code đang hỏi gì đó trong pane **Mail inbox** (đăng nhập, quyền thư mục): trả lời trong pane. |
-| Máy tròn không kêu | Xem bước 4–5 của [hướng dẫn chung](../README.md): cáp có truyền dữ liệu, máy hiện trong Devices. |
+| `NOT_CONNECTED: Fo is not connected` | Connect Fo: Harness Desktop ▸ Settings ▸ Connectors ▸ **Add custom**, URL `https://mcp.api.wajo.ai/fo`, sign in to Wajo in the browser. Run `--check` again. In the meantime you can use `--engine claude`. |
+| `DAEMON_UNREACHABLE: Harness is not running on port 18473` | The daemon isn't running: `harness start` (or open Harness Desktop). `harness status` should say `● running`. |
+| `NOT_SIGNED_IN` | `harness login`, then `harness start`. |
+| `DISCONNECTED: closed 4404 NO_PEER_LINK` (or `4403 machine mismatch`) | Wrong `machineId`: check that `harness machines list --json` has a `"current":true` row. |
+| `Poll failed: b'[AUTHENTICATIONFAILED] Invalid credentials …'` | Wrong app password, or you used your regular password. Create a new app password (step 2). |
+| `Cannot open folder Jobs` | Wrong label name. Write nested labels as `Parent/Child`. |
+| `Fo has not answered yet; its reply still reaches the device.` | Fo took longer than 3 minutes to answer. That's fine: when it's done, the round device still gets the Notice. |
+| Fo inbox doesn't show up | Open Harness Desktop: the **Fo inbox** pane sits with your other harnesses. Delete `state.json` to start a new harness. |
+| `--engine claude` sits idle | Claude Code is asking something in the **Mail inbox** pane (sign-in, folder permission): answer it in the pane. |
+| The round device doesn't beep | See steps 4–5 of the [main guide](../README.md): a data cable, and the device shows up in Devices. |
 
-Chạy test:
+Run the tests:
 
 ```bash
 python3 -m unittest -v

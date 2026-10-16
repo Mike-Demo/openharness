@@ -49,7 +49,11 @@ INSTRUCTION = (
     "today's counts and START your answer with exactly one line in this form, then a blank line, then the "
     "paragraph:\n"
     "GLANCE applied=<n> replies=<n> interviews=<n> goal=10\n"
-    "(plain text, no bold, no code block; whole numbers 0-9999)."
+    "(plain text, no bold, no code block; whole numbers 0-9999). The counts are running totals:\n"
+    "- applied: applications I have sent; a company confirming it received N applications counts all N;\n"
+    "- replies: messages from a company or recruiter that answer an application (a confirmation of receipt "
+    "is not a reply);\n"
+    "- interviews: interviews scheduled or proposed."
 )
 
 

@@ -49,12 +49,12 @@ class MailToText(unittest.TestCase):
         self.assertEqual(m.mail_summary(raw)["body"], "See attached.")
 
     def test_rfc2047_headers_decoded(self):
-        raw = (b"From: =?UTF-8?B?Tmd1eeG7hW4gVsSDbiBBbg==?= <an@example.com>\r\n"
-               b"Subject: =?UTF-8?Q?L=E1=BB=8Bch_ph=E1=BB=8Fng_v=E1=BA=A5n?=\r\n"
+        raw = (b"From: =?UTF-8?B?Wm/DqyBNw7xsbGVy?= <zoe@example.com>\r\n"
+               b"Subject: =?UTF-8?Q?Interview_invitation_=E2=80=93_next_steps?=\r\n"
                b"Content-Type: text/plain; charset=utf-8\r\n\r\nBody\r\n")
         summary = m.mail_summary(raw)
-        self.assertEqual(summary["from"], "Nguyễn Văn An <an@example.com>")
-        self.assertEqual(summary["subject"], "Lịch phỏng vấn")
+        self.assertEqual(summary["from"], "Zoë Müller <zoe@example.com>")
+        self.assertEqual(summary["subject"], "Interview invitation – next steps")
 
     def test_non_utf8_charset(self):
         raw = "Subject: x\r\nContent-Type: text/plain; charset=iso-8859-1\r\n\r\ncaf\xe9\r\n".encode("latin-1")
@@ -85,8 +85,8 @@ class MailToText(unittest.TestCase):
     def test_sample_email(self):
         with open(os.path.join(os.path.dirname(__file__), "sample.eml"), "rb") as f:
             summary = m.mail_summary(f.read())
-        self.assertEqual(summary["subject"], "Lịch phỏng vấn - Frontend Engineer")
-        self.assertIn("10:00 thứ Hai 20/10", summary["body"])
+        self.assertEqual(summary["subject"], "Interview invitation – Frontend Engineer")
+        self.assertIn("Monday, Oct 20 at 10:00 AM", summary["body"])
         self.assertNotIn("color:red", summary["body"])
 
 

@@ -5,7 +5,7 @@ team has round Harness devices and needs to learn the repo and build on it.
 
 ## What ships
 
-One folder, `samples/hackathon-fo/`, in Vietnamese (code, identifiers and code comments in English):
+One folder, `samples/hackathon-fo/`, in US English (code, identifiers and code comments also in English):
 
 ```
 samples/hackathon-fo/

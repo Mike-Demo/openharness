@@ -1,61 +1,63 @@
-# Nói gì với Fo để màn hình glance hiện lên
+# What to tell Fo so the glance screen shows up
 
-Thiết bị tròn chỉ đọc **recap** của lượt trả lời — daemon cắt nó từ **phần mở đầu** câu trả lời của Fo
-(`deriveTurnSummary` trong `cli/src/lib/deviceRecap.ts`, gọi từ `cli/src/core/agents/cloud.ts`). Vì vậy dòng
-glance phải là **dòng đầu tiên** của câu trả lời. Đặt ở cuối thì nó bị cắt mất và thiết bị hiện recap bình thường.
+The round device only reads the turn's **recap**, which the daemon cuts from the **opening** of Fo's answer
+(`deriveTurnSummary` in `cli/src/lib/deviceRecap.ts`, called from `cli/src/core/agents/cloud.ts`). So the glance line
+must be the **first line** of the answer. If it's at the end, it gets cut off and the device shows the normal recap.
 
-Đã thử với chính `deriveTurnSummary`:
+Tested with `deriveTurnSummary` itself:
 
-| Câu trả lời của Fo bắt đầu bằng | Recap thiết bị nhận | Thiết bị vẽ |
+| Fo's answer starts with | Recap the device gets | Device draws |
 |---|---|---|
-| `GLANCE applied=5 replies=2 interviews=1 goal=10` rồi một dòng trống, rồi phần chữ | `GLANCE applied=5 replies=2 interviews=1 goal=10 Hôm nay mình đã nộp…` | màn glance |
-| `**GLANCE applied=5 replies=2 goal=10**` (in đậm) | `GLANCE applied=5 replies=2 goal=10 Đã nộp 5 hồ sơ.` (dấu `**` bị bỏ) | màn glance |
-| chữ trước, `GLANCE …` ở cuối | `Đã nộp 5 hồ sơ hôm nay.` | recap thường |
+| `GLANCE applied=5 replies=2 interviews=1 goal=10`, a blank line, then the text | `GLANCE applied=5 replies=2 interviews=1 goal=10 Today I sent…` | the glance screen |
+| `**GLANCE applied=5 replies=2 goal=10**` (bold) | `GLANCE applied=5 replies=2 goal=10 Sent 5 applications.` (the `**` is dropped) | the glance screen |
+| text first, `GLANCE …` at the end | `Sent 5 applications today.` | the normal recap |
 
-Firmware đọc các cặp `key=value` cho tới chữ đầu tiên không có `=`, nên phần chữ dính vào sau vẫn ổn.
+The firmware reads `key=value` pairs up to the first word without an `=`, so text joined on after them is fine.
 
-## Lời dặn (dán vào đầu cuộc trò chuyện với Fo)
+## Instructions (paste at the start of your conversation with Fo)
 
 ```text
-Từ giờ, mỗi câu trả lời của bạn PHẢI bắt đầu bằng đúng một dòng glance, rồi một dòng trống, rồi mới tới nội dung.
+From now on, every answer you give MUST start with exactly one glance line, then a blank line, then the content.
 
-Dòng glance có dạng:
-GLANCE applied=<số> replies=<số> interviews=<số> goal=<số>
+The glance line looks like this:
+GLANCE applied=<number> replies=<number> interviews=<number> goal=<number>
 
-Quy tắc:
-- Viết đúng chữ GLANCE in hoa, không thêm dấu câu, không in đậm, không đặt trong code block.
-- Tối đa 4 cặp key=value, cách nhau một dấu cách. Key chỉ gồm chữ thường a-z (tối đa 12 chữ), value là số nguyên 0..9999.
-- applied = tổng số hồ sơ đã nộp tính tới giờ; replies = số nhà tuyển dụng đã trả lời; interviews = số buổi phỏng vấn đã có lịch;
-  goal = mục tiêu số hồ sơ của tuần này (mặc định 10).
-- Mỗi lượt cập nhật các con số theo những gì bạn biết, kể cả khi lượt đó không thay đổi gì.
+Rules:
+- Write the word GLANCE in capitals exactly, with no punctuation, no bold, and not in a code block.
+- At most 4 key=value pairs, separated by one space. Keys use only lowercase letters a-z (at most 12), values are whole numbers 0..9999.
+- applied = applications sent so far (if a company confirms it received N applications, count all N);
+  replies = times a company or recruiter answered an application (a receipt confirmation is not a reply);
+  interviews = interviews scheduled or proposed; goal = this week's application goal (default 10).
+- Update the numbers every turn with what you know, even when nothing changed in that turn.
 
-Việc của bạn: giúp mình tìm việc Senior Backend Engineer (Go) ở TP.HCM hoặc remote. Hôm nay hãy tìm 5 tin tuyển dụng phù hợp,
-tóm tắt mỗi tin một dòng, và ghi nhận là mình đã nộp vào 5 nơi đó.
+Your job: help me find a Senior Backend Engineer (Go) role in Ho Chi Minh City or remote. Today, find 5 matching job postings,
+sum up each one in one line, and record that I applied to all 5.
 ```
 
-Câu trả lời mong đợi:
+Expected answer:
 
 ```text
 GLANCE applied=5 replies=0 interviews=0 goal=10
 
-Đã tìm được 5 tin phù hợp và ghi nhận bạn đã nộp:
+I found 5 matching postings and recorded that you applied:
 1. ...
 ```
 
-Trên thiết bị: tên harness trên cung trên, ba số `5 / 0 / 0` với nhãn `applied / replies / interviews`, vòng amber
-lấp 5/10 quanh viền và dòng `5 / 10 applied` ở cung dưới.
+On the device: the harness name on the upper curve, three numbers `5 / 0 / 0` labeled `applied / replies / interviews`,
+an amber ring filled to 5/10 around the edge, and the line `5 / 10 applied` on the lower curve.
 
-## Các lượt sau
+## Later turns
 
-- "Công ty A vừa trả lời email, hẹn phỏng vấn thứ Sáu." → Fo trả lời bắt đầu bằng
+- "Company A just answered my email and set up an interview for Friday." → Fo's answer starts with
   `GLANCE applied=5 replies=1 interviews=1 goal=10`.
-- "Nộp thêm 3 chỗ nữa." → `GLANCE applied=8 replies=1 interviews=1 goal=10`.
+- "I applied to 3 more." → `GLANCE applied=8 replies=1 interviews=1 goal=10`.
 
-Key khác cũng được, thiết bị hiện đúng chữ đó, ví dụ `GLANCE pages=12 bugs=3 goal=40` cho một việc khác.
-Không có `applied` thì vòng đếm theo số đầu tiên. Không có `goal` thì không có vòng.
+Other keys work too, and the device shows them as written, for example `GLANCE pages=12 bugs=3 goal=40` for a
+different task. With no `applied`, the ring counts the first number. With no `goal`, there's no ring.
 
-## Khi không hiện màn glance
+## When the glance screen doesn't show up
 
-- Fo thêm chữ trước dòng glance ("Chào bạn! GLANCE …"): nhắc lại "dòng ĐẦU TIÊN phải là GLANCE".
-- Một số vượt 9999, key có chữ hoa/gạch dưới/dấu (`Applied`, `applied_today`), hoặc có hơn 4 cặp: thiết bị hiện
-  recap thường. Đây là hành vi đúng: dòng sai không bao giờ thành con số sai.
+- Fo adds text before the glance line ("Hi there! GLANCE …"): remind it that "the FIRST line must be GLANCE".
+- A number is over 9999, a key has uppercase letters, underscores or accents (`Applied`, `applied_today`), or there are
+  more than 4 pairs: the device shows the normal recap. That's the intended behavior: a malformed line never turns into
+  wrong numbers.
