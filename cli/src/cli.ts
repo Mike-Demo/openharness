@@ -71,7 +71,8 @@ import { namedNode } from './harnessd/processName.js'
 import { probeThisMaster, startMaster, startMasterInForeground } from './masterProcess.js'
 import { startServiceProcess } from './serviceProcess.js'
 import { askDataFolderServer, isLocalSocketName, localSocketPath, refuseServedDataFolder, servedFolderDeps } from './lib/localSocket.js'
-import { legacyDaemonStatus, localDaemonStatus } from './lib/daemonEndpoint.js'
+import { legacyDaemonStatus, localDaemonCall, localDaemonStatus } from './lib/daemonEndpoint.js'
+import { PipeUnproven } from './lib/windows/pipeClient.js'
 import { runAutonomousDeviceCommand } from './lib/autonomous-device/command.js'
 import { E2eeStore, identitySpent, peekIdentityPub } from './lib/e2ee/store.js'
 import { confirmsRemoval, deviceRegistration, deviceStatusValue, formatDeviceDetail, formatDeviceHistory, formatDeviceList, logOrder, removeConfirmation } from './lib/e2ee/deviceDisplay.js'
@@ -1601,16 +1602,13 @@ async function resetCommand(): Promise<void> {
   process.exit(0)
 }
 
-/** Call the running daemon's localhost control API. Exits with a friendly message if it's not up. */
+/** Call the running daemon's control API: over its Windows pipe when it has one, else localhost. Exits with a friendly message if it's not up. */
 async function daemonCall(method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ res: Response; json: Record<string, unknown> }> {
-  const url = `http://127.0.0.1:${daemonPort()}${path}`
   let res: Response
   try {
-    const headers: Record<string, string> = { 'x-adapter-local': '1' } // passes the local API's CSRF gate
-    if (body) headers['content-type'] = 'application/json'
-    res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined })
+    res = await localDaemonCall(env.ADAPTER_DATA_DIR, env.PORT, method, path, body, { tcpPort: daemonPort() })
   } catch (error) {
-    console.error(`\n  ✗ ${daemonUnreachableText((error as { cause?: unknown }).cause ?? error)}\n`)
+    console.error(`\n  ✗ ${error instanceof PipeUnproven ? error.message : daemonUnreachableText((error as { cause?: unknown }).cause ?? error)}\n`)
     process.exit(1)
   }
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
