@@ -14,6 +14,9 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' show TerminalTheme;
 
 import '../agent_messages/agent_messages_view.dart';
+import '../agent_messages/shared_tab_dialogs.dart';
+import '../agent_messages/shared_tab_placement.dart' show plainSharedText;
+import '../agent_messages/shared_tabs.dart';
 import '../core/runtime_platform.dart';
 import '../api/api_client.dart';
 import '../core/desktop_window.dart';
@@ -741,12 +744,17 @@ class _SwarmScreenState extends State<SwarmScreen> {
         // Agent Messages between harnesses on other machines, which their
         // daemons tell only their own computer's windows.
         app.agentMessagesRemote.start();
+        _sharedTabsWatch = SharedTabsWatch(
+          controller: app.sharedTabs,
+          foreground: app.foreground,
+        )..start();
       });
     }
     if (_menuHost) {
       _menuBus.setHandler(_onNative);
       app.addListener(_syncNative);
       app.agentMessages.addListener(_syncNative);
+      app.sharedTabs.addListener(_syncNative);
       _syncNative();
     }
     _tabStripRequest = app.tabStripFocusRequest;
@@ -803,6 +811,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
   void dispose() {
     _devicesHarness.dispose();
     _harnessMonitor.dispose();
+    _sharedTabsWatch?.dispose();
     _accountPhones.removeListener(_accountPhonesChanged);
     _accountPhones.dispose();
     if (app.reviewSessionClose == _reviewSessionClose) {
@@ -914,6 +923,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       unawaited(_menuBus.send('machinesState', {'machines': []}));
       app.removeListener(_syncNative);
       app.agentMessages.removeListener(_syncNative);
+      app.sharedTabs.removeListener(_syncNative);
       _menuBus.setHandler(null);
       unawaited(_menuBus.send('update', {'tabs': [], 'enabled': false}));
     }
@@ -1488,6 +1498,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
   }
 
   late final HarnessMonitor _harnessMonitor;
+  SharedTabsWatch? _sharedTabsWatch;
   void _monitorChanged() {
     if (!mounted) return;
     if (_menuHost) _syncNative();
@@ -1676,8 +1687,11 @@ class _SwarmScreenState extends State<SwarmScreen> {
   ) => {
     StatusLineField.machine: (
       label: 'Find harnesses on ${focused.machineName}',
+      // Another account's machine is not this account's to browse (seam 5).
       onPressed:
-          _shortcutsEnabled && app.stateOf(focused.pane.machineId) != null
+          _shortcutsEnabled &&
+              !focused.shared &&
+              app.stateOf(focused.pane.machineId) != null
           ? () => _openContextResource(StatusLineField.machine, focused.pane.id)
           : null,
     ),
@@ -1707,6 +1721,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
     final focused = WorkspacePaneContext.focused(app);
     if (focused == null || focused.pane.id != expectedPaneId) return;
     if (field == StatusLineField.branch && focused.branch == null) return;
+    if (field == StatusLineField.machine && focused.shared) return;
     if (field == StatusLineField.branch && focused.agent?.gitContext != null) {
       unawaited(_showSessionWork(focused));
       return;
@@ -1826,6 +1841,11 @@ class _SwarmScreenState extends State<SwarmScreen> {
         ? const <StatusLineField, StatusLineLink>{}
         : _contextLinks(focused);
     final names = workspaceTabNames(app);
+    // Sharing each tab with other accounts (1c): its mark and menu rows.
+    final shareMenus = {
+      for (final swarm in app.profileSwarms)
+        swarm.id: sharedTabMenu(app, swarm.id),
+    };
     final terminalTheme = terminalThemeFor(
       grid.AppTheme.palette.value,
       terminalThemeStore.value,
@@ -1973,6 +1993,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
       'paneActions': {
         'restartAgent': _canExecuteCommand('agent.restart'),
         'shareAgent': _canExecuteCommand('agent.share'),
+        'removeFromTab': _canRemoveFocusedFromTab,
         'toggleViewer': _canExecuteCommand('pane.toggle_viewer'),
         'toggleComposer': _canExecuteCommand('pane.toggle_composer'),
       },
@@ -2043,7 +2064,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
           {
             'id': swarm.id,
             'name': swarm.name,
-            'label': names[swarm.id],
+            'label': _tabLabel(names[swarm.id], shareMenus[swarm.id]!),
             'shortcutHint': _keymap.hint(
               'swarm.select_${app.profileSwarms.indexOf(swarm) + 1}',
             ),
@@ -2070,10 +2091,18 @@ class _SwarmScreenState extends State<SwarmScreen> {
             // Messages shows on the tab itself.
             if (app.agentMessagesOffered(swarm.id))
               'canShowAgentMessages': true,
+            // A tab shared with other accounts: its mark (count) and menu
+            // (role, Move Here). Absent for an unshared tab, and for every
+            // tab while the shares cannot be read.
+            'shared': ?shareMenus[swarm.id]!.native,
+            if (shareMenus[swarm.id]!.invite) 'canInvitePeople': true,
           },
       ],
       // File's Show Agent Messages, for the active tab.
       'canShowAgentMessages': app.agentMessagesOffered(app.activeSwarmId),
+      // File's Invite People…, Stop Sharing Tab, Move Here and Leave Tab, for
+      // the active tab: only those it offers.
+      'tabShareActions': sharedTabMenu(app, app.activeSwarmId).actions,
     };
     final encoded = jsonEncode(payload);
     if (encoded == _nativeState) return;
@@ -2405,6 +2434,17 @@ class _SwarmScreenState extends State<SwarmScreen> {
             args['id'] is String ? args['id'] as String : app.activeSwarmId,
           ),
         );
+      // A tab's menu (with its id) or File (the active tab): sharing the tab
+      // with other accounts (1c). Each does nothing where its row is not
+      // offered.
+      case 'invitePeople':
+        unawaited(_invitePeople(_nativeTabId(args)));
+      case 'stopSharingTab':
+        unawaited(_stopSharingTab(_nativeTabId(args)));
+      case 'moveTabHere':
+        unawaited(_moveTabHere(_nativeTabId(args)));
+      case 'leaveTab':
+        unawaited(_leaveTab(_nativeTabId(args)));
       case 'next':
         app.stepSwarm(1);
       case 'previous':
@@ -2425,6 +2465,11 @@ class _SwarmScreenState extends State<SwarmScreen> {
         unawaited(_restartAgent());
       case 'shareAgent':
         if (_canExecuteCommand('agent.share')) unawaited(_shareAgent());
+      case 'removeFromTab':
+        final pane = app.focusedPane;
+        if (_canRemoveFocusedFromTab && pane?.agentId != null) {
+          unawaited(app.removeFromSharedTab(pane!.machineId, pane.agentId!));
+        }
       case 'toggleViewer':
         if (_canExecuteCommand('pane.toggle_viewer')) _toggleFocusedViewer();
       case 'toggleComposer':
@@ -2554,6 +2599,10 @@ class _SwarmScreenState extends State<SwarmScreen> {
           'rename',
           'renameActive',
           'showAgentMessages',
+          'invitePeople',
+          'stopSharingTab',
+          'moveTabHere',
+          'leaveTab',
           'commands',
           'notifications',
           'notificationInbox',
@@ -2564,6 +2613,7 @@ class _SwarmScreenState extends State<SwarmScreen> {
           'cloneAgent',
           'restartAgent',
           'shareAgent',
+          'removeFromTab',
           'toggleViewer',
           'toggleComposer',
           'runLocalModel',
@@ -2750,6 +2800,45 @@ class _SwarmScreenState extends State<SwarmScreen> {
     if (name != null) app.renameSwarm(id, name);
   });
 
+  /// The tab a native action names, or the active one (File's rows).
+  String _nativeTabId(Map args) =>
+      args['id'] is String ? args['id'] as String : app.activeSwarmId;
+
+  /// A tab's name as its row shows it. A member's tab is named after the
+  /// roster another account wrote (and an automatic name after its
+  /// harnesses): plain text, as every string of theirs. A tab this account
+  /// owns keeps its own name exactly, emoji sequences included.
+  String? _tabLabel(String? label, SharedTabMenu share) {
+    if (label == null || share.tab == null || share.owner) return label;
+    final plain = plainSharedText(label);
+    return plain.isEmpty ? Swarm.defaultName : plain;
+  }
+
+  /// Invite People… for [id]: the Share form for the tab. With Agent
+  /// Messages off, Settings ▸ Experimental, where its switch is.
+  Future<void> _invitePeople(String id) async {
+    if (!sharedTabMenu(app, id).invite) return;
+    if (app.sharedTabs.state == SharedTabsState.off) {
+      return _settings(SettingsSection.experimental);
+    }
+    return _dialog(() => showInvitePeople(context, app, id));
+  }
+
+  Future<void> _stopSharingTab(String id) async {
+    if (!sharedTabMenu(app, id).stop) return;
+    return _dialog(() => confirmStopSharing(context, app, id));
+  }
+
+  Future<void> _moveTabHere(String id) async {
+    if (!sharedTabMenu(app, id).moveHere) return;
+    return _dialog(() => confirmMoveHere(context, app, id));
+  }
+
+  Future<void> _leaveTab(String id) async {
+    if (!sharedTabMenu(app, id).leave) return;
+    return _dialog(() => confirmLeaveTab(context, app, id));
+  }
+
   /// [id]'s Agent Messages log.
   Future<void> _showAgentMessages(String id) => _dialog(() async {
     final swarm = app.swarms.where((s) => s.id == id).firstOrNull;
@@ -2806,27 +2895,28 @@ class _SwarmScreenState extends State<SwarmScreen> {
   /// Delete Harness: the focused pane's harness, or the row selected in Open
   /// Harness, running or stopped. Stop keeps a conversation to reopen; this
   /// is how one leaves the list.
-  Future<void> _deleteHarness(String machineId, String agentId) => _dialog(
-    () async {
-      final machine = app.stateOf(machineId);
-      final agent = machine?.agents
-          .where((agent) => agent.id == agentId)
-          .firstOrNull;
-      if (agent == null || machine!.machine.isShared) return;
-      if (isTerminalEngine(agent.engine)) {
-        _showPaneActionHint('A terminal keeps no conversation. Stop it instead.');
-        return;
-      }
-      await confirmDeleteHarness(
-        context,
-        app,
-        machineId,
-        agentId,
-        agent.displayName,
-        keymap: _keymap,
-      );
-    },
-  );
+  Future<void> _deleteHarness(String machineId, String agentId) =>
+      _dialog(() async {
+        final machine = app.stateOf(machineId);
+        final agent = machine?.agents
+            .where((agent) => agent.id == agentId)
+            .firstOrNull;
+        if (agent == null || machine!.machine.isShared) return;
+        if (isTerminalEngine(agent.engine)) {
+          _showPaneActionHint(
+            'A terminal keeps no conversation. Stop it instead.',
+          );
+          return;
+        }
+        await confirmDeleteHarness(
+          context,
+          app,
+          machineId,
+          agentId,
+          agent.displayName,
+          keymap: _keymap,
+        );
+      });
 
   /// ⌘⇧E — the focused pane's harness starts again where it is. Same routing
   /// as [_cloneAgent]: gated everywhere but the native menu's fallback path,
@@ -2868,6 +2958,13 @@ class _SwarmScreenState extends State<SwarmScreen> {
       keymap: _keymap,
     );
   });
+  /// Remove from Tab applies to the focused pane: an own harness a shared tab lists.
+  bool get _canRemoveFocusedFromTab {
+    final pane = app.focusedPane;
+    return pane?.agentId != null &&
+        app.canRemoveFromSharedTab(pane!.machineId, pane.agentId!);
+  }
+
   Future<void> _shareAgent() => _dialog(() async {
     final focused = WorkspacePaneContext.focused(app);
     final agent = focused?.agent;
@@ -3139,6 +3236,30 @@ class _SwarmScreenState extends State<SwarmScreen> {
   /// A way in from outside the workspace (a device band, a review line under a password prompt)
   /// asked for Machines ([AppNotifier.requestMachines]): opened once nothing else holds the window.
   void _maybeOpenMachinesRequest() {
+    if (app.newHarnessRequested != null &&
+        mounted &&
+        !_dialogOpen &&
+        !_spokenPaletteOpen &&
+        _routeIsCurrent) {
+      final tab = app.takeNewHarnessRequest()!;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !app.swarms.any((s) => s.id == tab)) return;
+        app.selectSwarm(tab);
+        unawaited(_newAgent(swarmId: tab));
+      });
+      return;
+    }
+    if (app.sharedTabsRequested &&
+        mounted &&
+        !_dialogOpen &&
+        !_spokenPaletteOpen &&
+        _routeIsCurrent) {
+      app.takeSharedTabsRequest();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_settings(SettingsSection.tabInvites));
+      });
+      return;
+    }
     if (app.machinesRequest == null ||
         !mounted ||
         _dialogOpen ||
@@ -6834,6 +6955,10 @@ class _SwarmScreenState extends State<SwarmScreen> {
       'pane.focus_$i': () => app.focusPaneByIndex(i - 1),
     'navigation.commands': _showSearchCommands,
     'agent_messages.show': () => _showAgentMessages(app.activeSwarmId),
+    'shared_tab.invite': () => _invitePeople(app.activeSwarmId),
+    'shared_tab.stop': () => _stopSharingTab(app.activeSwarmId),
+    'shared_tab.leave': () => _leaveTab(app.activeSwarmId),
+    'shared_tab.move_here': () => _moveTabHere(app.activeSwarmId),
     'app.customize': () => unawaited(_customize()),
     'pane.toggle_shading': () => unawaited(
       appearancePrefsStore.setShadeInactivePanes(
@@ -6903,6 +7028,16 @@ class _SwarmScreenState extends State<SwarmScreen> {
     if (id == 'keyboard.open_config') return _keymap.store != null;
     if (id.startsWith('agent_messages.')) {
       return app.agentMessagesOffered(app.activeSwarmId);
+    }
+    if (id.startsWith('shared_tab.')) {
+      final share = sharedTabMenu(app, app.activeSwarmId);
+      return switch (id) {
+        'shared_tab.invite' => share.invite,
+        'shared_tab.stop' => share.stop,
+        'shared_tab.leave' => share.leave,
+        'shared_tab.move_here' => share.moveHere,
+        _ => false,
+      };
     }
     if (id == 'agent.work') {
       return WorkspacePaneContext.focused(app)?.agent != null;
@@ -7230,7 +7365,14 @@ class _SwarmScreenState extends State<SwarmScreen> {
                     Focus(
                       focusNode: _tabStripFocus,
                       onKeyEvent: _onTabStripKey,
-                      child: _native ? const SizedBox.shrink() : _tabStrip(),
+                      child: _native
+                          ? const SizedBox.shrink()
+                          // A shared tab's mark and menu follow the shares
+                          // (1c); only the row rebuilds for them.
+                          : ListenableBuilder(
+                              listenable: app.sharedTabs,
+                              builder: (context, _) => _tabStrip(),
+                            ),
                     ),
                     if (_learning.active)
                       WorkspaceQuickStart(
@@ -7994,9 +8136,10 @@ class _SwarmScreenState extends State<SwarmScreen> {
       final names = workspaceTabNames(app);
       final shown = app.profileSwarms;
       final activities = [for (final tab in shown) tabActivity(app, tab)];
+      final shares = [for (final tab in shown) sharedTabMenu(app, tab.id)];
       final labels = [
         for (var index = 0; index < shown.length; index++)
-          names[shown[index].id]!,
+          _tabLabel(names[shown[index].id], shares[index])!,
       ];
       final toolHeight = workspaceBarControlHeight(context);
       final prefs = appearancePrefsStore.value.prompt;
@@ -8134,13 +8277,19 @@ class _SwarmScreenState extends State<SwarmScreen> {
                                         'swarm.select_${index + 1}',
                                       ),
                                       hasActivity: activity != null,
+                                      sharedCount: shares[index].count,
                                     ) >
                                     _tabWidths[index],
                               );
+                              final share = shares[index];
                               final tabHint = [
                                 ?nameHint,
+                                if (share.count case final count?)
+                                  'Shared tab, $count '
+                                      '${count == 1 ? 'harness' : 'harnesses'}',
                                 ?activity?.label,
                               ].join('\n');
+                              final menus = _shortcutsEnabled;
                               return DesktopWorkspaceTab(
                                 id: swarm.id,
                                 showShortcuts: _tabShortcutHints,
@@ -8152,6 +8301,25 @@ class _SwarmScreenState extends State<SwarmScreen> {
                                 selected: selected,
                                 tooltip: tabHint.isEmpty ? null : tabHint,
                                 activityLabel: activity?.label,
+                                sharedCount: share.count,
+                                onInvitePeople: menus && share.invite
+                                    ? () => unawaited(_invitePeople(swarm.id))
+                                    : null,
+                                onShowAgentMessages:
+                                    menus && app.agentMessagesOffered(swarm.id)
+                                    ? () => unawaited(
+                                        _showAgentMessages(swarm.id),
+                                      )
+                                    : null,
+                                onStopSharing: menus && share.stop
+                                    ? () => unawaited(_stopSharingTab(swarm.id))
+                                    : null,
+                                onMoveHere: menus && share.moveHere
+                                    ? () => unawaited(_moveTabHere(swarm.id))
+                                    : null,
+                                onLeave: menus && share.leave
+                                    ? () => unawaited(_leaveTab(swarm.id))
+                                    : null,
                                 onSelect: _shortcutsEnabled
                                     ? () => app.selectSwarm(swarm.id)
                                     : null,

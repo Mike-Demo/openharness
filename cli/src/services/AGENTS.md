@@ -153,8 +153,15 @@ master too old to run it starts it beside itself, still in its own process (`src
 - A service that graduates from an experiment keeps the same questions to the core and is answered by a link of its
   own, for what it uses alone, never by the experiments' hooks: Agent Messages in the edge host
   (`src/core/messagesLink.ts`, `MESSAGES_QUERIES` in `src/core/api.ts`) is shown the agents, told how this daemon is
-  reached and whether it is signed in, reads the account's tabs and nothing else of the backend, sends the windows
-  its log's change notice and nothing else, and hears `desk_changed`. It never creates an agent, stops a turn or
+  reached and whether it is signed in, calls the backend only through `MESSAGES_BACKEND_ROUTES` (the account's tabs, and shared tabs' shares, rosters,
+  invitations, members and moves), sends the windows its log's change notice and nothing else, and hears
+  `desk_changed`. It holds no credential: the core signs each backend call, and the gateway signs and seals shared
+  tabs' rosters and frames (`core.account.tabKey`, asked as `tab_key`) and holds their sockets (`tab_relay`).
+  `account` reads the account signed in here, and `observers` tells the core that a roster changed, which it hands to
+  Share, so that a removed member stops watching at once. A core from before `account` answers `UNKNOWN_QUERY`, and
+  shared tabs are then unavailable while the rest runs. Between the owner's computers it answers `tab_pub`, `tab_pin`,
+  `tab_pin_changed` and `tab_keychange` (`src/messages/service.ts`), only from another computer of the same account.
+  It never creates an agent, stops a turn or
   watches a terminal. Off for the account (Settings ▸ Experimental, off by default), or signed out, it runs no
   timer: the core wakes it when its copy of the switch changes (`MessagesPort.settingsChanged`, from
   `createAgentSettingsSync` in `src/core/experiments.ts`), so does a watch on the setting's file when there is one

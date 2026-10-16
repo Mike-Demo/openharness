@@ -24,6 +24,7 @@ import { zooRoutes } from './routes/zoo.js'
 import { experimentalSettingsRoutes } from './routes/experimentalSettings.js'
 import { describeDaemonsSwitch } from './lib/daemonsSwitch.js'
 import { handleObserverUpgrade } from './lib/observerWs.js'
+import { handleAgentMessagesUpgrade } from './lib/agentMessagesWs.js'
 import { deviceAuthRoutes } from './routes/deviceAuth.js'
 import { healthRoutes, authRoutes, userRoutes, machineRoutes, planRoutes, gridRoutes, deviceRoutes, mobileRoutes, appRoutes, analyticsRoutes, productUsageRoutes, agentRouteRoutes, jevRouteRoutes, storeRoutes } from './routes/index.js'
 import { startSubdomainProxy, startMeshProxy } from './lib/subdomainProxy.js'
@@ -94,6 +95,10 @@ const app = Fastify({
       const path = (req.url ?? '').split('?')[0]
       if (path === '/api/observer-ws') {
         handleObserverUpgrade(req, socket, head)
+        return
+      }
+      if (path === '/api/agent-messages-ws') {
+        handleAgentMessagesUpgrade(req, socket, head)
         return
       }
       // Inverted-transport hub endpoints (terminated here, not proxied):

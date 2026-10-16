@@ -824,6 +824,56 @@ model AgentMessageTab {
   @@map("agent_message_tabs")
 }
 
+/// A tab its owner shared with other accounts (docs/superpowers/specs/2026-10-15-agent-messages-across-accounts-design.md).
+/// `roster` is the owner's signed blob, stored and never read: members verify it against the owner's key.
+model AgentMessageShare {
+  id             String    @id @map("_id") // sharedTabId: sha256(['amsg-share', ownerUserId, tabId])[:24]
+  ownerUserId    String
+  ownerMachineId String
+  tabId          String
+  autonomousEnv  String
+  rosterVersion  Int       @default(0)
+  roster         Json?
+  stoppedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([ownerUserId, tabId])
+  @@map("agent_message_shares")
+}
+
+model AgentMessageInvite {
+  id             String    @id @map("_id")
+  shareId        String
+  ownerUserId    String
+  ownerMachineId String
+  email          String
+  autonomousEnv  String
+  expiresAt      DateTime
+  acceptedBy     String?
+  acceptedAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@unique([shareId, email])
+  @@index([email, autonomousEnv, expiresAt])
+  @@map("agent_message_invites")
+}
+
+model AgentMessageMember {
+  id         String    @id @map("_id") // sha256(['amsg-member', shareId, userId])[:24]
+  shareId    String
+  userId     String
+  email      String
+  inviteId   String
+  acceptedAt DateTime  @default(now())
+  removedAt  DateTime?
+
+  @@index([userId])
+  @@index([shareId])
+  @@map("agent_message_members")
+}
+
 /// Explicit account opt-ins; missing choices stay off. Each write changes one feature.
 model ExperimentalSettings {
   id               String  @id @map("_id") @db.ObjectId

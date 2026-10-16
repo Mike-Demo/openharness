@@ -348,6 +348,17 @@ class _LinuxMenuBarState extends State<LinuxMenuBar> {
         label: 'Close Tab',
         action: 'closeActive',
       ),
+      // Sharing the active tab with other accounts (1c), by role, as the
+      // native File menu offers it: Invite People for an unshared tab or one
+      // this account shares; Stop Sharing Tab and Move Here for its owner;
+      // Leave Tab for a member. File's titles are plain, as on the Mac.
+      if (state.tabShareActions['invitePeople'] == true)
+        _swarmRow(
+          key: 'menu-bar-invite-people',
+          icon: AppIcons.users,
+          label: 'Invite People',
+          action: 'invitePeople',
+        ),
       // The active tab's Agent Messages log. Whether agents may message is the
       // account's (Settings ▸ Experimental), not a tab's, so there is no on/off
       // row here.
@@ -358,6 +369,27 @@ class _LinuxMenuBarState extends State<LinuxMenuBar> {
         action: 'showAgentMessages',
         enabled: state.enabled && state.canShowAgentMessages,
       ),
+      if (state.tabShareActions['stopSharingTab'] == true)
+        _swarmRow(
+          key: 'menu-bar-stop-sharing-tab',
+          icon: AppIcons.unlink,
+          label: 'Stop Sharing Tab',
+          action: 'stopSharingTab',
+        ),
+      if (state.tabShareActions['moveTabHere'] == true)
+        _swarmRow(
+          key: 'menu-bar-move-tab-here',
+          icon: AppIcons.laptop,
+          label: 'Move Here',
+          action: 'moveTabHere',
+        ),
+      if (state.tabShareActions['leaveTab'] == true)
+        _swarmRow(
+          key: 'menu-bar-leave-tab',
+          icon: AppIcons.logOut,
+          label: 'Leave Tab',
+          action: 'leaveTab',
+        ),
       const AppMenuDivider(),
       _swarmRow(
         key: 'menu-bar-split-right',

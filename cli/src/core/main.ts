@@ -121,7 +121,7 @@ import { createInput } from './input.js'
 import { createQuestionResponse, createQuestions } from './questions.js'
 import { createCloudAgents, type CloudAgents } from './agents/cloud.js'
 import { createCloudLink } from './cloudLink.js'
-import { createTurnActivity } from './turns/activity.js'
+import { activityOf, createTurnActivity } from './turns/activity.js'
 import { createLastTurnReader } from './transcripts/lastTurn.js'
 import { createEngineReaders } from './engines/readers.js'
 import { createLiveTransport } from './engines/liveTransport.js'
@@ -197,7 +197,7 @@ import { localSocketPath, refuseServedDataFolder, type LocalSocketServer } from 
 import { saveDaemonPort } from '../lib/daemonEndpoint.js'
 import { publishHookRoute } from '../lib/hookRoutes.js'
 import { BackendSocket, isLocalClientId } from '../backendSocket.js'
-import { createGatewayLink, laneOf } from './gatewayLink.js'
+import { createGatewayLink, laneOf, tabKeyOf, tabRelayOf } from './gatewayLink.js'
 import { createWifiCore, WIFI_START_MS } from './wifi.js'
 import { createDevicesWake, DEVICES_ON_DEMAND } from './devicesWake.js'
 import { wakeModels } from './modelsWake.js'
@@ -758,6 +758,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     ask: (agentId, requestId, question) => cloudAgents?.doors.ask(agentId, requestId, question),
     unask: (agentId, requestId) => cloudAgents?.doors.unask(agentId, requestId),
   }
+  // Shared tabs' relay, a socket per shared tab held by the gateway (gateway/tabRelay.ts), and which of them the core saw
+  // opened: opened again after a gateway-only restart, closed when Agent Messages' process goes (core/gatewayLink.ts).
+  const tabRelay = tabRelayOf(() => gatewayOps.tabRelay)
   const coreApi = createCoreApi({
     cloud: cloudDoors,
     cloudRows: () => (cloudAgents?.dialRows() ?? []) as unknown as RegisteredSession[],
@@ -800,6 +803,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     },
     // The dial's working card: what a Claude Code or Codex pane's footer says, read here so the pane never
     // leaves the core.
+    activity: async (agentIds) => activityOf(agentIds, (agentId) => registry.byAgent(agentId), (session) => activityFrameContextRef?.(session) ?? null),
     activityText: async (agentId) => {
       // A cloud harness says what it is doing on its frame ("Calling Hair Lab").
       if (cloudAgents?.owns(agentId)) return cloudAgents.activity(agentId)
@@ -862,6 +866,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // Share: its observers' frames to the relay, and its welcomes signed by the gateway, which holds the identity.
     observer: (connId, type, payload) => backendRef?.sendObserver(connId, type, payload) ?? false,
     observerKey: { publicKey: () => gatewayOps.observerKey.publicKey(), signWelcome: (...args) => gatewayOps.observerKey.signWelcome(...args) },
+    // Shared tabs' rosters signed and their sessions, held by the gateway with the same identity (gateway/tabKey.ts).
+    tabKey: tabKeyOf(() => gatewayOps.tabKey),
+    // Their relay, a socket per shared tab, held by the gateway too (gateway/tabRelay.ts).
+    tabRelay,
     // The account's connected services, sealed and opened by the gateway for the connectors service.
     connectorVault: { seal: (plaintext) => gatewayOps.connectorVault.seal(plaintext), open: (envelope) => gatewayOps.connectorVault.open(envelope) },
     // The same path the window's `agent_fork` takes.
@@ -1309,7 +1317,11 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   const workspacesLink = createWorkspacesLink(coreApi, (frame) => serviceLinks.notify('workspaces', frame), forgetAgentProject)
   // Agent Messages in its own process: which of its deliveries may be written, as it last said, and what it may ask
   // and hear of the core (core/messagesLink.ts).
-  const messagesLink = createMessagesLink({ core: coreApi, notify: (frame) => serviceLinks.notify('messages', frame) })
+  // A roster change it tells (`observers`) goes to Share: to its process, which a call starts while it is off, or to its
+  // handler in this one.
+  const messagesLink = createMessagesLink({ core: coreApi, notify: (frame) => serviceLinks.notify('messages', frame),
+    share: (type, payload) => outOfProcess.has('sharing') ? serviceLinks.call('sharing', type, payload)
+      : new Promise((resolve) => { if (!serviceHost.route(type, payload, { local: true, owner: true }, resolve)) resolve({ error: 'SERVICE_UNAVAILABLE' }) }) })
   // An experiment asked for, and the account's notices for those that hear them (core/experiments.ts).
   const experimentHooks = createExperimentHooks({ want: (service) => coreLink.want(service), notify: (service, frame) => serviceLinks.notify(service, frame),
     outOfProcess, experiments })
@@ -1325,6 +1337,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       serviceLinks.notify('connectors', { type: 'service_event', payload: { kind: 'notice', notice } })
     }
   }
+  // What a shared tab's relay said: a close the core forgets the tab for (core/gatewayLink.ts `tabRelayOf`), and every
+  // frame for Agent Messages, in its own process or in this one (core/messagesLink.ts).
+  backend.onTabFrame = (event) => { tabRelay.heard(event); messagesLink.tabFrame(event) }
   // What the Store in its own process tells the core: an install's progress, and that what is installed changed (core/storeLink.ts).
   const storeLink = createStoreLink(coreApi, invalidateInstalledDsh, (type, payload) => serviceLinks.call('store', type, payload))
   storeLink.onReady(() => { void heldLaunches.restoreHeld('store') })
@@ -1399,7 +1414,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       questionControls.connected(service)
       if (service === 'search') { searchGeneration++; externalResumes?.wake() }
       if (service === 'usage') usageLink.connected()
-      if (service === 'gateway') gatewayLink?.connected()
+      // The gateway first hears what it starts from, then the shared tabs it held before a restart.
+      if (service === 'gateway') { gatewayLink?.connected(); tabRelay.connected() }
       if (service === 'devices') devicesLink.connected()
       if (service === 'wifi') wifiCore.started(appVoiceFocus ?? null)
       if (service === 'viewers') viewersLink.connected()
@@ -1421,6 +1437,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
       modelControls.disconnected(service)
       questionControls.disconnected(service)
       if (service === 'gateway') gatewayLink?.disconnected()
+      // Agent Messages' process went: its tabs' sockets have no one to hear them, and it opens them again as it starts.
+      if (service === 'messages') tabRelay.closeOpened()
       if (service === 'devices') devicesLink.disconnected()
       if (service === 'wifi') wifiCore.stopped()
       if (service === 'recaps') recapsLink.disconnected()
@@ -1470,7 +1488,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // Agent Messages (services/messages.ts): in the edge host, or in this process behind the service host's guard (a
   // fault there costs no message its write).
   if (outOfProcess.has('messages')) ports.messages = messagesLink.port
-  else serviceHost.start('messages', inline!.startMessagesInCore, coreApi, MESSAGES_FALLBACKS, MESSAGES_REQUESTS)
+  // In this process it hears its shared tabs' frames from the same listeners the socket's `onTabFrame` feeds.
+  else serviceHost.start('messages', (core, started) => inline!.startMessagesInCore(core, started, { onTabFrame: messagesLink.onTabFrame,
+    observers: () => { void Promise.resolve(messagesLink.answer('observers', {})).catch(() => {}) } }), coreApi, MESSAGES_FALLBACKS, MESSAGES_REQUESTS)
   // The harnesses installed here, and installing, updating and removing one (services/store.ts): in this
   // process, or beside the viewers in theirs (services/storeProcess.ts).
   if (outOfProcess.has('store')) ports.store = storeLink.port

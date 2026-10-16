@@ -1,7 +1,7 @@
 import { productObservation, productUsageIntent, productUsageLaunch, productUsageRequest } from './lib/productUsageSignals.js'
 import { isLocalOnly, withoutUpdate } from './lib/cardUpdate.js'
 import type { PurgeAgentService } from './lib/purgeAgentService.js'
-import { MESSAGES_REQUESTS, SHARE_REQUESTS, type Asker, type LocalWindows, type WindowSurface, type BackendNotice, type GatewayEvents, type GatewayPort, type ModelsPort, type RemoteClient, type RemoteRole, type RemoteTransport } from './core/api.js'
+import { MESSAGES_REQUESTS, SHARE_REQUESTS, type Asker, type LocalWindows, type WindowSurface, type BackendNotice, type GatewayEvents, type GatewayPort, type ModelsPort, type RemoteClient, type RemoteRole, type RemoteTransport, type TabFrame } from './core/api.js'
 import { ServiceUnavailableError } from './core/serviceHost.js'
 import { countWindows } from './lib/windowSurfaces.js'
 import type { ViewerStreams } from './core/viewerStreams.js'
@@ -200,6 +200,8 @@ export class BackendSocket {
   /** The account's notices the backend announces (`desk_changed`, …), for the experiments that hear them
    *  (Agent Messages reads its tabs again), as well as the windows here. */
   onAccountNotice: ((notice: BackendNotice) => void) | null = null
+  /** What a shared tab's relay said (gateway/tabRelay.ts), for Agent Messages. */
+  onTabFrame: ((event: TabFrame) => void) | null = null
   /**
    * Called on `agent_retarget` — cli.ts re-execs an EXISTING agent's pane against a different grid,
    * or, when `grid` is null, back onto its own login.
@@ -408,6 +410,7 @@ export class BackendSocket {
     device: (connId, frame, opened) => this.wifi?.request(connId, frame, opened),
     deviceRevoked: (identity) => this.wifi?.revoked(identity),
     toWindows: (frame) => this.sendLocal(frame),
+    tabFrame: (event) => this.onTabFrame?.(event),
   }
 
   /** The Wi-Fi device's sessions and requests, as the gateway hands them on, for its service with the

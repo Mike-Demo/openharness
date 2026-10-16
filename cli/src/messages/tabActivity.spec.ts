@@ -1,0 +1,92 @@
+import { describe, expect, it } from 'vitest'
+import { ACTIVITY_LEASE_MS, ACTIVITY_REFUSED_MS, ACTIVITY_RENEW_MS, ActivityIn, ActivityOut } from './tabActivity.js'
+
+const TAB = 'a'.repeat(24)
+const OTHER = 'b'.repeat(24)
+describe('ActivityOut', () => {
+  it('sends a change once, renews working every ACTIVITY_RENEW_MS, and sends idle once', () => {
+    const out = new ActivityOut()
+    expect(out.due(TAB, 0, { a1: 'idle' })).toEqual([{ agentId: 'a1', state: 'idle' }])
+    expect(out.due(TAB, 5_000, { a1: 'idle' })).toEqual([])
+    expect(out.due(TAB, 10_000, { a1: 'working' })).toEqual([{ agentId: 'a1', state: 'working' }])
+    expect(out.due(TAB, 10_000 + ACTIVITY_RENEW_MS - 1, { a1: 'working' })).toEqual([])
+    expect(out.due(TAB, 10_000 + ACTIVITY_RENEW_MS, { a1: 'working' })).toEqual([{ agentId: 'a1', state: 'working' }])
+    expect(out.due(TAB, 40_000, { a1: 'idle' })).toEqual([{ agentId: 'a1', state: 'idle' }])
+  })
+  it('sends at most 64 agents in a frame', () => {
+    const out = new ActivityOut()
+    const many = Object.fromEntries(Array.from({ length: 70 }, (_, i) => [`a${i}`, 'working' as const]))
+    expect(out.due(TAB, 0, many)).toHaveLength(64)
+  })
+  it('stops asking a machine that refused for ACTIVITY_REFUSED_MS, for that tab only', () => {
+    const out = new ActivityOut()
+    expect(out.refusing(TAB, 'm', 0)).toBe(false)
+    out.refused(TAB, 'm', 0)
+    expect(out.refusing(TAB, 'm', ACTIVITY_REFUSED_MS - 1)).toBe(true)
+    expect(out.refusing(TAB, 'm', ACTIVITY_REFUSED_MS)).toBe(false)
+    expect(out.refusing(OTHER, 'm', 1)).toBe(false)
+    expect(out.refusing(TAB, 'n', 1)).toBe(false)
+  })
+  it('prunes the tabs no longer held', () => {
+    const out = new ActivityOut()
+    out.due(TAB, 0, { a1: 'idle' })
+    out.due(OTHER, 0, { a1: 'idle' })
+    out.prune(new Set([OTHER]))
+    expect(out.due(TAB, 1, { a1: 'idle' })).toHaveLength(1)
+    expect(out.due(OTHER, 1, { a1: 'idle' })).toEqual([])
+  })
+  it('starts again for a tab it forgot', () => {
+    const out = new ActivityOut()
+    expect(out.due(TAB, 0, { a1: 'idle' })).toHaveLength(1)
+    expect(out.due(TAB, 1, { a1: 'idle' })).toEqual([])
+    out.forget(TAB)
+    expect(out.due(TAB, 2, { a1: 'idle' })).toEqual([{ agentId: 'a1', state: 'idle' }])
+  })
+})
+
+describe('ActivityIn', () => {
+  it('takes only listed agents of the sending machine, with a lease for working', () => {
+    const into = new ActivityIn()
+    const taken = into.take(TAB, 'm1', [{ agentId: 'a1', state: 'working' }, { agentId: 'zz', state: 'working' }, { agentId: 'a2', state: 'bogus' }, { agentId: 7, state: 'working' }], (id) => id !== 'zz', 0)
+    expect(taken).toEqual([{ sharedTabId: TAB, machineId: 'm1', agentId: 'a1', state: 'working', validForMs: ACTIVITY_LEASE_MS }])
+    expect(into.snapshot(ACTIVITY_LEASE_MS - 1)).toEqual([{ sharedTabId: TAB, machineId: 'm1', agentId: 'a1', state: 'working', validForMs: 1 }])
+    expect(into.snapshot(ACTIVITY_LEASE_MS)).toEqual([])
+  })
+  it('hears idle at once, and shows nothing for it afterwards', () => {
+    const into = new ActivityIn()
+    expect(into.take(TAB, 'm1', [{ agentId: 'a1', state: 'working' }], () => true, 0)).toHaveLength(1)
+    expect(into.take(TAB, 'm1', [{ agentId: 'a1', state: 'idle' }], () => true, 2_000)).toEqual([{ sharedTabId: TAB, machineId: 'm1', agentId: 'a1', state: 'idle', validForMs: 0 }])
+    expect(into.snapshot(2_001)).toEqual([])
+  })
+  it('takes at most one frame per machine and tab a second, and at most 64 agents', () => {
+    const into = new ActivityIn()
+    const agents = Array.from({ length: 65 }, (_, i) => ({ agentId: `a${i}`, state: 'working' }))
+    expect(into.take(TAB, 'm1', agents, () => true, 0)).toHaveLength(64)
+    expect(into.take(TAB, 'm1', [{ agentId: 'a1', state: 'idle' }], () => true, 999)).toEqual([])
+    expect(into.snapshot(999)).toHaveLength(64)
+    expect(into.snapshot(999).find((a) => a.agentId === 'a1')?.state).toBe('working')
+    expect(into.take(TAB, 'm2', [{ agentId: 'a1', state: 'idle' }], () => true, 999)).toHaveLength(1)
+    expect(into.take(TAB, 'm1', [{ agentId: 'a1', state: 'idle' }], () => true, 1_000)).toHaveLength(1)
+  })
+  it('ignores what is not a list of objects', () => {
+    const into = new ActivityIn()
+    expect(into.take(TAB, 'm1', 'x', () => true, 0)).toEqual([])
+    expect(into.take(TAB, 'm1', null, () => true, 2_000)).toEqual([])
+    expect(into.take(TAB, 'm1', [1, 'a', null], () => true, 4_000)).toEqual([])
+  })
+  it('prunes the tabs no longer held', () => {
+    const into = new ActivityIn()
+    into.take(TAB, 'm1', [{ agentId: 'a1', state: 'working' }], () => true, 0)
+    into.take(OTHER, 'm1', [{ agentId: 'a1', state: 'working' }], () => true, 0)
+    into.prune(new Set([OTHER]))
+    expect(into.snapshot(1).map((a) => a.sharedTabId)).toEqual([OTHER])
+  })
+  it('forgets a tab: what it heard and its frame pace', () => {
+    const into = new ActivityIn()
+    into.take(TAB, 'm1', [{ agentId: 'a1', state: 'working' }], () => true, 0)
+    into.take(OTHER, 'm1', [{ agentId: 'a1', state: 'working' }], () => true, 0)
+    into.forget(TAB)
+    expect(into.snapshot(1).map((a) => a.sharedTabId)).toEqual([OTHER])
+    expect(into.take(TAB, 'm1', [{ agentId: 'a1', state: 'working' }], () => true, 1)).toHaveLength(1)
+  })
+})

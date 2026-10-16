@@ -17,6 +17,8 @@ import { localWindowsOf, windowSurfaceOf } from '../lib/windowSurfaces.js'
 import { decodeGatewayBinary, encodeGatewayBinary, GatewayBinary, GATEWAY_CALLS } from '../lib/gatewayWire.js'
 import { RelayConnectError } from '../lib/relayFrames.js'
 import { decodeTerminalLocal, encodeTerminalLocal } from '../lib/terminalBinary.js'
+import { answerTabKey } from '../lib/tabKeyWire.js'
+import { answerTabRelay } from '../lib/tabRelayWire.js'
 import { accountLink } from '../services/accountLink.js'
 import { runServiceProcess, type CoreConnection, type ServiceProcess } from '../services/process.js'
 import { startGateway, type StartedGateway } from './start.js'
@@ -66,6 +68,7 @@ export function runGatewayService(options: GatewayServiceOptions): ServiceProces
     device: (connId, frame, opened) => notice('device', { connId, frame, opened }),
     deviceRevoked: (identity) => notice('deviceRevoked', { identity }),
     toWindows: (frame) => notice('toWindows', { frame }),
+    tabFrame: (event) => notice('tabFrame', { event }),
   }
 
   /** The account's tokens, from the core (`core.account`, services/accountLink.ts): a refusal comes back as
@@ -255,6 +258,12 @@ export function runGatewayService(options: GatewayServiceOptions): ServiceProces
         return { error: error instanceof Error ? error.message : String(error) }
       }
     },
+    // Shared tabs' keys (gateway/tabKey.ts): one of the nine `TabKey` methods, answered `{ result }` or `{ error }`,
+    // and `UNKNOWN_METHOD` for any other name (lib/tabKeyWire.ts). Taken in the order the core sent them, as the lane's.
+    [GATEWAY_CALLS.tabKey]: (p: Payload): Promise<Payload> => answerTabKey(ops().tabKey, p),
+    // Shared tabs' relay (gateway/tabRelay.ts): `open`, `send` or `close`, and `UNKNOWN_METHOD` for any other name
+    // (lib/tabRelayWire.ts).
+    [GATEWAY_CALLS.tabRelay]: (p: Payload): Promise<Payload> => answerTabRelay(ops().tabRelay, p),
     // The account's connected services (lib/e2ee/connectorVault.ts): an envelope sealed, or one opened.
     [GATEWAY_CALLS.connectorVault]: async (p: Payload): Promise<Payload> => {
       const vault = ops().connectorVault

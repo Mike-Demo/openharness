@@ -180,6 +180,9 @@ export interface CoreApi {
     /** `activityText` with the footer's timer, for a Harness Pro. Absent in a
      *  core that cannot read them; the dial then gets the footer alone. */
     activitySnapshot?(agentId: string): Promise<{ text: string; elapsedSeconds?: number } | null>
+    /** Whether each of these agents is working now, as this computer's windows are told (core/turns/activity.ts):
+     *  Agent Messages tells a shared tab's other accounts. An agent that is not live is left out. */
+    activity(agentIds: string[]): Promise<Record<string, 'working' | 'idle' | 'unknown'>>
     /** Close a harness another agent started (`startedBy: agent`) as `agent_close` closes one: its screen saved, its
      *  process stopped, its conversation kept. `idle` refuses one that works, waits for the person or holds a draft
      *  (`SESSION_NOT_IDLE`); `now` does not. Any other harness is refused (`NOT_AGENT_STARTED`): the agent cleanup
@@ -243,6 +246,12 @@ export interface CoreApi {
     lane: LaneSeal
     /** This machine's E2EE identity as Share's owner signs with it, held by the gateway (`ObserverKey`). */
     observerKey: ObserverKey
+    /** Shared tabs' keys: rosters and key changes signed with this machine's identity, and the sessions to the
+     *  tabs' other machines, held by the gateway (`TabKey`). */
+    tabKey: TabKey
+    /** Shared tabs' relay: a socket per shared tab, held by the gateway (`TabRelay`); what it hears is
+     *  `GatewayEvents.tabFrame`, which the core hands to Agent Messages. */
+    tabRelay: TabRelay
     /** The account's connected services, sealed and opened by the gateway for its machines (`ConnectorVault`). */
     connectorVault: ConnectorVault
     /** Whether this computer holds an account: a sign-in or sign-out restarts the daemon. */
@@ -262,6 +271,9 @@ export interface CoreApi {
     /** A read or write of the account's backend, signed in by the core (`proxyBackend`): an experiment's
      *  account-wide settings, and Agent Messages' tabs. A failure is an answer: 502, 504, 401. */
     backend(method: string, path: string, body?: unknown): Promise<{ status: number; body: Record<string, unknown> }>
+    /** The account signed in here, its id and email, as the backend says it (`GET /api/auth/me`), read by the core's own
+     *  sign-in; null while it cannot be read, or by a process that cannot ask (`accountIdentity`). */
+    identity(): Promise<AccountIdentity | null>
     /** Hear the account's changes the backend announces (`desk_changed`, …). Returns how to stop hearing. */
     onNotice(listener: (notice: BackendNotice) => void): () => void
   }
@@ -396,6 +408,68 @@ export const OBSERVER_KEY_OFF: ObserverKey = {
   signWelcome: () => Promise.reject(new Error('no key: this process holds no E2EE identity')),
 }
 
+/** A peer in a shared tab: its machine, and the identity key the roster lists for it, vouched for by the caller. */
+export interface TabLink { sharedTabId: string; machineId: string; peerPub: string }
+/**
+ * Shared tabs' keys, held by the gateway with this machine's E2EE identity
+ * (docs/superpowers/specs/2026-10-15-agent-messages-across-accounts-design.md): the owner's signature on a roster
+ * and on a move to a new key, and a session per peer machine, keyed by tab and machine. Agent Messages, in the edge
+ * host, holds no key and asks for each.
+ */
+export interface TabKey {
+  publicKey(): Promise<string>
+  signRoster(sharedTabId: string, version: number, body: string): Promise<string>
+  signKeyChange(sharedTabId: string, nextPub: string): Promise<string>
+  hello(link: TabLink): Promise<Record<string, unknown>>
+  welcome(link: TabLink, payload: Record<string, unknown>): Promise<boolean>
+  accept(link: TabLink, hello: Record<string, unknown>): Promise<{ welcome: Record<string, unknown> } | { refused: true }>
+  seal(link: TabLink, frame: Record<string, unknown>): Promise<LaneSealed>
+  open(link: TabLink, frame: Record<string, unknown>): Promise<LaneOpened>
+  drop(link: TabLink): void
+}
+/** A process with no key of the core's: it signs nothing, starts no session and seals nothing. */
+export const TAB_KEY_OFF: TabKey = {
+  publicKey: () => Promise.reject(new Error('no key: this process holds no E2EE identity')),
+  signRoster: () => Promise.reject(new Error('no key: this process holds no E2EE identity')),
+  signKeyChange: () => Promise.reject(new Error('no key: this process holds no E2EE identity')),
+  hello: () => Promise.reject(new Error('no key: this process holds no E2EE identity')),
+  welcome: async () => false,
+  accept: async () => ({ refused: true }),
+  seal: async () => ({ lost: true }),
+  open: async () => ({ lost: true }),
+  drop: () => {},
+}
+
+/**
+ * What a shared tab's relay said (gateway/tabRelay.ts, the backend's `/api/agent-messages-ws`), handed on to Agent
+ * Messages as it arrived: a frame from one of the tab's machines with who the relay says sent it (`from`, stamped by
+ * the relay, never the sender's word), a frame it had nobody to deliver to (`undeliverable`, the machine it was for),
+ * the relay admitting this machine (`ready`, sent again after each redial), or the socket closed for good (`closed`:
+ * 4403 when this machine is not in the tab, 4409 when another socket of it took the tab over).
+ */
+export interface TabFrame {
+  sharedTabId: string
+  from?: { machineId: string; userId: string }
+  payload?: Record<string, unknown>
+  undeliverable?: string
+  closed?: { code: number; reason: string }
+  ready?: true
+}
+/**
+ * Shared tabs' relay, held by the gateway (gateway/tabRelay.ts): one long-lived socket per shared tab, which carries
+ * frames already sealed between the tab's machines (`TabKey`). What it hears comes back as `GatewayEvents.tabFrame`.
+ */
+export interface TabRelay {
+  /** Keep a socket to the shared tab's relay open (idempotent). */
+  open(sharedTabId: string): Promise<void>
+  /** Send a frame to a machine of the shared tab; false when no socket is open for the tab. */
+  send(sharedTabId: string, to: string, payload: Record<string, unknown>): Promise<boolean>
+  /** Close the tab's socket and stop reconnecting. */
+  close(sharedTabId: string): void
+}
+/** A process with no relay of the core's: it opens nothing and sends nothing. */
+export const TAB_RELAY_OFF: TabRelay = { open: async () => {}, send: async () => false, close: () => {} }
+
 /**
  * The account's connected services sealed for its machines (lib/e2ee/connectorVault.ts), by the gateway,
  * which holds this machine's identity and reads the device key log: `seal` makes an envelope for every
@@ -419,11 +493,35 @@ export const AGENT_ACTIONS_OFF: Pick<CoreApi['agents'], 'create' | 'dsh'> = {
   dsh: () => null,
 }
 
+/** The account signed in here, as Agent Messages' shared tabs name their owner and members by it. */
+export interface AccountIdentity { accountId: string; email: string }
+
+/**
+ * The account signed in here, read once through the core's own sign-in (`GET /api/auth/me`): a sign-in to another
+ * account starts a new core, so what it read stays true. Asked again after a read that failed or said nothing usable.
+ * Read by the core rather than by Agent Messages in its process, which may call only `MESSAGES_BACKEND_ROUTES`.
+ */
+export function accountIdentity(backend: CoreApi['account']['backend']): () => Promise<AccountIdentity | null> {
+  let known: AccountIdentity | null = null
+  return async () => {
+    if (known) return known
+    const reply = await backend('GET', '/api/auth/me').catch(() => null)
+    const data = reply?.status === 200 && reply.body.success === true ? reply.body.data as { user?: Record<string, unknown> } | undefined : undefined
+    const user = data?.user
+    if (typeof user?.id !== 'string' || !user.id || typeof user.email !== 'string' || !user.email) return null
+    known = { accountId: user.id, email: user.email }
+    return known
+  }
+}
+
 /** The account as a service that reads no backend, hears no notice and signs nothing has it. */
-export const ACCOUNT_BACKEND_OFF: Pick<CoreApi['account'], 'backend' | 'onNotice' | 'observerKey' | 'connectorVault'> = {
+export const ACCOUNT_BACKEND_OFF: Pick<CoreApi['account'], 'backend' | 'identity' | 'onNotice' | 'observerKey' | 'tabKey' | 'tabRelay' | 'connectorVault'> = {
   backend: async () => ({ status: 503, body: { error: 'SERVICE_UNAVAILABLE' } }),
+  identity: async () => null,
   onNotice: () => () => {},
   observerKey: OBSERVER_KEY_OFF,
+  tabKey: TAB_KEY_OFF,
+  tabRelay: TAB_RELAY_OFF,
   connectorVault: CONNECTOR_VAULT_OFF,
 }
 
@@ -578,10 +676,12 @@ export const LONG_ANSWERS: Readonly<Record<string, Readonly<Record<string, numbe
 
 /** The orchestrator (services/orchestrator.ts): its projects, for the apps and for the agents it runs. */
 export const ORCHESTRATOR_REQUESTS = ['orchestrator'] as const
-/** Share (services/sharing.ts): an owner's shares of a harness, their links and their comments. */
+/** Share (services/sharing.ts): an owner's shares of a harness, their links and their comments; and the observers
+ *  shared tabs want for this computer's harnesses, derived again from their rosters (`harness_share_rosters`, which
+ *  Agent Messages asks through the core as a roster changes, core/messagesLink.ts `observers`). */
 export const SHARE_REQUESTS = [
   'harness_share_list', 'harness_share_invite', 'harness_share_remove', 'harness_share_link',
-  'harness_share_comments', 'harness_share_comment_post', 'harness_share_comment_remove',
+  'harness_share_comments', 'harness_share_comment_post', 'harness_share_comment_remove', 'harness_share_rosters',
 ] as const
 
 /** Agent Messages (services/messages.ts, messages/service.ts): from `harness send` in an agent's pane, from the
@@ -596,15 +696,54 @@ export const CLOUD_REQUESTS = ['cloud_transcript', 'cloud_send', 'cloud_agents']
 /**
  * What Agent Messages in a process of its own may do through the core, and nothing more (core/messagesLink.ts
  * answers it, and checks each): the agents as the apps are shown them (`shown`) and how an agent's shell reaches
- * this daemon (`daemon`), which its roster and its `harness send` read; the account's tabs, the one backend read it
- * makes (`backend`, GET of `MESSAGES_BACKEND_PATH`); its log's change notice for the windows (`windows`, only
- * `MESSAGES_WINDOW_FRAME`); and which of its typed deliveries may be written (`writable`). It writes turns into
- * agents (core/deliveries.ts, `TURN_DELIVERERS`) and hears the account's `desk_changed`. The same questions the
- * experiment asked, so a core of either version answers the process of the other (harnessd/services.ts).
+ * this daemon (`daemon`), which its roster and its `harness send` read; the account signed in here (`account`, its id
+ * and email, which the core reads: `accountIdentity`); the account's backend, only the routes of
+ * `MESSAGES_BACKEND_ROUTES` (`backend`): its tabs, and shared tabs' shares, rosters, invitations, members and moves; its
+ * log's change notice for the windows (`windows`, only `MESSAGES_WINDOW_FRAME`); which of its typed deliveries may be
+ * written (`writable`); and shared tabs' keys, which the gateway holds (`tab_key`, one `TabKey` method a call,
+ * lib/tabKeyWire.ts), and their relay, whose sockets the gateway holds too (`tab_relay`, one `TabRelay` method a call,
+ * lib/tabRelayWire.ts); and that a shared tab's roster changed here (`observers`), which the core hands to Share as
+ * `harness_share_rosters`, so that a member removed stops watching this computer's harnesses at once. It writes turns into agents (core/deliveries.ts, `TURN_DELIVERERS`) and hears the account's
+ * `desk_changed`. The questions the experiment asked are answered as they were, so a core of either version answers
+ * the process of the other (harnessd/services.ts); a core from before `account` answers it `UNKNOWN_QUERY`, and shared
+ * tabs are then unavailable while the rest of Agent Messages runs on.
  */
-export const MESSAGES_QUERIES = ['writable', 'shown', 'daemon', 'backend', 'windows'] as const
-export const MESSAGES_BACKEND_PATH = '/api/agent-messages'
+export const MESSAGES_QUERIES = ['writable', 'shown', 'daemon', 'account', 'backend', 'windows', 'tab_key', 'tab_relay', 'observers', 'activity'] as const
+/** Each id as the backend makes it: a shared tab's (24 hex), a desk tab's, an invitation's (a UUID) and an account's. */
+const SHARED_TAB = '[a-f0-9]{24}', DESK_TAB = '[A-Za-z0-9_-]{1,64}', USER = '[A-Za-z0-9_-]{1,128}'
+const INVITE = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+const route = (method: string, path: string) => ({ method, path: new RegExp(`^/api/agent-messages${path}$`) })
+/**
+ * The backend routes Agent Messages in its process may call through the core's sign-in (`backend`), by method and
+ * whole path, and no others (backend/src/routes/agentMessages.ts). Its process holds no credential: the core signs
+ * each call, so a route left open here is a route any code in that process could call as the account. Anchored, and
+ * each id held to the shape the backend gives it, so that no path climbs out (`..`), carries a query or names another
+ * route. Shared tabs' were refused by the one GET this allowed before, which left every share action failing in the
+ * edge host, where Agent Messages runs.
+ */
+export const MESSAGES_BACKEND_ROUTES: ReadonlyArray<{ method: string; path: RegExp }> = [
+  route('GET', ''),
+  route('GET', '/shares'),
+  route('PUT', `/shares/${DESK_TAB}/roster`),
+  route('POST', `/shares/${SHARED_TAB}/invites`),
+  route('GET', '/invites'),
+  route('DELETE', `/invites/${INVITE}`),
+  route('POST', `/invites/${INVITE}/accept`),
+  route('DELETE', `/shares/${SHARED_TAB}/members/${USER}`),
+  route('DELETE', `/shares/${SHARED_TAB}`),
+  route('POST', `/shares/${SHARED_TAB}/move`),
+]
+/** Whether Agent Messages in its process may make this backend call (`MESSAGES_BACKEND_ROUTES`). */
+export const messagesBackendAllowed = (method: unknown, path: unknown): boolean =>
+  typeof method === 'string' && typeof path === 'string' && MESSAGES_BACKEND_ROUTES.some((r) => r.method === method && r.path.test(path))
 export const MESSAGES_WINDOW_FRAME = 'messages_changed'
+/** Shared tabs changed on this computer (a roster, an invitation, an alert, a notice, a waiting request or the
+ *  untrusted list): the windows read `shares` again. Only a revision: what changed is read, never pushed. */
+export const SHARED_TABS_WINDOW_FRAME = 'shared_tabs_changed'
+/** Another account's harness in a shared tab started or stopped working (messages/tabActivity.ts). */
+export const SHARED_ACTIVITY_WINDOW_FRAME = 'shared_activity'
+/** What Agent Messages may tell this computer's windows (core/messagesLink.ts `windows`), and nothing else. */
+export const MESSAGES_WINDOW_FRAMES: readonly string[] = [MESSAGES_WINDOW_FRAME, SHARED_TABS_WINDOW_FRAME, SHARED_ACTIVITY_WINDOW_FRAME]
 
 /**
  * The experiments: services that cost nothing until they are on (docs/design/2026-10-06-core-boundary-next.md,
@@ -621,8 +760,9 @@ export const MESSAGES_WINDOW_FRAME = 'messages_changed'
  */
 export const EXPERIMENTS: Readonly<Record<string, { requests: readonly string[]; state: readonly string[] }>> = {
   orchestrator: { requests: ORCHESTRATOR_REQUESTS, state: ['orchestrator/*.json'] },
-  // Its invitations and links: a harness was shared from here.
-  sharing: { requests: SHARE_REQUESTS, state: ['harness-shares.json', 'harness-collaboration.json'] },
+  // Its invitations and links: a harness was shared from here. Or a shared tab held here (Agent Messages' file): the
+  // observers its members are granted are derived and renewed by Share, and taken back once one leaves.
+  sharing: { requests: SHARE_REQUESTS, state: ['harness-shares.json', 'harness-collaboration.json', 'agent-messages/shared-tabs.json'] },
   // Request-only, on from its first request until the daemon stops: another machine's Memories pane asks, and
   // the package's own files are its state.
   memory: { requests: MEMORY_REQUESTS, state: [] },
@@ -1269,6 +1409,8 @@ export interface GatewayEvents {
   deviceRevoked(identity: string): void
   /** Something the windows on this computer show of the account's devices (the device key log's notices). */
   toWindows(frame: Record<string, unknown>): void
+  /** What a shared tab's relay said (`GatewayOps.tabRelay`), for Agent Messages. */
+  tabFrame(event: TabFrame): void
 }
 
 /**
@@ -1388,6 +1530,10 @@ export interface GatewayOps {
   lane: LaneSeal
   /** Share's owner's signature on a welcome, with this machine's identity (`core.account.observerKey`). */
   observerKey: ObserverKey
+  /** Shared tabs' rosters signed and their sessions, with this machine's identity (`core.account.tabKey`). */
+  tabKey: TabKey
+  /** Shared tabs' relay sockets (`core.account.tabRelay`); what they hear is `GatewayEvents.tabFrame`. */
+  tabRelay: TabRelay
   /** The account's connected services sealed for its machines (`core.account.connectorVault`). */
   connectorVault: ConnectorVault
 }
@@ -1471,6 +1617,8 @@ export interface CoreApiDeps {
   accessToken: CoreApi['account']['accessToken']
   lane: CoreApi['account']['lane']
   observerKey: CoreApi['account']['observerKey']
+  tabKey: CoreApi['account']['tabKey']
+  tabRelay: CoreApi['account']['tabRelay']
   connectorVault: CoreApi['account']['connectorVault']
   observer: CoreApi['clients']['observer']
   privateGridName: CoreApi['account']['privateGridName']
@@ -1489,6 +1637,8 @@ export interface CoreApiDeps {
   machine: CoreApi['machine']
   activityText: CoreApi['agents']['activityText']
   activitySnapshot?: CoreApi['agents']['activitySnapshot']
+  /** Whether each agent works now (`activity`); absent, no agent is reported. */
+  activity?: CoreApi['agents']['activity']
   /** One `agent_close` (core/agents/close.ts), for `closeStarted`; absent, a service closes nothing. */
   closeAgent?: (request: AgentCloseRequest) => Promise<AgentCloseResult>
   /** When an agent's conversation last moved (lib/transcriptActivity.ts), for `lastActivity`. */
@@ -1518,8 +1668,8 @@ export interface CoreApiDeps {
 
 export function createCoreApi({
   dataDir, registry, stoppedAgents, databaseHistory, syncSession, runtimeModels, viewerChanged,
-  gridNamed, gridModelsChanged, dshInstallStatus, mintGridName, accessToken, lane, observerKey, connectorVault, observer, privateGridName, machineName, backend, onNotice,
-  runtimeProfile, setRuntime, fork, create, dsh, windows, daemon, turns, questions, terminals = TERMINALS_OFF, conversations = CONVERSATIONS_OFF, viewerFrame, machine, activityText, activitySnapshot,
+  gridNamed, gridModelsChanged, dshInstallStatus, mintGridName, accessToken, lane, observerKey, tabKey, tabRelay, connectorVault, observer, privateGridName, machineName, backend, onNotice,
+  runtimeProfile, setRuntime, fork, create, dsh, windows, daemon, turns, questions, terminals = TERMINALS_OFF, conversations = CONVERSATIONS_OFF, viewerFrame, machine, activityText, activitySnapshot, activity,
   closeAgent, activityAt,
   signedIn, environment, machines, sendLocal, sendToWindow, hasWindow, devicesChanged, dialWatching, wifi, cloud, cloudRows, lastTurn, turnCard, turnSummary,
   log = (line) => console.warn(line),
@@ -1554,6 +1704,7 @@ export function createCoreApi({
       dsh,
       activityText,
       activitySnapshot,
+      activity: activity ?? (async () => ({})),
       // Decided here, not in the service: whatever the cleanup asks, from its process or this one, the core closes only
       // a harness another agent started, the conversation it reviewed (`agent_close`'s identity), and keeps it.
       closeStarted: async (agentId, mode) => {
@@ -1571,7 +1722,8 @@ export function createCoreApi({
     turns,
     questions,
     transcripts: { databaseHistory, lastTurn },
-    account: { mintGridName, accessToken, lane, observerKey, connectorVault, privateGridName, machineName, backend, onNotice, signedIn, environment, machines },
+    account: { mintGridName, accessToken, lane, observerKey, tabKey, tabRelay, connectorVault, privateGridName, machineName, backend,
+      identity: accountIdentity(backend), onNotice, signedIn, environment, machines },
     clients: {
       viewerChanged, gridNamed, gridModelsChanged, dshInstallStatus, windows, observer, hasWindow, devicesChanged, dialWatching,
       // A viewers process speaks to the core as a service: what it may send a client is a viewer stream's

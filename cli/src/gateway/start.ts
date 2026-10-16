@@ -40,6 +40,8 @@ import { HarnessShareRelay, type SharedMachineReference } from '../sharing/relay
 import { RelayGateway } from './gateway.js'
 import { LaneSessions } from './lane.js'
 import { observerKey } from './observerKey.js'
+import { TabSessions } from './tabKey.js'
+import { TabRelaySockets } from './tabRelay.js'
 import { openVault, sealVault } from '../lib/e2ee/connectorVault.js'
 import { shareWindows } from './share.js'
 import { createAccountHttp } from './accountHttp.js'
@@ -162,6 +164,13 @@ export function startGateway(host: GatewayHost): StartedGateway {
   const lane = new LaneSessions(() => relayIdentityStore.getIdentity())
   // Share's owner's welcomes, signed with the same identity (gateway/observerKey.ts).
   const ownerKey = observerKey(() => relayIdentityStore.getIdentity())
+  // Shared tabs' rosters and their sessions to other accounts' machines, with the same identity (gateway/tabKey.ts).
+  const tabKey = new TabSessions(() => relayIdentityStore.getIdentity(), () => host.machineId)
+  // Their relay: a socket per shared tab, signed in as this machine, what it hears told to the core (gateway/tabRelay.ts).
+  const tabRelay = new TabRelaySockets({
+    base: env.BACKEND_WS_URL, environment: host.autonomousEnv, machineId: () => host.machineId,
+    accessToken: (o) => host.tokens.accessToken(o), emit: (e) => host.events.tabFrame(e),
+  })
   // The trust group and the device key log are built below; the pool's callbacks reach them through these.
   let groupSyncer: GroupSyncer | null = null
   let devLogSyncer: DeviceLogSyncer | null = null
@@ -510,6 +519,8 @@ export function startGateway(host: GatewayHost): StartedGateway {
     reachable: (machineIds) => { reachable = machineIds ? new Set(machineIds) : null },
     lane,
     observerKey: ownerKey,
+    tabKey,
+    tabRelay,
     connectorVault: {
       // Sealed for every machine the verified log holds, this one included, but never a key a fork
       // suspended or one nobody has yet said is theirs (pending): a device added by whoever got hold of
@@ -542,6 +553,8 @@ export function startGateway(host: GatewayHost): StartedGateway {
       relayPool.close()
       shareRelay.close()
       lane.clear()
+      tabKey.clear()
+      tabRelay.closeAll()
       await gateway.stop()
     },
   }

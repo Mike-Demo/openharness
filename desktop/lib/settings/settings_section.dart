@@ -38,6 +38,11 @@ enum SettingsSection {
   shortcuts(AppIcons.keyboard, 'Keyboard shortcuts'),
   connectors(AppIcons.plug, 'Connectors'),
   usage(AppIcons.chartNoAxesColumn, 'Usage'),
+  tabInvites(
+    AppIcons.users,
+    'Tab invites',
+    keywords: ['invite', 'shared tab', 'trust'],
+  ),
   experimental(AppIcons.flaskConical, 'Experimental'),
   about(AppIcons.info, 'About'),
   debug(AppIcons.bug, 'Debug');
@@ -130,7 +135,7 @@ const _kSettingsGroups = [
     // are read at all — the pane is off until somebody sets it.
     SettingsSection.usage,
   ]),
-  SettingsGroup('Labs', [SettingsSection.experimental]),
+  SettingsGroup('Labs', [SettingsSection.tabInvites, SettingsSection.experimental]),
   // Debug, in builds that have it, beside the version a report has to name.
   SettingsGroup('Help', [SettingsSection.about, SettingsSection.debug]),
 ];
