@@ -41,9 +41,12 @@ export function isEncryptedTerminalFrame(frame: Frame): boolean {
  * E2EE and the stream id is inside the ciphertext. The ack and output buckets were once sized for a
  * single busy stream, and three panes of one machine streaming over the relay tripped them. A rejected
  * ack answers TERMINAL_FRAME_REJECTED, which every pane on the socket reads as transport loss and shows
- * as Reconnect (2026-10-16). They are now sized for this many busy streams per socket.
+ * as Reconnect (2026-10-16). They are now sized for this many busy streams per socket: 16 was still
+ * reachable by one person driving many harnesses on one machine, so it was raised the same day. Each
+ * frame costs a parse and a Redis publish, so cutting frames at the source (fewer acks, coarser relay
+ * flushes) is the way past this, not another raise.
  */
-export const RELAY_BUSY_STREAMS = 16
+export const RELAY_BUSY_STREAMS = 64
 /** A renderer acks once per 16 ms render window, plus once per 64 KiB rendered, while output flows. */
 const ACKS_PER_STREAM_PER_MINUTE = 3_750
 /** The daemon flushes a remote stream's output at most every 8 ms (`OUTPUT_FLUSH_MS` in the CLI). */
@@ -57,18 +60,19 @@ interface Bucket {
 
 function limits(type: string): { frames: number; bytes: number } {
   if (type === 'terminal_input') return { frames: 15_000, bytes: 64 * 1024 * 1024 }
-  // Bytes, not frames, bound the volume; the frame count only has to clear legitimate flush cadence.
+  // The byte cap scales with the frame cap at ~1 KiB per frame (a typical compressed, sealed flush),
+  // so neither binds first for legitimate traffic: 8 MiB per busy stream per minute.
   if (type === 'terminal_output') {
-    return { frames: RELAY_BUSY_STREAMS * OUTPUT_FRAMES_PER_STREAM_PER_MINUTE, bytes: 128 * 1024 * 1024 }
+    return { frames: RELAY_BUSY_STREAMS * OUTPUT_FRAMES_PER_STREAM_PER_MINUTE, bytes: RELAY_BUSY_STREAMS * 8 * 1024 * 1024 }
   }
   if (type === 'terminal_sync') return { frames: 1_200, bytes: 8 * 1024 * 1024 }
   // Acks are renderer flow control, not user actions, and cannot be dropped quietly: the host pauses
   // output at 384 KiB unacknowledged and closes the stream (TERMINAL_RENDER_STALLED) if the ack that
   // would resume it never arrives. Sharing the human-paced 1,200 below once let a single pane
   // streaming a build log exhaust the window in about 19 seconds. A worst-case encrypted ack is
-  // 216 B (pinned in terminalRelay.test.ts), so 60,000 of them fit in 16 MiB.
+  // 216 B (pinned in terminalRelay.test.ts), so 1 MiB per busy stream per minute holds its 3,750.
   if (type === 'terminal_ack') {
-    return { frames: RELAY_BUSY_STREAMS * ACKS_PER_STREAM_PER_MINUTE, bytes: 16 * 1024 * 1024 }
+    return { frames: RELAY_BUSY_STREAMS * ACKS_PER_STREAM_PER_MINUTE, bytes: RELAY_BUSY_STREAMS * 1024 * 1024 }
   }
   if (type === 'terminal_alive' || type === 'terminal_resize' || type === 'terminal_scroll') {
     return { frames: 1_200, bytes: 8 * 1024 * 1024 }

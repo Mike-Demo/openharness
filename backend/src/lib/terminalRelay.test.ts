@@ -77,6 +77,11 @@ describe('terminal opaque relay contract', () => {
     expect(guard.allow('terminal_ack', 120)).toBe(true)
   })
 
+  it('sizes the relay for 64 busy harnesses on one machine', () => {
+    // A person driving many harnesses on one remote machine hit the 16-stream budget (2026-10-16).
+    expect(RELAY_BUSY_STREAMS).toBe(64)
+  })
+
   it('lets RELAY_BUSY_STREAMS renderers ack on one socket for a whole minute', () => {
     let now = 1_000
     const guard = new TerminalRateGuard(() => now)
@@ -96,15 +101,16 @@ describe('terminal opaque relay contract', () => {
     const guard = new TerminalRateGuard(() => 1_000)
     const frames = RELAY_BUSY_STREAMS * (60_000 / 8)
     let allowed = 0
-    for (let i = 0; i < frames; i++) if (guard.allow('terminal_output', 256)) allowed++
+    // ~1 KiB is a typical compressed, sealed output frame; the byte cap must not bind before the frame cap.
+    for (let i = 0; i < frames; i++) if (guard.allow('terminal_output', 1_024)) allowed++
     expect(allowed).toBe(frames)
-    expect(guard.allow('terminal_output', 256)).toBe(false)
+    expect(guard.allow('terminal_output', 1_024)).toBe(false)
   })
 
   it('keeps a worst-case encrypted ack small enough for the ack byte budget', () => {
     // Pins the size the ack budget was derived from (216 B). A frame that grows past
-    // 16 MiB / 60,000 = 279 B would make the byte cap trip before the frame cap.
-    expect(terminalFrameBytes(worstCaseAck())).toBeLessThanOrEqual(Math.floor((16 * 1024 * 1024) / 60_000))
+    // 64 MiB / 240,000 = 279 B would make the byte cap trip before the frame cap.
+    expect(terminalFrameBytes(worstCaseAck())).toBeLessThanOrEqual(Math.floor((64 * 1024 * 1024) / 240_000))
   })
 
   it('wakes only for terminal_open, never per input/mouse/resize/ack frame', () => {

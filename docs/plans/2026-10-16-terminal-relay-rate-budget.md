@@ -117,3 +117,12 @@ says it matters.
   come.
 - Phase 3: `TerminalSession` failure reasons go to `debugPrint` only, not to
   `~/.harness/logs/app-*.log`.
+
+## Update, same day: 64 busy streams
+
+16 was still reachable by one person driving many harnesses on one remote machine, so
+`RELAY_BUSY_STREAMS` became 64 as a stopgap, with byte caps that scale with it so neither cap binds
+first: acks 240,000 frames / 64 MiB per minute (1 MiB per stream), output 480,000 frames / 512 MiB
+per minute (8 MiB per stream, ~1 KiB per frame). Each frame costs the backend a parse and a Redis
+publish, so the durable fix is fewer frames at the source (client ack cadence, coarser relay
+flushes in the daemon), not further raises. Watch pod CPU after this deploy.
