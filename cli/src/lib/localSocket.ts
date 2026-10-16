@@ -19,8 +19,9 @@ import type { Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
 import { chmodSync, linkSync, lstatSync, renameSync, unlinkSync, type Stats } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { daemonPipe, type LocalDaemonOptions } from './daemonEndpoint.js'
 import { readDaemonRecord } from './daemonRecord.js'
-import { checkPipeAuth, newPipePath, NonceWindow, PIPE_AUTH_HEADER, PIPE_PROOF_HEADER, pipeIdOf, pipeProofValue, readDaemonToken } from './windows/pipeAuth.js'
+import { checkPipeAuth, newPipePath, NonceWindow, PIPE_AUTH_HEADER, PIPE_PROOF_HEADER, pipeIdOf, pipeProofValue } from './windows/pipeAuth.js'
 import { pipeAbsent, pipeRequest, PipeUnproven } from './windows/pipeClient.js'
 
 /**
@@ -326,17 +327,20 @@ const SERVED_FOLDER_DEFAULTS: ServedFolderDeps = {
 }
 
 /**
- * What `refuseServedDataFolder` asks with for the daemon of [dataDir]. On Windows it asks with that folder's token,
- * and with no token there, nothing serves it (the core makes the token before it listens). Elsewhere it asks as it
- * always has.
+ * What `refuseServedDataFolder` asks with for the daemon of [dataDir] on [configuredPort]. On Windows it asks the
+ * recorded pipe with that folder's token (daemonEndpoint.ts `daemonPipe`). Nothing serves it when there is no token
+ * (the core makes the token before it listens), no record of a pipe and pid, or a recorded process proven gone: that
+ * pipe is never dialled, so whatever took a dead daemon's name and hangs cannot keep every start down. Elsewhere it
+ * asks as it always has.
  */
-export function servedFolderDeps(dataDir: string, platform: NodeJS.Platform = process.platform): ServedFolderDeps {
-  if (platform !== 'win32') return SERVED_FOLDER_DEFAULTS
+export function servedFolderDeps(dataDir: string, configuredPort: number, options: LocalDaemonOptions = {}): ServedFolderDeps {
+  if ((options.platform ?? process.platform) !== 'win32') return SERVED_FOLDER_DEFAULTS
+  const find = options.pipe ?? daemonPipe
   return {
     ...SERVED_FOLDER_DEFAULTS,
-    who: (path, timeoutMs) => {
-      const token = readDaemonToken(dataDir)
-      return token ? askDataFolderServer(path, timeoutMs, token) : Promise.resolve('none')
+    who: async (_path, timeoutMs) => {
+      const target = await find(dataDir, configuredPort)
+      return target ? askDataFolderServer(target.pipe, timeoutMs, target.token) : 'none'
     },
   }
 }

@@ -1414,7 +1414,7 @@ async function launch(foreground: boolean, repair: boolean = false): Promise<voi
   if (foreground && process.env.HARNESS_NO_MASTER !== '1') {
     // Beside a daemon that serves this data folder, leave at once and say so, as its core would have:
     // the master would start its services and a core only to see the core refused, and end with 0.
-    await refuseServedDataFolder(localSocketPath(env.ADAPTER_DATA_DIR, env.PORT), 1_000, servedFolderDeps(env.ADAPTER_DATA_DIR))
+    await refuseServedDataFolder(localSocketPath(env.ADAPTER_DATA_DIR, env.PORT), 1_000, servedFolderDeps(env.ADAPTER_DATA_DIR, env.PORT))
     startMasterInForeground(SCRIPT_PATH)
     return
   }

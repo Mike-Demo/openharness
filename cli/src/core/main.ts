@@ -495,7 +495,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // Another daemon serves this data folder: leave before reading or writing anything of its — its
   // registry, its viewers, its panes. Just after the update is listened for, never before it
   // (startupOrder.spec.ts).
-  await refuseServedDataFolder(localSocketPath(env.ADAPTER_DATA_DIR, env.PORT), 1_000, servedFolderDeps(env.ADAPTER_DATA_DIR))
+  await refuseServedDataFolder(localSocketPath(env.ADAPTER_DATA_DIR, env.PORT), 1_000, servedFolderDeps(env.ADAPTER_DATA_DIR, env.PORT))
   // Windows: each start listens on a pipe of a new name, which never meets a second core on this folder as the
   // fixed Unix socket does, and the ask above cannot see two starts at once. The fixed claim, held while this core
   // runs, refuses the second the same way (lib/windows/dataFolderClaim.ts).
