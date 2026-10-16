@@ -32,25 +32,42 @@ class SharedTaskRow {
     required this.state,
     this.assignee,
     this.pr,
+    this.updatedAt,
   });
 
   final String repo, title, url;
   final int issue;
+
+  /// When the issue last changed, as GitHub says; null when it did not say.
+  /// A merged task leaves Tab Activity 24 hours after it.
+  final DateTime? updatedAt;
 
   /// `open` or `closed`.
   final String state;
 
   /// The marker's `<account>/<harness>`, as the daemon read it.
   final ({String accountId, String harness})? assignee;
-  final ({int number, String url, String state, String ci})? pr;
+  final ({
+    int number,
+    String url,
+    String state,
+    String ci,
+    bool autoMerge,
+    String mergeState,
+    DateTime? mergedAt,
+  })?
+  pr;
 
   static SharedTaskRow? fromJson(Object? json) {
     if (json is! Map) return null;
     final repo = json['repo'], issue = json['issue'], url = json['url'];
     if (repo is! String || issue is! int || url is! String) return null;
     final a = json['assignee'], p = json['pr'];
-    final title = json['title'], state = json['state'];
+    final title = json['title'],
+        state = json['state'],
+        updated = json['updatedAt'];
     return SharedTaskRow(
+      updatedAt: updated is String ? DateTime.tryParse(updated) : null,
       repo: repo,
       issue: issue,
       title: title is String ? title : '',
@@ -65,6 +82,14 @@ class SharedTaskRow {
               url: p['url'] as String,
               state: p['state'] is String ? p['state'] as String : 'Open',
               ci: p['ci'] is String ? p['ci'] as String : 'none',
+              autoMerge: p['autoMerge'] == true,
+              mergeState: p['mergeState'] is String
+                  ? p['mergeState'] as String
+                  : '',
+              // When it merged (`gh pr view`), for Tab Activity's 24 hours.
+              mergedAt: p['mergedAt'] is String
+                  ? DateTime.tryParse(p['mergedAt'] as String)
+                  : null,
             )
           : null,
     );
@@ -104,9 +129,15 @@ class SharedTabsController extends ChangeNotifier {
   final ValueListenable<bool> foreground;
   final void Function(SharedActivity activity)? onActivity;
 
+  /// The last `shared_activity` frame this computer's daemon sent, each a new
+  /// value: Tab Activity reads its tab again on one for it.
+  ValueListenable<SharedActivity?> get heard => _heard;
+  final _heard = ValueNotifier<SharedActivity?>(null);
+
   SharedTabsSnapshot _snapshot = SharedTabsSnapshot.empty;
   SharedTabsState _state = SharedTabsState.unknown;
-  final _hidden = <String>{}; // dismissed here when the daemon could not be told
+  final _hidden =
+      <String>{}; // dismissed here when the daemon could not be told
   final _tasks = <String, SharedTasks>{};
   final _taskReads = <String, Future<void>>{};
   int _reads = 0, _account = 0, _activityRevision = 0;
@@ -126,11 +157,13 @@ class SharedTabsController extends ChangeNotifier {
   }
 
   static SharedTabsState? _stateFor(String code) => switch (code) {
-        'UNKNOWN_ACTION' || 'DAEMON_TOO_OLD' || 'UNSUPPORTED' => SharedTabsState.tooOld,
-        'MESSAGES_OFF' => SharedTabsState.off,
-        'SHARED_TABS_UNSUPPORTED' => SharedTabsState.unsupported,
-        _ => null,
-      };
+    'UNKNOWN_ACTION' ||
+    'DAEMON_TOO_OLD' ||
+    'UNSUPPORTED' => SharedTabsState.tooOld,
+    'MESSAGES_OFF' => SharedTabsState.off,
+    'SHARED_TABS_UNSUPPORTED' => SharedTabsState.unsupported,
+    _ => null,
+  };
 
   /// Reads `shares` again. One read at a time: a call while one is in flight
   /// asks for one more after it and joins it, never a second in parallel. A
@@ -211,10 +244,15 @@ class SharedTabsController extends ChangeNotifier {
 
   void handleActivity(Map<String, dynamic> payload) {
     final a = SharedActivity.fromJson(payload);
-    if (a != null && !_disposed) _hand(a);
+    if (a == null || _disposed) return;
+    _heard.value = _hand(a);
   }
 
-  void _hand(SharedActivity a) => onActivity?.call(a.withRevision(++_activityRevision));
+  SharedActivity _hand(SharedActivity a) {
+    final revised = a.withRevision(++_activityRevision);
+    onActivity?.call(revised);
+    return revised;
+  }
 
   /// Sign-out or another account: nothing of the old one stays, and its late
   /// answers are dropped.
@@ -252,7 +290,10 @@ class SharedTabsController extends ChangeNotifier {
         : [deskTabId];
   }
 
-  Future<Map<String, dynamic>> _ask(String action, Map<String, dynamic> payload) async {
+  Future<Map<String, dynamic>> _ask(
+    String action,
+    Map<String, dynamic> payload,
+  ) async {
     final account = _account;
     try {
       return await request({'action': action, ...payload});
@@ -263,7 +304,10 @@ class SharedTabsController extends ChangeNotifier {
         _notify();
       }
       final detail = e.detail;
-      throw SharedTabsFailure(e.code, detail == null || detail.isEmpty ? e.code : detail);
+      throw SharedTabsFailure(
+        e.code,
+        detail == null || detail.isEmpty ? e.code : detail,
+      );
     } catch (_) {
       // A timeout, a closed socket or a session not ready: this computer's daemon was not reached.
       throw const SharedTabsFailure(
@@ -275,7 +319,10 @@ class SharedTabsController extends ChangeNotifier {
 
   /// One `share_*` action; the shares are read again after it, whatever it
   /// answered.
-  Future<Map<String, dynamic>> act(String action, Map<String, dynamic> payload) async {
+  Future<Map<String, dynamic>> act(
+    String action,
+    Map<String, dynamic> payload,
+  ) async {
     final account = _account;
     try {
       return await _ask(action, payload);
@@ -294,21 +341,28 @@ class SharedTabsController extends ChangeNotifier {
     }
   }
 
-  SharedTasks tasksFor(String sharedTabId) => _tasks[sharedTabId] ?? const SharedTasks();
+  SharedTasks tasksFor(String sharedTabId) =>
+      _tasks[sharedTabId] ?? const SharedTasks();
 
   /// Reads the tab's tasks; a second call while one runs joins it.
-  Future<void> loadTasks(String sharedTabId) {
+  ///
+  /// The first argument is the key [tasksFor] answers by: the shared tab id, or, for a desk tab
+  /// that is not shared, any key the caller keeps with [tabId] (the desk tab
+  /// the daemon reads by).
+  Future<void> loadTasks(String sharedTabId, {String? tabId}) {
     final running = _taskReads[sharedTabId];
     if (running != null) return running;
     late final Future<void> flight;
-    flight = _loadTasks(sharedTabId).whenComplete(() {
+    flight = _loadTasks(sharedTabId, tabId).whenComplete(() {
       // After a reset a newer flight may hold the slot: remove only our own.
-      if (identical(_taskReads[sharedTabId], flight)) _taskReads.remove(sharedTabId);
+      if (identical(_taskReads[sharedTabId], flight)) {
+        _taskReads.remove(sharedTabId);
+      }
     });
     return _taskReads[sharedTabId] = flight;
   }
 
-  Future<void> _loadTasks(String sharedTabId) async {
+  Future<void> _loadTasks(String sharedTabId, String? tabId) async {
     final account = _account, before = tasksFor(sharedTabId);
     _tasks[sharedTabId] = SharedTasks(
       loading: true,
@@ -319,17 +373,33 @@ class SharedTabsController extends ChangeNotifier {
     _notify();
     SharedTasks next;
     try {
-      final answer = await _ask('share_tasks', {'sharedTabId': sharedTabId});
+      final answer = await _ask(
+        'share_tasks',
+        tabId != null ? {'tabId': tabId} : {'sharedTabId': sharedTabId},
+      );
       final rows = answer['rows'];
       next = SharedTasks(
         loaded: true,
-        rows: rows is List ? rows.map(SharedTaskRow.fromJson).whereType<SharedTaskRow>().toList() : const [],
+        rows: rows is List
+            ? rows
+                  .map(SharedTaskRow.fromJson)
+                  .whereType<SharedTaskRow>()
+                  .toList()
+            : const [],
         truncated: answer['truncated'] == true,
       );
     } on SharedTabsFailure catch (e) {
-      next = SharedTasks(loaded: before.loaded, rows: before.rows, error: e.code);
+      next = SharedTasks(
+        loaded: before.loaded,
+        rows: before.rows,
+        error: e.code,
+      );
     } catch (_) {
-      next = SharedTasks(loaded: before.loaded, rows: before.rows, error: 'GH_FAILED');
+      next = SharedTasks(
+        loaded: before.loaded,
+        rows: before.rows,
+        error: 'GH_FAILED',
+      );
     }
     if (_disposed || account != _account) return;
     _tasks[sharedTabId] = next;
@@ -338,7 +408,9 @@ class SharedTabsController extends ChangeNotifier {
 
   /// Each harness of the tab's repo and branch, by `machineId\u0000agentId`;
   /// empty when nobody answers.
-  Future<Map<String, ({String? project, String? branch})>> who(String sharedTabId) async {
+  Future<Map<String, ({String? project, String? branch})>> who(
+    String sharedTabId,
+  ) async {
     final account = _account;
     try {
       final answer = await _ask('share_who', {'sharedTabId': sharedTabId});
@@ -361,6 +433,7 @@ class SharedTabsController extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _heard.dispose();
     super.dispose();
   }
 }

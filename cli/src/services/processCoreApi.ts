@@ -72,6 +72,8 @@ export const UNASKED = {
   activityText: async (): Promise<string | null> => null,
   /** What only Agent Messages asks: whether harnesses work (its own process asks the core). */
   activity: async (): Promise<Record<string, 'working' | 'idle' | 'unknown'>> => ({}),
+  /** What only Agent Messages asks: one line on what each harness does. */
+  summaries: async (): Promise<Record<string, string>> => ({}),
   account: { signedIn: () => false, environment: () => '', machines: async () => ({ status: 503, body: {} }) },
   clients: { sendLocal: () => {}, sendToWindow: () => false, hasWindow: () => false, devicesChanged: () => {}, dialWatching: () => {}, turnCard: () => {}, turnSummary: () => {} },
   wifi: WIFI_OFF,
@@ -81,6 +83,7 @@ export const UNASKED = {
   machine: CoreApi['machine']
   activityText: CoreApi['agents']['activityText']
   activity: CoreApi['agents']['activity']
+  summaries: CoreApi['agents']['summaries']
   account: Pick<CoreApi['account'], 'signedIn' | 'environment' | 'machines'>
   clients: Pick<CoreApi['clients'], 'sendLocal' | 'sendToWindow' | 'hasWindow' | 'devicesChanged' | 'dialWatching' | 'turnCard' | 'turnSummary'>
   wifi: CoreApi['wifi']
@@ -130,6 +133,13 @@ export function processCoreApi(dataDir: string, service: string, view: AgentsVie
         const states = answer?.activity
         if (!states || typeof states !== 'object') return {}
         return Object.fromEntries(Object.entries(states).filter((e): e is [string, 'working' | 'idle' | 'unknown'] => e[1] === 'working' || e[1] === 'idle' || e[1] === 'unknown'))
+      },
+      // The same query, asked for the one-line summaries too. A core from before them answers without `summaries`: none.
+      summaries: async (agentIds) => {
+        const answer = await ask?.('activity', { agentIds, summaries: true }).catch(() => null)
+        const lines = answer?.summaries
+        if (!lines || typeof lines !== 'object') return {}
+        return Object.fromEntries(Object.entries(lines).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== ''))
       },
     },
     turns: {

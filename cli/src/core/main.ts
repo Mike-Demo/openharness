@@ -129,6 +129,7 @@ import { createLiveTransport } from './engines/liveTransport.js'
 import { createLiveWatcher } from './engines/liveWatcher.js'
 import { readerEngine, READER_SERVICES } from '../engines/worker/protocol.js'
 import { createRecaps } from './turns/recaps.js'
+import { summaryReader } from './turns/summaries.js'
 import { stopDeadline } from './stopDeadline.js'
 import { createUpdateHandoff, handOverOnceReleased, probeStagedMaster, type TeardownStep } from './updateHandoff.js'
 import { needsUpdaterBeside, startUpdaterBeside } from './updaterBeside.js'
@@ -766,6 +767,8 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // Shared tabs' relay, a socket per shared tab held by the gateway (gateway/tabRelay.ts), and which of them the core saw
   // opened: opened again after a gateway-only restart, closed when Agent Messages' process goes (core/gatewayLink.ts).
   const tabRelay = tabRelayOf(() => gatewayOps.tabRelay)
+  // The prompt of each agent's last turn start: what the one-line summary of a working agent says (turns/summaries.ts).
+  const turnPrompts = new Map<string, string>()
   const coreApi = createCoreApi({
     cloud: cloudDoors,
     cloudRows: () => (cloudAgents?.dialRows() ?? []) as unknown as RegisteredSession[],
@@ -809,6 +812,13 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // The dial's working card: what a Claude Code or Codex pane's footer says, read here so the pane never
     // leaves the core.
     activity: async (agentIds) => activityOf(agentIds, (agentId) => registry.byAgent(agentId), (session) => activityFrameContextRef?.(session) ?? null),
+    // One line on what each does: the kept prompt, and the latest recap line the dial's recaps read (turns/summaries.ts).
+    summaries: summaryReader({
+      live: (agentId) => registry.byAgent(agentId),
+      state: (session) => activityFrameContextRef?.(session)?.state,
+      prompts: turnPrompts,
+      recent: (agentId) => cloudAgents?.recent(agentId) ?? mirror.recent(registry.resolve(agentId)?.sessionId || agentId, 1),
+    }),
     activityText: async (agentId) => {
       // A cloud harness says what it is doing on its frame ("Calling Hair Lab").
       if (cloudAgents?.owns(agentId)) return cloudAgents.activity(agentId)
@@ -1627,6 +1637,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     clients: backend,
     search: sessionSearch,
     turnStartedAt,
+    prompts: turnPrompts,
     input,
     deviceInput,
     submission: submissions,
@@ -1655,6 +1666,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     syncRecapPool,
     normalizers,
     turnStartedAt,
+    prompts: turnPrompts,
     neverFoldedHistory,
     replayedFirstTurn,
     clearAgyIdleWatch,

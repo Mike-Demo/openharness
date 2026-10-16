@@ -143,6 +143,30 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets('the summary switch is stored inverted: checked when agent_messages_hide_summary is off', (tester) async {
+    final server = AccountSettings('a');
+    final store = await open(server);
+    await tester.pumpWidget(
+      MaterialApp(home: Scaffold(body: ExperimentalSection(store: store))),
+    );
+    await tester.pumpAndSettle();
+    const title = 'Share a one-line summary of what your harnesses are doing with people in your shared tabs';
+    expect(find.text(title), findsOneWidget);
+    final toggle = find.byKey(const ValueKey('experimental-agent_messages_hide_summary'));
+    await tester.ensureVisible(toggle);
+    expect(tester.widget<Switch>(toggle).value, isTrue);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(server.writes.last.$2.id, 'agent_messages_hide_summary');
+    expect(server.writes.last.$3, isTrue);
+    expect(tester.widget<Switch>(toggle).value, isFalse);
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(server.writes.last.$3, isFalse);
+    expect(tester.widget<Switch>(toggle).value, isTrue);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   test('a pending save is not presented as saved, and a failed save can be retried', () async {
     final server = AccountSettings('a');
     final store = await open(server);

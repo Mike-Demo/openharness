@@ -37,6 +37,8 @@ import '../agent_messages/shared_tab_errors.dart';
 import '../agent_messages/shared_tab_placement.dart';
 import '../agent_messages/shared_tabs.dart';
 import '../agent_messages/shared_tabs_model.dart';
+import '../agent_messages/tab_activity.dart';
+import '../agent_messages/tab_settings.dart';
 import '../api/api_client.dart';
 import '../viewer/sign_in_browser.dart';
 import '../viewer/direct_link.dart';
@@ -1571,6 +1573,10 @@ class AppNotifier extends ChangeNotifier {
     onActivity: applySharedActivity,
   );
 
+  /// `tab_activity` on the computer [sharedTabs] asks: every harness of a desk
+  /// tab with its state and summary.
+  late final tabActivity = TabActivityReader(request: sharedTabs.request);
+
   /// The machine [sharedTabs] asks: this computer natively; on the web one of
   /// the account's own online machines, never a shared one.
   MachineState? get sharedTabsTarget {
@@ -1923,6 +1929,19 @@ class AppNotifier extends ChangeNotifier {
         agentMessages.loaded;
   }
 
+  /// The account's Agent Messages switch (Settings ▸ Experimental, off by
+  /// default), as the backend last answered it.
+  bool get agentMessagesOn =>
+      experimentalFeatures.enabled(ExperimentalFeature.agentMessages);
+
+  /// Whether [tabId] offers what came with Tab Activity: the sidebar, Make
+  /// Leader and the Leader chip, and an unshared tab's People and Tasks. The
+  /// account's switch must be on, beside the support [agentMessagesOffered]
+  /// checks: support alone showed all of it to every account with the switch
+  /// off, the default (final review I1).
+  bool tabActivityOffered(String tabId) =>
+      agentMessagesOn && agentMessagesOffered(tabId);
+
   /// The machines of the owner's with a harness in [tabId], and this
   /// computer: every daemon that may hold part of the tab's log. A shared
   /// machine's harnesses never take part.
@@ -2183,6 +2202,10 @@ class AppNotifier extends ChangeNotifier {
   bool get devicesEnabled => !kIsWeb && !kViewerMode;
 
   LocalKeyValueStore? get deviceLibraryStorage => _paneLayout?.storage;
+
+  /// This computer's small preferences store (`state.json` natively, the
+  /// origin's storage in a browser); null in a test that passes none.
+  LocalKeyValueStore? get localStore => _paneLayout?.storage;
   final deviceHosts = DeviceHosts();
   final _deviceReads = <String, Future<void>>{};
 
@@ -15824,6 +15847,107 @@ class AppNotifier extends ChangeNotifier {
     return me != null && tab.ownedBy(me);
   }
 
+  /// The leader of [deskTabId]: in a tab shared with this account the roster's
+  /// (the owner's setting, re-signed by the sharing computer; none when it names
+  /// none), otherwise the account's own setting.
+  AgentMessageLeader? tabLeader(String deskTabId) {
+    final tab = sharedTabs.tabForDesk(deskTabId);
+    if (tab != null && !_ownsSharedTab(tab)) {
+      final leader = tab.leader;
+      return leader == null
+          ? null
+          : AgentMessageLeader(leader.machineId, leader.agentId);
+    }
+    return agentMessages.leaderOf(deskTabId);
+  }
+
+  /// Make [machineId]'s [agentId] the leader of [deskTabId]. A refusal keeps the
+  /// old leader and is told in the transient notice.
+  Future<void> setTabLeader(String deskTabId, String machineId, String agentId) =>
+      _writeLeader(deskTabId, AgentMessageLeader(machineId, agentId));
+
+  Future<void> clearTabLeader(String deskTabId) => _writeLeader(deskTabId, null);
+
+  Future<void> _writeLeader(String deskTabId, AgentMessageLeader? leader) async {
+    final auth = _authRevision;
+    try {
+      final answer = await api.setAgentMessageTab(
+        deskTabId,
+        leader: leader,
+        clearLeader: leader == null,
+      );
+      // An answer for a session that has ended is not this one's.
+      if (!_authWorkCurrent(auth)) return;
+      agentMessages.applyTabSetting(
+        deskTabId,
+        AgentMessageLeader.fromJson(answer['leader']),
+      );
+    } catch (error) {
+      if (!_authWorkCurrent(auth)) return;
+      _lastError = error is ApiException && error.message.isNotEmpty
+          ? error.message
+          : 'Could not change the leader. Try again.';
+      _lastErrorRetryable = false;
+      notifyListeners();
+    }
+  }
+
+  /// The desk tab whose panes hold this harness, or null.
+  String? deskTabHolding(String machineId, String agentId) {
+    for (final swarm in swarms) {
+      if (swarm.panes.any(
+        (p) => p.machineId == machineId && p.agentId == agentId,
+      )) {
+        return swarm.id;
+      }
+    }
+    return null;
+  }
+
+  /// Whether this harness is the leader of the tab its pane is in. A leader
+  /// whose pane left the tab is the leader of no pane anywhere. None while the
+  /// account's Agent Messages switch is off: a leader leads only agents that
+  /// may message.
+  bool isTabLeader(String machineId, String agentId) {
+    if (!agentMessagesOn) return false;
+    final tab = deskTabHolding(machineId, agentId);
+    final leader = tab == null ? null : tabLeader(tab);
+    return leader != null &&
+        leader.machineId == machineId &&
+        leader.agentId == agentId;
+  }
+
+  /// What File, the palette and the pane offer for this harness: `'make'`,
+  /// `'remove'` (it leads its tab) or null. Needs [tabActivityOffered].
+  /// A member of a shared tab never chooses; its owner does, from any of its
+  /// computers, among its own harnesses and the roster's members' harnesses
+  /// that are panes of the tab. Another account's harness in a tab that is not
+  /// shared with it is never offered.
+  String? leaderActionFor(String machineId, String agentId) {
+    final tabId = deskTabHolding(machineId, agentId);
+    if (tabId == null || !tabActivityOffered(tabId)) return null;
+    final own = machineStates[machineId]?.belongsToOtherAccount == false;
+    final shared = sharedTabs.tabForDesk(tabId);
+    if (shared != null) {
+      if (!_ownsSharedTab(shared)) return null;
+      if (!own && !_listedIn(shared, machineId, agentId)) return null;
+    } else if (!own) {
+      return null;
+    }
+    return isTabLeader(machineId, agentId) ? 'remove' : 'make';
+  }
+
+  /// Make Leader or Remove Leader for this harness, as [leaderActionFor] says.
+  Future<void> toggleLeaderOf(String machineId, String agentId) async {
+    final tabId = deskTabHolding(machineId, agentId);
+    switch (leaderActionFor(machineId, agentId)) {
+      case 'make':
+        await setTabLeader(tabId!, machineId, agentId);
+      case 'remove':
+        await clearTabLeader(tabId!);
+    }
+  }
+
   /// The shared tab whose desk tab holds this harness, or null.
   SharedTab? sharedTabHolding(String machineId, String agentId) {
     for (final swarm in swarms) {
@@ -18666,6 +18790,8 @@ class AppNotifier extends ChangeNotifier {
         break;
       case 'desk_changed':
         unawaited(experimentalFeatures.refresh());
+        // A tab's leader is kept with the tabs and may have changed with them.
+        unawaited(agentMessages.refresh());
         // Another window — on another computer, or this one — changed the
         // tabs. The payload is only the revision; the document is fetched.
         final deskRevision = payload['revision'];

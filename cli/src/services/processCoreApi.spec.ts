@@ -81,6 +81,20 @@ describe('the core API a light service runs on in its own process', () => {
     }
     ask.mockRejectedValueOnce(new Error('offline'))
     await expect(linked.agents.activity(['a1'])).resolves.toEqual({})
+    // The one-line summaries: none without a link; with one, the core's strings under the agents asked about. An older core
+    // answers `activity` without `summaries`, and that reads as none.
+    await expect(UNASKED.summaries()).resolves.toEqual({})
+    await expect(api.agents.summaries(['a1'])).resolves.toEqual({})
+    const askSummaries = vi.fn(async (_query: string, _payload: Record<string, unknown>): Promise<Record<string, unknown>> => ({ activity: {}, summaries: { a1: 'Fix the login', a2: 7, a3: '' } }))
+    const withSummaries = processCoreApi('/data', 'messages', { ask: askSummaries })
+    await expect(withSummaries.agents.summaries(['a1', 'a2'])).resolves.toEqual({ a1: 'Fix the login' })
+    expect(askSummaries).toHaveBeenCalledWith('activity', { agentIds: ['a1', 'a2'], summaries: true })
+    for (const answer of [{ activity: {} }, { summaries: 'x' }, { summaries: null }]) {
+      askSummaries.mockResolvedValueOnce(answer)
+      await expect(withSummaries.agents.summaries(['a1'])).resolves.toEqual({})
+    }
+    askSummaries.mockRejectedValueOnce(new Error('offline'))
+    await expect(withSummaries.agents.summaries(['a1'])).resolves.toEqual({})
     expect(api.account.signedIn()).toBe(false)
     expect(api.account.environment()).toBe('')
     await expect(api.account.machines()).resolves.toEqual({ status: 503, body: {} })

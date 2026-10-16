@@ -138,20 +138,28 @@ class SharedTab {
     if (ownerAccount == null || harnesses is! List) return null;
     final invites = json['invites'];
     final leaderJson = json['leader'];
-    final leaderMachine = leaderJson is Map ? _str(leaderJson['machineId']) : null;
+    final leaderMachine = leaderJson is Map
+        ? _str(leaderJson['machineId'])
+        : null;
     final leaderAgent = leaderJson is Map ? _str(leaderJson['agentId']) : null;
-    final name = json['name'], version = json['version'], ownerEmail = owner['email'];
+    final name = json['name'],
+        version = json['version'],
+        ownerEmail = owner['email'];
     final tabId = json['tabId'];
     final pending = json['pendingInvites'];
     return SharedTab(
       pendingInvites: pending is List
           ? [
               for (final i in pending)
-                if (i is Map && _str(i['id']) != null && _str(i['email']) != null)
+                if (i is Map &&
+                    _str(i['id']) != null &&
+                    _str(i['email']) != null)
                   (
                     id: i['id'] as String,
                     email: i['email'] as String,
-                    expiresAt: i['expiresAt'] is String ? i['expiresAt'] as String : '',
+                    expiresAt: i['expiresAt'] is String
+                        ? i['expiresAt'] as String
+                        : '',
                   ),
             ]
           : const [],
@@ -166,17 +174,24 @@ class SharedTab {
           ? (machineId: leaderMachine, agentId: leaderAgent)
           : null,
       members: members is List
-          ? members.map(SharedTabMember.fromJson).whereType<SharedTabMember>().toList()
+          ? members
+                .map(SharedTabMember.fromJson)
+                .whereType<SharedTabMember>()
+                .toList()
           : const [],
-      harnesses:
-          harnesses.map(SharedTabHarness.fromJson).whereType<SharedTabHarness>().toList(),
+      harnesses: harnesses
+          .map(SharedTabHarness.fromJson)
+          .whereType<SharedTabHarness>()
+          .toList(),
       invites: invites is List
           ? [
               for (final i in invites)
                 if (i is Map && _str(i['email']) != null)
                   (
                     email: i['email'] as String,
-                    expiresAt: i['expiresAt'] is String ? i['expiresAt'] as String : '',
+                    expiresAt: i['expiresAt'] is String
+                        ? i['expiresAt'] as String
+                        : '',
                   ),
             ]
           : const [],
@@ -262,7 +277,9 @@ class SharedTabNotice {
 
   static SharedTabNotice? fromJson(Object? json) {
     if (json is! Map) return null;
-    final id = _str(json['id']), tab = _str(json['sharedTabId']), kind = _str(json['kind']);
+    final id = _str(json['id']),
+        tab = _str(json['sharedTabId']),
+        kind = _str(json['kind']);
     if (id == null || tab == null || kind == null) return null;
     return SharedTabNotice(
       id: id,
@@ -328,13 +345,13 @@ class SharedActivity {
   final int revision;
 
   SharedActivity withRevision(int revision) => SharedActivity(
-        sharedTabId: sharedTabId,
-        machineId: machineId,
-        agentId: agentId,
-        state: state,
-        validForMs: validForMs,
-        revision: revision,
-      );
+    sharedTabId: sharedTabId,
+    machineId: machineId,
+    agentId: agentId,
+    state: state,
+    validForMs: validForMs,
+    revision: revision,
+  );
 
   static SharedActivity? fromJson(Object? json) {
     if (json is! Map) return null;
@@ -346,7 +363,9 @@ class SharedActivity {
       sharedTabId: tab,
       machineId: machine,
       agentId: agent,
-      state: state == 'working' || state == 'idle' ? state as String : 'unknown',
+      state: state == 'working' || state == 'idle'
+          ? state as String
+          : 'unknown',
       validForMs: valid is num && valid >= 0 ? valid.toInt() : 0,
     );
   }
@@ -422,7 +441,9 @@ class SharedTabsSnapshot {
                 if (u is Map && _str(u['sharedTabId']) != null)
                   (
                     sharedTabId: u['sharedTabId'] as String,
-                    ownerEmail: u['ownerEmail'] is String ? u['ownerEmail'] as String : '',
+                    ownerEmail: u['ownerEmail'] is String
+                        ? u['ownerEmail'] as String
+                        : '',
                   ),
             ]
           : const [],

@@ -79,13 +79,13 @@ class _ExperimentalSectionState extends State<ExperimentalSection> {
                       alignment: Alignment.centerLeft,
                       child: Switch(
                         key: ValueKey('experimental-${feature.id}'),
-                        value: preferences.enabled(feature),
+                        value: preferences.enabled(feature) != feature.inverted,
                         onChanged:
                             preferences.loaded &&
                                 !preferences.saving &&
                                 (preferences.isAvailable(feature) ||
                                     preferences.enabled(feature))
-                            ? (on) => unawaited(preferences.set(feature, on))
+                            ? (on) => unawaited(preferences.set(feature, on != feature.inverted))
                             : null,
                       ),
                     ),

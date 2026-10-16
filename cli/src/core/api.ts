@@ -184,6 +184,9 @@ export interface CoreApi {
     /** Whether each of these agents is working now, as this computer's windows are told (core/turns/activity.ts):
      *  Agent Messages tells a shared tab's other accounts. An agent that is not live is left out. */
     activity(agentIds: string[]): Promise<Record<string, 'working' | 'idle' | 'unknown'>>
+    /** What each of these agents is doing, in one line of at most 120 characters (core/turns/summaries.ts): the prompt
+     *  it is running, or its latest recap line. An agent not live, or with nothing known, is left out. */
+    summaries(agentIds: string[]): Promise<Record<string, string>>
     /** Close a harness another agent started (`startedBy: agent`) as `agent_close` closes one: its screen saved, its
      *  process stopped, its conversation kept. `idle` refuses one that works, waits for the person or holds a draft
      *  (`SESSION_NOT_IDLE`); `now` does not. Any other harness is refused (`NOT_AGENT_STARTED`): the agent cleanup
@@ -702,7 +705,7 @@ export const CLOUD_REQUESTS = ['cloud_transcript', 'cloud_send', 'cloud_agents']
  * answers it, and checks each): the agents as the apps are shown them (`shown`) and how an agent's shell reaches
  * this daemon (`daemon`), which its roster and its `harness send` read; the account signed in here (`account`, its id
  * and email, which the core reads: `accountIdentity`); the account's backend, only the routes of
- * `MESSAGES_BACKEND_ROUTES` (`backend`): its tabs, and shared tabs' shares, rosters, invitations, members and moves; its
+ * `MESSAGES_BACKEND_ROUTES` (`backend`): its tabs and their leaders, and shared tabs' shares, rosters, invitations, members and moves; its
  * log's change notice for the windows (`windows`, only `MESSAGES_WINDOW_FRAME`); which of its typed deliveries may be
  * written (`writable`); and shared tabs' keys, which the gateway holds (`tab_key`, one `TabKey` method a call,
  * lib/tabKeyWire.ts), and their relay, whose sockets the gateway holds too (`tab_relay`, one `TabRelay` method a call,
@@ -736,6 +739,9 @@ export const MESSAGES_BACKEND_ROUTES: ReadonlyArray<{ method: string; path: RegE
   route('DELETE', `/shares/${SHARED_TAB}/members/${USER}`),
   route('DELETE', `/shares/${SHARED_TAB}`),
   route('POST', `/shares/${SHARED_TAB}/move`),
+  // A desk tab's setting: its leader, which the person chooses for a shared tab from any computer of the account
+  // (sharedTabs.ts `setLeader`). The computer that shares the tab signs the roster that follows it.
+  route('PATCH', `/tabs/${DESK_TAB}`),
 ]
 /** Whether Agent Messages in its process may make this backend call (`MESSAGES_BACKEND_ROUTES`). */
 export const messagesBackendAllowed = (method: unknown, path: unknown): boolean =>
@@ -1648,6 +1654,8 @@ export interface CoreApiDeps {
   activitySnapshot?: CoreApi['agents']['activitySnapshot']
   /** Whether each agent works now (`activity`); absent, no agent is reported. */
   activity?: CoreApi['agents']['activity']
+  /** One line on what each agent does (`summaries`); absent, none is given. */
+  summaries?: CoreApi['agents']['summaries']
   /** One `agent_close` (core/agents/close.ts), for `closeStarted`; absent, a service closes nothing. */
   closeAgent?: (request: AgentCloseRequest) => Promise<AgentCloseResult>
   /** When an agent's conversation last moved (lib/transcriptActivity.ts), for `lastActivity`. */
@@ -1678,7 +1686,7 @@ export interface CoreApiDeps {
 export function createCoreApi({
   dataDir, registry, stoppedAgents, databaseHistory, syncSession, runtimeModels, viewerChanged,
   gridNamed, gridModelsChanged, dshInstallStatus, mintGridName, accessToken, lane, observerKey, tabKey, tabRelay, connectorVault, observer, privateGridName, machineName, backend, onNotice,
-  runtimeProfile, setRuntime, fork, create, dsh, windows, daemon, turns, questions, terminals = TERMINALS_OFF, conversations = CONVERSATIONS_OFF, viewerFrame, machine, activityText, activitySnapshot, activity,
+  runtimeProfile, setRuntime, fork, create, dsh, windows, daemon, turns, questions, terminals = TERMINALS_OFF, conversations = CONVERSATIONS_OFF, viewerFrame, machine, activityText, activitySnapshot, activity, summaries,
   closeAgent, activityAt,
   signedIn, environment, machines, sendLocal, sendToWindow, hasWindow, devicesChanged, dialWatching, wifi, cloud, cloudRows, lastTurn, turnCard, turnSummary,
   log = (line) => console.warn(line),
@@ -1714,6 +1722,7 @@ export function createCoreApi({
       activityText,
       activitySnapshot,
       activity: activity ?? (async () => ({})),
+      summaries: summaries ?? (async () => ({})),
       // Decided here, not in the service: whatever the cleanup asks, from its process or this one, the core closes only
       // a harness another agent started, the conversation it reviewed (`agent_close`'s identity), and keeps it.
       closeStarted: async (agentId, mode) => {

@@ -37,6 +37,7 @@ export function fakeCore(over: Overrides = {}): CoreApi {
       dsh: vi.fn(() => null),
       activityText: vi.fn(async () => null),
       activity: vi.fn(async () => ({})),
+      summaries: vi.fn(async () => ({})),
       ...over.agents,
     },
     turns: {

@@ -174,6 +174,10 @@ describe('the core API services stand on', () => {
     await expect(core.agents.activity(['a1'])).resolves.toEqual({})
     const activity = vi.fn(async () => ({ a1: 'working' as const }))
     await expect(createCoreApi({ ...deps, activity }).agents.activity(['a1'])).resolves.toEqual({ a1: 'working' })
+    // The same for the one-line summaries (ruling T2): none from a core that was not given the reader.
+    await expect(core.agents.summaries(['a1'])).resolves.toEqual({})
+    const summaries = vi.fn(async () => ({ a1: 'Fix the login' }))
+    await expect(createCoreApi({ ...deps, summaries }).agents.summaries(['a1'])).resolves.toEqual({ a1: 'Fix the login' })
     expect(core.account.signedIn).toBe(deps.signedIn)
     expect(core.account.environment).toBe(deps.environment)
     expect(core.account.machines).toBe(deps.machines)

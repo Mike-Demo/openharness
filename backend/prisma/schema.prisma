@@ -854,6 +854,9 @@ model AgentMessageTab {
   userId    String
   tabId     String
   enabled   Boolean  @default(false)
+  /// The tab's leader: a pane of the tab on one of the owner's machines. Written as explicit nulls at create.
+  leaderMachineId String?
+  leaderAgentId   String?
   revision  Int      @default(0)
   updatedAt DateTime @updatedAt
 
@@ -923,6 +926,8 @@ model ExperimentalSettings {
   agentsStartAgents    Boolean @default(false)
   agentPullRequestLine Boolean @default(false)
   agentMessages        Boolean @default(false)
+  /// Inverted on purpose: off shares a one-line summary of what each harness does with the shared tab's other accounts.
+  agentMessagesHideSummary Boolean @default(false)
   revision         Int     @default(0)
 
   @@index([userId])

@@ -41,16 +41,28 @@ enum ExperimentalFeature {
     'agent_messages',
     'Agents in the same tab can message each other',
     'Turn on to let Claude Code and Codex in one tab send each other messages with harness send. Invite people to a tab and their harnesses join it from their own computers.',
+  ),
+
+  /// Stored inverted (ruling T4): every account experiment is "off unless true", and the summary is
+  /// shared unless the person hides it. The switch shows it as "share", checked when this is off.
+  agentMessagesHideSummary(
+    'agent_messages_hide_summary',
+    'Share a one-line summary of what your harnesses are doing with people in your shared tabs',
+    'One line of at most 120 characters, for the harnesses listed in a shared tab.',
   );
 
   const ExperimentalFeature(this.id, this.label, this.description);
   final String id, label, description;
+
+  /// The switch shows the opposite of the stored value.
+  bool get inverted => this == agentMessagesHideSummary;
   bool get available => switch (this) {
     focusBarCreature => !kIsWeb && !kViewerMode,
     shareButton ||
     agentsStartAgents ||
     agentPullRequestLine ||
-    agentMessages => true,
+    agentMessages ||
+    agentMessagesHideSummary => true,
   };
 }
 

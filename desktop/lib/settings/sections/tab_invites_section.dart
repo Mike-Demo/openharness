@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../agent_messages/shared_tab_dialogs.dart';
 import '../../agent_messages/shared_tab_placement.dart' show shortSharedText;
 import '../../agent_messages/shared_tabs.dart';
+import '../../agent_messages/update_harness.dart';
 import '../../shared/theme/app_theme.dart';
 import '../../shared/widgets/section_scaffold.dart';
 import '../../shared/widgets/setting_row.dart';
@@ -62,7 +63,7 @@ class _TabInvitesSectionState extends State<TabInvitesSection> {
           'Turn on "Agents in the same tab can message each other" in Experimental to get invitations.',
         );
       case SharedTabsState.tooOld:
-        return const Text('Update Harness on this computer to share tabs.');
+        return UpdateHarnessLine(widget.notifier);
       case SharedTabsState.unsupported:
         return const Text('Shared tabs aren\'t available on the Harness service yet.');
       case SharedTabsState.unavailable:

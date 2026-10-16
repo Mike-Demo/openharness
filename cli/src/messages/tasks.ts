@@ -17,7 +17,9 @@ export type CiState = 'passing' | 'failing' | 'pending' | 'none'
 export interface TaskRow {
   repo: string; issue: number; title: string; url: string; state: 'open' | 'closed'
   assignee: { account: string; harness: string } | null
-  pr: { number: number; url: string; state: 'Draft' | 'Open' | 'Merged' | 'Closed'; ci: CiState } | null
+  /** `mergedAt`: when the pull request was merged, as `gh pr view` says (ISO), else empty — the window keeps a merged task
+   *  for 24 hours after it. */
+  pr: { number: number; url: string; state: 'Draft' | 'Open' | 'Merged' | 'Closed'; ci: CiState; autoMerge: boolean; mergeState: string; mergedAt: string } | null
   updatedAt: string
 }
 export interface TaskResult { rows: TaskRow[]; truncated: boolean; checkedAt: string }
@@ -36,6 +38,9 @@ const CI_PARALLEL = 4
 const TITLE_MAX = 512
 const REPO = /^[\w.-]+\/[\w.-]+$/
 const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*$/
+
+/** GitHub's `mergeStateStatus` words; anything else (a new one, a missing field) is `UNKNOWN` rather than shown as is. */
+const MERGE_STATES = ['BEHIND', 'BLOCKED', 'CLEAN', 'DIRTY', 'DRAFT', 'HAS_HOOKS', 'UNSTABLE']
 
 const exec = promisify(execFile)
 /** `gh` with no prompt and no wait for one: a terminal login question would hang the run until its timeout. */
@@ -142,7 +147,7 @@ export function createTaskReader(run: Run = ghRun, now: () => number = Date.now)
       const [best] = (closing.get(`${repo}#${issue.number}`) ?? []).sort((a, b) => PR_RANK[a.state] - PR_RANK[b.state] || b.number - a.number)
       rows.push({ repo, issue: Number(issue.number), title: cleanText(issue.title, TITLE_MAX), url: issue.url,
         state: String(issue.state).toLowerCase() === 'open' ? 'open' : 'closed', assignee: found.assignee,
-        pr: best ? { ...best, ci: 'none' } : null, updatedAt: typeof issue.updatedAt === 'string' ? cleanText(issue.updatedAt, 40) : '' })
+        pr: best ? { ...best, ci: 'none', autoMerge: false, mergeState: 'UNKNOWN', mergedAt: '' } : null, updatedAt: typeof issue.updatedAt === 'string' ? cleanText(issue.updatedAt, 40) : '' })
     }
     rows.sort((a, b) => (a.state === 'open' ? 0 : 1) - (b.state === 'open' ? 0 : 1) || (a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0))
     // CI, and the pull request's state as GitHub says now (a search can lag a merge). One that cannot be read keeps what
@@ -150,10 +155,16 @@ export function createTaskReader(run: Run = ghRun, now: () => number = Date.now)
     await pooled(rows.filter((r) => r.pr).slice(0, CI_MAX), CI_PARALLEL, async (row) => {
       const pr = row.pr!
       try {
-        const view = JSON.parse(await call(['pr', 'view', pr.url, '--json', 'statusCheckRollup,state,isDraft,mergedAt'])) as Record<string, unknown>
+        const view = JSON.parse(await call(['pr', 'view', pr.url, '--json', 'statusCheckRollup,state,isDraft,mergedAt,autoMergeRequest,mergeStateStatus'])) as Record<string, unknown>
         const state = String(view.state).toUpperCase()
         pr.state = view.mergedAt || state === 'MERGED' ? 'Merged' : state === 'CLOSED' ? 'Closed' : view.isDraft === true ? 'Draft' : 'Open'
         pr.ci = ciOf(view.statusCheckRollup)
+        // "Merging" is auto-merge only: gh has no merge-queue field (`isInMergeQueue` is refused as an unknown field, which
+        // failed this whole read), and the queue would cost another `gh api graphql` run per pull request.
+        pr.autoMerge = !!view.autoMergeRequest && typeof view.autoMergeRequest === 'object'
+        const merge = String(view.mergeStateStatus ?? '').toUpperCase()
+        pr.mergeState = MERGE_STATES.includes(merge) ? merge : 'UNKNOWN'
+        pr.mergedAt = cleanText(view.mergedAt, 40)
       } catch { /* keeps the search's word */ }
     })
     return { rows, truncated: issueRows.length >= SEARCH_LIMIT || prRows.length >= SEARCH_LIMIT, checkedAt: new Date(now()).toISOString() }
