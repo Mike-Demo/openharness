@@ -48,6 +48,12 @@ const List<_Field> _sent = [
         'answering the notification prompt: outcomes and duration buckets; '
         'whether a sign-in that went through came after a failed try or on another button.',
   ),
+  (
+    label: 'This phone',
+    text:
+        'How often Find and Computers are opened, by a swipe or a button; '
+        'request outcomes counted as this phone\'s rather than any app\'s.',
+  ),
   (label: 'Feedback', text: 'Only your selected task outcome or reason.'),
   (
     label: 'Older apps',

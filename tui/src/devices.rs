@@ -41,6 +41,8 @@ pub const DOWNLOAD_URL: &str = "https://www.autonomous.ai/harness";
 pub const INSTALL: &str = "curl -fsSL https://cdn.autonomous.ai/harness/cli/install.sh | bash";
 pub const LOGIN: &str = "harness login";
 pub const START: &str = "harness start && harness remote-password set";
+/// What sharing this computer gives (machine_sharing_form.dart's intro).
+const SHARE_ACCESS: &str = "People you share it with get full access: they can run harnesses, open terminals and read files on it.";
 
 /// Where the Add Phone QR points (add_phone_dialog.dart `phonePairLink`): the phone parses exactly
 /// this, so the TUI's code is the app's, byte for byte.
@@ -174,6 +176,9 @@ pub struct Devices {
     pub phone: Phone,
     pub ask: Option<Ask>,
     prompt_actions: std::cell::Cell<Option<PromptActions>>,
+    /// Where the title is drawn while a level is open (and the size it was drawn at): a click on
+    /// it goes back, as Esc does — the mouse's way out of a level.
+    back_at: std::cell::Cell<Option<((u16, u16), Rect)>>,
     /// The chosen button of the prompt's row (0 Cancel, 1 the action), and whether the keys are on
     /// the buttons: a confirmation's always are, a typed line's only after Tab.
     prompt_row: std::cell::Cell<usize>,
@@ -192,7 +197,7 @@ pub struct Devices {
 impl Default for Devices {
     fn default() -> Devices {
         Devices {
-            password: None, sharing: None, links: None, account: HashMap::new(), link: None, phone: Phone::default(), ask: None, prompt_actions: Default::default(), prompt_row: Default::default(), prompt_focus: Default::default(), unfit: Default::default(), sub: None, footer: None, loading: Vec::new(), runner: default_runner(),
+            password: None, sharing: None, links: None, account: HashMap::new(), link: None, phone: Phone::default(), ask: None, prompt_actions: Default::default(), back_at: Default::default(), prompt_row: Default::default(), prompt_focus: Default::default(), unfit: Default::default(), sub: None, footer: None, loading: Vec::new(), runner: default_runner(),
         }
     }
 }
@@ -925,7 +930,14 @@ pub fn paste(app: &mut App, text: &str) -> bool {
 /// Only the actions drawn for this prompt can advance it; a click on its input gives the input
 /// the keys; a click outside the panel cancels.
 pub fn mouse(app: &mut App, mouse: MouseEvent) -> bool {
-    if view_of(app).is_none() || app.devices.ask.is_none() { return false }
+    let Some(view) = view_of(app) else { return false };
+    if app.devices.ask.is_none() {
+        let back = app.devices.back_at.get().filter(|(size, _)| *size == app.size && app.devices.sub.is_some());
+        let click = mouse.kind == MouseEventKind::Down(MouseButton::Left) && mouse.modifiers.is_empty();
+        if !(click && back.is_some_and(|(_, r)| r.contains(Position::new(mouse.column, mouse.row)))) { return false }
+        step_back(app, view);
+        return true;
+    }
     if mouse.kind != MouseEventKind::Down(MouseButton::Left) || !mouse.modifiers.is_empty() { return true }
     let at = Position::new(mouse.column, mouse.row);
     let action = app.devices.prompt_actions.get().filter(|a| a.size == app.size);
@@ -1436,7 +1448,7 @@ fn action_rows(app: &App, id: &str) -> Vec<Row> {
     match app.fleet.shares.get(id) {
         // Another account's: its owner renames, removes and shares it.
         Some(share) => {
-            rows.push(info("shared-by", format!("Shared with you by {}{}", share.owner, if share.email.is_empty() || share.email == share.owner { String::new() } else { format!(" ({})", share.email) }), &group));
+            rows.push(info("shared-by", format!("Shared with you by {}", owner_of(share)), &group));
             if share.team { rows.push(act("unshare", "Remove from my machines…", "add it again from Shared with your team", "✗")) }
         }
         None => {
@@ -1450,7 +1462,7 @@ fn action_rows(app: &App, id: &str) -> Vec<Row> {
 /// This computer's sharing: everyone at its domain, the addresses, and who uses it now.
 fn share_rows(app: &App) -> Vec<Row> {
     let here = format!("Share {}", app.fleet.local_machine_name());
-    let mut rows = vec![info("share-what", "People you share it with use it as their own: its harnesses, terminals and files.", &here)];
+    let mut rows = vec![info("share-what", "People you share it with get full access.", &here)];
     let Some((emails, same_domain, domain)) = sharing_now(app) else {
         match &app.devices.sharing {
             Some(Err(message)) => {
@@ -1469,10 +1481,20 @@ fn share_rows(app: &App) -> Vec<Row> {
     for email in &emails {
         rows.push(Row::new(format!("shr:rm:{email}"), email.clone()).group(here.clone()).extra("remove").lead(dot("·", theme::MUTED)).right("remove"));
     }
-    let using: Vec<&str> = app.devices.sharing.as_ref().and_then(|s| s.as_ref().ok()).and_then(|v| v.get("members")).and_then(Value::as_array)
-        .into_iter().flatten().filter_map(|m| m.get("email").and_then(Value::as_str)).collect();
+    let using: Vec<String> = sharing_members(app).into_iter().map(|(email, _)| email).collect();
     if !using.is_empty() { rows.push(info("share-using", format!("Using it now: {}", using.join(", ")), &here)) }
     rows
+}
+
+/// Who uses this computer through its sharing now, and how it reached them (`email` or `domain`).
+fn sharing_members(app: &App) -> Vec<(String, String)> {
+    app.devices.sharing.as_ref().and_then(|s| s.as_ref().ok()).and_then(|v| v.get("members")).and_then(Value::as_array).into_iter().flatten()
+        .filter_map(|m| Some((m.get("email")?.as_str()?.to_string(), m.get("via").and_then(Value::as_str).unwrap_or("email").to_string()))).collect()
+}
+
+/// A share's owner as people read it: the name, and the address when it says more.
+fn owner_of(share: &crate::fleet::MachineShare) -> String {
+    if share.email.is_empty() || share.email == share.owner { share.owner.clone() } else { format!("{} ({})", share.owner, share.email) }
 }
 
 fn device_name(p: &Value) -> String {
@@ -1521,7 +1543,15 @@ pub fn preview(app: &App, view: View, id: &str) -> Vec<Line<'static>> {
         "here" => vec![Line::raw("Set up Harness on your other computer."), Line::raw(""),
             dim("The setup guide covers sign-in, the remote password and servers.").into(),
             Line::raw(""), dim("Enter opens Machines & devices.").into()],
-        "account" => vec![Line::raw("Use Harness locally without signing in."), Line::raw(""), Line::raw("Sign in to connect your computers, sync your workspace, and use your phone."), Line::raw("Run models on one linked computer and use them from another.")],
+        "account" => match &app.account.status {
+            crate::account::Status::SignedIn { email, .. } => {
+                let mut out = vec![Line::raw(email.as_ref().map_or("Signed in.".into(), |e| format!("Signed in as {e}."))), Line::raw(""),
+                    dim("Your computers, workspace and phone use this account.").into()];
+                out.extend(enter_does("opens Account"));
+                out
+            }
+            _ => vec![Line::raw("Use Harness locally without signing in."), Line::raw(""), Line::raw("Sign in to connect your computers, sync your workspace, and use your phone."), Line::raw("Run models on one linked computer and use them from another.")],
+        },
         "m" => {
             let mut out = machine_lines(app, rest);
             if view == View::Connect {
@@ -1530,7 +1560,11 @@ pub fn preview(app: &App, view: View, id: &str) -> Vec<Line<'static>> {
                 out.extend(stage_lines(app, rest));
                 if app.devices.link.as_ref().is_none_or(|l| l.machine != rest) { out.extend(enter_does("type its remote password, then link")) }
             } else {
-                out.extend(enter_does("its actions — open, connect, rename, remove from account"));
+                out.extend(enter_does(match app.fleet.shares.get(rest) {
+                    Some(share) if share.team => "its actions — open, remove from your machines",
+                    Some(_) => "its actions — open",
+                    None => "its actions — open, connect, rename, remove from account",
+                }));
             }
             out
         }
@@ -1542,8 +1576,23 @@ pub fn preview(app: &App, view: View, id: &str) -> Vec<Line<'static>> {
                 "connect" => "asks for its remote password, then links it",
                 "rename" => "asks for its new name, then y/n",
                 "remove" => "asks y/n, then deletes it from your account",
+                "unshare" => "asks y/n, then removes it from your machines",
                 _ => "",
             }));
+            out
+        }
+        "share" => {
+            let mut out = vec![bold(format!("Share {}", app.fleet.local_machine_name())).into(), Line::raw(""), Line::raw(SHARE_ACCESS), Line::raw("")];
+            out.extend(sharing_lines(app));
+            out.extend(enter_does("who it is shared with — add or remove people, or everyone at your domain"));
+            out
+        }
+        "shr" => share_preview(app, rest),
+        "addshared" => {
+            let Some((_, name, share)) = app.fleet.to_add.iter().find(|(id, ..)| id == rest) else { return vec![] };
+            let mut out = vec![bold(name.clone()).into(), Line::raw(""), kv("shared by", owner_of(share)), Line::raw(""),
+                Line::raw(format!("{} shared it with everyone at your company. Added, it is one of your machines: its harnesses, terminals and files.", share.owner))];
+            out.extend(enter_does("adds it to your machines"));
             out
         }
         "pw" => {
@@ -1598,11 +1647,62 @@ pub fn preview(app: &App, view: View, id: &str) -> Vec<Line<'static>> {
     }
 }
 
+/// Who this computer is shared with now, under its Share row.
+fn sharing_lines(app: &App) -> Vec<Line<'static>> {
+    let Some((emails, same_domain, domain)) = sharing_now(app) else {
+        return vec![match &app.devices.sharing { Some(Err(e)) => Line::from(Span::styled(e.clone(), fg(theme::WARN))), _ => dim("Reading its sharing…").into() }];
+    };
+    let mut out = Vec::new();
+    if let Some(d) = domain { out.push(kv("domain", format!("everyone at @{d} · {}", if same_domain { "on" } else { "off" }))) }
+    if emails.is_empty() { out.push(kv("people", "nobody yet")) }
+    for (i, email) in emails.iter().enumerate() { out.push(kv(if i == 0 { "people" } else { "" }, email.clone())) }
+    let using: Vec<String> = sharing_members(app).into_iter().map(|(email, _)| email).collect();
+    if !using.is_empty() { out.push(kv("using it", using.join(", "))) }
+    out
+}
+
+/// The right side for one of this computer's sharing rows: what it is, and what Enter does.
+fn share_preview(app: &App, rest: &str) -> Vec<Line<'static>> {
+    if rest == "reload" {
+        let mut out = match &app.devices.sharing { Some(Err(e)) => vec![Line::from(Span::styled(e.clone(), fg(theme::WARN)))], _ => vec![] };
+        out.extend(enter_does("reads its sharing again"));
+        return out;
+    }
+    let Some((_, same_domain, domain)) = sharing_now(app) else { return vec![] };
+    let members = sharing_members(app);
+    match rest.split_once(':').unwrap_or((rest, "")) {
+        ("domain", _) => {
+            let Some(d) = domain else { return vec![] };
+            let mut out = vec![bold(format!("Everyone at @{d}")).into(), Line::raw(""),
+                Line::raw(format!("Anyone with an @{d} address can add it from Machines and use it as their own.")), Line::raw(""),
+                kv("now", if same_domain { "on" } else { "off" })];
+            let added: Vec<&str> = members.iter().filter(|(_, via)| via == "domain").map(|(email, _)| email.as_str()).collect();
+            if !added.is_empty() { out.push(kv("added it", added.join(", "))) }
+            out.extend(enter_does(if same_domain { format!("stops sharing with everyone at @{d}; people you added by email keep it") } else { "asks y/n, then shares it with them".into() }));
+            out
+        }
+        ("add", _) => {
+            let mut out = vec![bold("Add people").into(), Line::raw(""), Line::raw("They see it in their Machines and use it as their own: its harnesses, terminals and files."),
+                Line::raw(""), dim("Several at once: separate the addresses with commas or spaces.").into()];
+            out.extend(enter_does("asks for their email addresses, then y/n"));
+            out
+        }
+        ("rm", email) => {
+            let using = members.iter().any(|(e, _)| e == email);
+            let mut out = vec![bold(email.to_string()).into(), Line::raw(""), kv("status", if using { "using it" } else { "invited · not using it yet" })];
+            out.extend(enter_does("asks y/n, then stops sharing with them — they lose access at once"));
+            out
+        }
+        _ => vec![],
+    }
+}
+
 fn machine_lines(app: &App, id: &str) -> Vec<Line<'static>> {
     let Some(m) = app.fleet.machine(id) else { return vec![dim("(gone)").into()] };
     let (glyph, color, word) = reach(app, m);
     let mut out = vec![Line::from(vec![bold(m.name.clone()), dim(if m.local { "  this computer" } else { "" })]), Line::raw("")];
     out.push(Line::from(vec![dim(format!("{:<10}", "status")), Span::styled(format!("{glyph} {word}"), fg(color))]));
+    if let Some(share) = app.fleet.shares.get(id) { out.push(kv("shared by", owner_of(share))) }
     if let Some(rtt) = app.rtt.get(id).filter(|_| m.usable()) { out.push(kv("rtt", format!("{}ms", rtt.as_millis()))) }
     let row = app.devices.account.get(id);
     let seen = row.and_then(|r| ["lastSeenAt", "lastSeen", "lastActiveAt", "updatedAt"].iter().find_map(|k| r.get(*k)));
@@ -1654,6 +1754,7 @@ fn head(buf: &mut Buffer, app: &App, title: &str, x: u16, y: u16, right: u16, c:
         Some("share:") => Some(format!("Share {}", app.fleet.local_machine_name())),
         sub => sub.and_then(|s| s.strip_prefix("m:")).map(|id| name_of(app, id)),
     };
+    app.devices.back_at.set(level.as_ref().map(|_| (app.size, Rect::new(x, y, at - x, 1))));
     if let Some(level) = level {
         at += settings::put(buf, at, y, right.saturating_sub(at), "  ›  ", c.muted);
         settings::put(buf, at, y, right.saturating_sub(at), &level, c.accent);
@@ -2075,6 +2176,66 @@ mod tests {
         // Back out of the level, onto its row.
         press(&mut app, KeyCode::Esc);
         assert_eq!(match &app.modal { Some(Modal::Picker { picker, .. }) => picker.current_id(), _ => None }.as_deref(), Some("share:"));
+    }
+
+    // Seen 2026-10-16: the list is about fifty columns, so the sharing rows were cut short, and
+    // the side beside them, where a row says the rest, was empty.
+    #[test]
+    fn every_sharing_row_says_in_full_beside_it_what_it_is_and_what_enter_does() {
+        const SHARED: &str = "abababababababababababababababab";
+        const TEAM: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+        let mut app = app((150, 42));
+        let _log = sharing_world(&mut app);
+        app.account.status = crate::account::Status::SignedIn { offline: false, email: Some("ann@acme.io".into()) };
+        app.fleet.machines.push(crate::fleet::Machine { shared: false, id: SHARED.into(), name: "dee-studio".into(), local: false, status: "running".into(), reach: Reach::Ready });
+        let dee = crate::fleet::MachineShare { owner: "Dee".into(), email: "dee@acme.io".into(), team: true };
+        app.fleet.shares.insert(SHARED.into(), dee.clone());
+        app.fleet.to_add.push((TEAM.into(), "gpu-box-2".into(), dee));
+        open(&mut app, View::Machines);
+        app.devices.sharing = Some(Ok(json!({ "emails": ["kim@x.io", "lee@y.io"], "sameDomain": true, "domain": "acme.io",
+            "members": [{ "email": "kim@x.io", "via": "email" }, { "email": "bo@acme.io", "via": "domain" }] })));
+        let text = |id: &str| preview(&app, View::Machines, id).iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>().join("\n");
+
+        assert!(text("account").starts_with("Signed in as ann@acme.io."), "{}", text("account"));
+        let share = text("share:");
+        for said in ["get full access", "everyone at @acme.io · on", "kim@x.io", "lee@y.io", "kim@x.io, bo@acme.io"] { assert!(share.contains(said), "{said}: {share}") }
+        assert!(text("shr:domain").contains("Anyone with an @acme.io address") && text("shr:domain").contains("bo@acme.io"));
+        assert!(text("shr:domain").contains("people you added by email keep it"));
+        assert!(text("shr:rm:kim@x.io").contains("using it") && text("shr:rm:lee@y.io").contains("invited · not using it yet"));
+        assert!(text(&format!("m:{SHARED}")).contains("Dee (dee@acme.io)") && text(&format!("m:{SHARED}")).contains("remove from your machines"));
+        assert!(text(&format!("addshared:{TEAM}")).contains("Dee (dee@acme.io)"));
+        for id in ["share:", "shr:domain", "shr:add", "shr:rm:kim@x.io", "shr:reload", &format!("addshared:{TEAM}"), &format!("act:unshare:{SHARED}")] {
+            let said = text(id);
+            assert!(said.lines().any(|l| l.starts_with("enter ") && l.len() > "enter ".len()), "{id}: {said}");
+        }
+        // And the line in the list itself fits it.
+        go_to(&mut app, "share:");
+        press(&mut app, KeyCode::Enter);
+        assert!(row_of(&app, "share-what").is_some_and(|r| r.label.chars().count() <= 44));
+    }
+
+    // Seen 2026-10-16 with a mouse: Share's level had no way out but Esc.
+    #[test]
+    fn a_click_on_the_title_leaves_a_level_as_esc_does() {
+        let mut app = app((150, 42));
+        app.mouse = true;
+        let _log = sharing_world(&mut app);
+        open(&mut app, View::Machines);
+        go_to(&mut app, "share:");
+        press(&mut app, KeyCode::Enter);
+        let (s, _) = screen(&mut app, 150, 42);
+        let (y, line) = s.lines().enumerate().find(|(_, l)| l.contains("Machines & devices  ›  Share")).expect("the level's title");
+        let x = line[..line.find("Machines & devices").unwrap()].chars().count() as u16;
+        // The level's own name is not the way back.
+        click_at(&mut app, x + "Machines & devices  ›  ".len() as u16 + 2, y as u16);
+        assert_eq!(app.devices.sub.as_deref(), Some("share:"));
+        click_at(&mut app, x + 3, y as u16);
+        assert_eq!(app.devices.sub, None);
+        assert_eq!(match &app.modal { Some(Modal::Picker { picker, .. }) => picker.current_id(), _ => None }.as_deref(), Some("share:"));
+        // At the top there is nothing to go back to: the title is only a title.
+        screen(&mut app, 150, 42);
+        click_at(&mut app, x + 3, y as u16);
+        assert!(matches!(app.modal, Some(Modal::Picker { kind: PickerKind::Devices(View::Machines), .. })));
     }
 
     #[test]

@@ -352,8 +352,12 @@ void main() {
   });
 
   test('every flow is in the backend vocabulary', () {
-    final vocabulary = File('../backend/src/types/productUsage.ts')
-        .readAsStringSync();
+    // `PRODUCT_USAGE_FLOWS` spreads the health contract's `HEALTH_FLOWS` (app_start,
+    // connect_user, connect_auto, resume_recovery) into its own.
+    final vocabulary = [
+      '../backend/src/types/productUsage.ts',
+      '../backend/src/types/productHealthContract.ts',
+    ].map((path) => File(path).readAsStringSync()).join('\n');
     for (final flow in ProductFlow.values) {
       expect(vocabulary, contains("'${flow.wire}'"), reason: flow.wire);
     }

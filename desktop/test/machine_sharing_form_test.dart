@@ -136,13 +136,20 @@ void main() {
   }
 
   testWidgets(
-    'shares with people and the domain as each change is made, with Undo',
+    'shares with people and the domain as each change is made, saying only what needs saying',
     (tester) async {
       final app = _SharingApp();
       final (closed, boundary) = await open(tester, app);
       expect(find.text('Share this machine'), findsOneWidget);
+      // Nobody yet: no empty box, no hints, no Done; Back (and Esc) leaves.
       expect(
         find.text('Not shared. Only your own devices can use it.'),
+        findsNothing,
+      );
+      expect(find.textContaining('Tab next'), findsNothing);
+      expect(find.text('Done'), findsNothing);
+      expect(
+        find.byKey(const ValueKey('machine-sharing:back')),
         findsOneWidget,
       );
       expect(find.text('Everyone at autonomous.ai'), findsOneWidget);
@@ -183,7 +190,8 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('machine-sharing:add')));
       await tester.pumpAndSettle();
       expect(app.sets.last.emails, ['ann@gmail.com', 'kim@acme.io']);
-      expect(find.text('Shared with 2 people.'), findsOneWidget);
+      // A share that went through says nothing: the list shows it.
+      expect(find.text('Shared with 2 people.'), findsNothing);
       expect(find.text('Using it'), findsOneWidget);
       expect(find.text('Invited · not using it yet'), findsOneWidget);
 
@@ -199,17 +207,27 @@ void main() {
       );
       await _snap(tester, boundary, 'share-people-dark');
 
-      // Removing someone is undoable.
+      // Removing someone takes them off the list, and that is all that is said.
       await tester.tap(
         find.byKey(const ValueKey('machine-sharing:remove:ann@gmail.com')),
       );
       await tester.pumpAndSettle();
       expect(app.sets.last.emails, ['kim@acme.io']);
-      expect(find.text('Stopped sharing with ann@gmail.com.'), findsOneWidget);
-      await _snap(tester, boundary, 'share-undo-dark');
-      await tester.tap(find.byKey(const ValueKey('machine-sharing:undo')));
+      expect(find.textContaining('Stopped sharing'), findsNothing);
+      expect(find.text('Undo'), findsNothing);
+      expect(find.text('ann@gmail.com'), findsNothing);
+      await _snap(tester, boundary, 'share-removed-dark');
+
+      // Someone already on the list is a quiet note under the field, not an error.
+      await tester.enterText(
+        find.byKey(const ValueKey('machine-sharing-email')),
+        'kim@acme.io',
+      );
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('machine-sharing:add')));
       await tester.pumpAndSettle();
-      expect(app.sets.last.emails, ['kim@acme.io', 'ann@gmail.com']);
+      expect(find.text('Already shared with kim@acme.io.'), findsOneWidget);
+      expect(app.sets.last.emails, ['kim@acme.io']);
 
       // A refusal says why and changes nothing.
       app.refusal = {
@@ -228,14 +246,14 @@ void main() {
         isTrue,
       );
 
-      // Done leaves where the sharing stands.
-      await tester.tap(find.byKey(const ValueKey('machine-sharing:done')));
+      // Back leaves where the sharing stands.
+      await tester.tap(find.byKey(const ValueKey('machine-sharing:back')));
       await tester.pump();
-      expect(closed(), 'Shared with 2 people and everyone at autonomous.ai.');
+      expect(closed(), 'Shared with 1 person and everyone at autonomous.ai.');
     },
   );
 
-  testWidgets('Done with nothing changed closes quietly; light appearance', (
+  testWidgets('Back with nothing changed closes quietly; light appearance', (
     tester,
   ) async {
     final app = _SharingApp()
@@ -259,7 +277,7 @@ void main() {
       findsNothing,
     );
     await _snap(tester, boundary, 'share-people-light');
-    await tester.tap(find.byKey(const ValueKey('machine-sharing:done')));
+    await tester.tap(find.byKey(const ValueKey('machine-sharing:back')));
     await tester.pump();
     expect(closed(), '');
   });

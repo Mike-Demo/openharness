@@ -3,6 +3,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harness_mobile/auth/auth_session.dart';
 import 'package:harness_mobile/core/config.dart';
+import 'package:harness_mobile/measurement/product_measurement.dart';
 import 'package:harness_mobile/phone/machines_tab.dart';
 import 'package:harness_mobile/phone/terminal_page.dart';
 import 'package:harness_mobile/phone/terminal_search.dart';
@@ -22,12 +23,15 @@ void main() {
   late VoiceInputController voice;
   late ValueNotifier<String> language;
   late List<Map<String, dynamic>> resizes;
+  late _Openings usage;
 
   setUp(() {
+    usage = _Openings();
     notifier = AppNotifier(
       config: AppConfig.dev,
       authSession: AuthSession(),
       configStore: null,
+      productMeasurement: usage,
     );
     resizes = [];
     session = TerminalSession(
@@ -89,6 +93,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
 
     expect(find.byType(TerminalSearchOverlay), findsOneWidget);
+    expect(usage.opened, [(PhoneScreen.find, ScreenOpening.swipe)]);
   });
 
   testWidgets('a short swipe right lets Find go back', (tester) async {
@@ -103,6 +108,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
 
     expect(find.byType(TerminalSearchOverlay), findsNothing);
+    expect(usage.opened, isEmpty, reason: 'Find went back: nothing opened');
   });
 
   testWidgets('a tap on the agent\'s name opens Find', (tester) async {
@@ -144,6 +150,7 @@ void main() {
     await tester.drag(find.byType(TerminalView), const Offset(-200, 0));
 
     expect(pushed, hasLength(1));
+    expect(usage.opened, [(PhoneScreen.computers, ScreenOpening.swipe)]);
     expect(find.byType(TerminalSearchOverlay), findsNothing);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));
@@ -184,6 +191,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.byType(TerminalSearchOverlay), findsOneWidget);
+      expect(usage.opened, isEmpty, reason: 'only a swipe is counted');
       handle.dispose();
     });
 
@@ -201,6 +209,7 @@ void main() {
         ),
       );
       expect(pushed, hasLength(1));
+      expect(usage.opened, isEmpty, reason: 'only a swipe is counted');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.byType(MachinesTab), findsOneWidget);
@@ -217,4 +226,16 @@ class _Pushes extends NavigatorObserver {
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) =>
       pushed.add(route);
+}
+
+/// Which side page opened and how, recorded in place of being counted.
+class _Openings extends ProductMeasurement {
+  _Openings()
+    : super(surface: 'phone', automatic: false, sendSetup: (_) async => {});
+
+  final opened = <(PhoneScreen, ScreenOpening)>[];
+
+  @override
+  void screenOpened(PhoneScreen screen, ScreenOpening how) =>
+      opened.add((screen, how));
 }

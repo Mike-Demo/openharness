@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { productObservation, productUsageIntent, productUsageLaunch, productUsageRequest } from './productUsageSignals.js'
+import { productObservation, productUsageIntent, productUsageLaunch, productUsageRequest, productUsageSource } from './productUsageSignals.js'
 import { PRODUCT_USAGE_FLOWS, PRODUCT_USAGE_METRICS, PRODUCT_USAGE_SETUP_METRICS } from './productUsageContract.js'
 import { HEALTH_MEASURES } from './productHealthContract.js'
 
@@ -14,6 +14,32 @@ it('separates automated polling, tool and app RPCs without inspecting error obje
   expect(emit.mock.calls.flat()).toEqual(expect.arrayContaining(['request_automatic_model_list_ok', 'request_tool_resume_error_not_found', 'request_app_close_cancelled', 'request_unknown_restart_error_other']))
   expect(JSON.stringify(emit.mock.calls)).not.toContain('PRIVATE')
   expect(emit.mock.calls.flat()).toContain('request_tool_model_list_ok')
+})
+it('tells the phone apart from the browser only by its own word, and never a local or device client', () => {
+  expect(productUsageSource(true, true, null, {})).toBe('tool')
+  expect(productUsageSource(true, false, null, { usageSurface: 'phone' })).toBe('app')
+  expect(productUsageSource(false, false, 'web', { usageSurface: 'phone' })).toBe('phone')
+  expect(productUsageSource(false, false, 'web', {})).toBe('app')
+  expect(productUsageSource(false, false, 'web', undefined)).toBe('app')
+  expect(productUsageSource(false, false, 'web', { usageSurface: 'PRIVATE_LABEL' })).toBe('app')
+  expect(productUsageSource(false, false, 'device', { usageSurface: 'phone' })).toBe('unknown')
+  expect(productUsageSource(false, false, null, { usageSurface: 'phone' })).toBe('unknown')
+})
+it('counts what a person on the phone asked for as the phone\'s, and its polls as automatic', () => {
+  const emit = vi.fn()
+  productUsageRequest('agent_create', emit, Date.now, 'phone')(undefined, 'created', true)
+  productUsageRequest('agent_resume', emit, Date.now, 'phone')('AGENT_BUSY', 'failed', false)
+  productUsageRequest('agent_recent', emit, Date.now, 'phone')(undefined, undefined, false)
+  productUsageRequest('models_list', emit, Date.now, 'phone')(undefined, undefined, false)
+  const names = emit.mock.calls.flat()
+  expect(names).toEqual(expect.arrayContaining(['request_phone_create_started', 'request_phone_create_ok',
+    'request_phone_resume_error_other', 'request_phone_resume_reason_busy',
+    'request_automatic_history_ok', 'request_automatic_model_list_ok']))
+  expect(names).not.toContain('request_phone_history_ok')
+  for (const name of names) expect(PRODUCT_USAGE_METRICS).toContain(name)
+  const work = vi.fn()
+  productUsageIntent('message', 'interactive', 'agent', 'phone', work)
+  expect(work).toHaveBeenCalledWith({ id: 'agent', phase: 'work_requested', origin: 'interactive' })
 })
 it('requires an explicit composer marker for interactive work; raw terminal input is unclassified', () => {
   const emit = vi.fn()

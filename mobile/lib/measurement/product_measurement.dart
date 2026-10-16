@@ -3,6 +3,8 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import '../core/local_key_value_store.dart';
+
 /// Mirrors `PRODUCT_USAGE_FLOWS` in backend/src/types/productUsage.ts; a wire name the backend
 /// does not list rejects the whole report. Everything up to [signIn] can happen before an account.
 enum ProductFlow {
@@ -21,6 +23,11 @@ enum ProductFlow {
   viewerOpen('viewer_open'),
   updateCheck('update_check'),
   updateStage('update_stage'),
+  // From the backend's `HEALTH_FLOWS` (productHealthContract.ts), counted as the desktop counts them.
+  appStart('app_start'),
+  connectUser('connect_user'),
+  connectAuto('connect_auto'),
+  resumeRecovery('resume_recovery'),
   computerWait('computer_wait'),
   sessionOpen('session_open'),
   firstMessage('first_message'),
@@ -38,13 +45,22 @@ enum ProductFlow {
 
 enum ProductOutcome { ok, failed, cancelled, unknown }
 
+/// Mirrors `PRODUCT_USAGE_PHONE_SCREENS` in backend/src/types/productUsage.ts: the phone's two side
+/// pages, Find and Computers.
+enum PhoneScreen { find, computers }
+
+/// Mirrors `PRODUCT_USAGE_SCREEN_OPENINGS`: a sideways swipe on the terminal, or anything the person
+/// pressed instead — a key, a row, a screen reader's action.
+enum ScreenOpening { swipe, button }
+
 typedef ProductReportRequest = Future<Map<String, dynamic>> Function(
   Map<String, dynamic> report,
 );
 typedef ProductChoiceRequest = Future<Map<String, dynamic>> Function();
 
 /// Fixed counters only: no event log, identifiers, errors, request/response objects or content.
-/// Nothing is saved. Signed-out sharing is an explicit choice for this app session; a close/crash can lose queued counts.
+/// Counters stay in RAM; a close/crash can lose queued counts. The one thing kept is the signed-out
+/// choice, in [setupStorage]: on by default, as the desktop's is, until it is turned off.
 /// Requests and retries are serialized and never awaited by a product action.
 class ProductMeasurement extends ChangeNotifier {
   ProductMeasurement({
@@ -53,10 +69,11 @@ class ProductMeasurement extends ChangeNotifier {
     DateTime Function()? now,
     String Function()? receipt,
     this.automatic = true,
+    this.setupStorage,
   }) : assert(const ['desktop', 'phone', 'web'].contains(surface)),
        _now = now ?? DateTime.now,
        _receipt = receipt ?? newProductReceipt {
-    choiceLoaded = true;
+    setupChoiceReady = _loadSetupChoice();
   }
 
   final String surface;
@@ -65,6 +82,34 @@ class ProductMeasurement extends ChangeNotifier {
   final DateTime Function() _now;
   final String Function() _receipt;
   bool signedOutSharing = false, choiceLoaded = false;
+
+  /// Where the signed-out choice is kept, across launches. With none — a test, the sample — there is
+  /// nowhere to keep an opt-out, so sharing starts off and is only ever an explicit choice.
+  final LocalKeyValueStore? setupStorage;
+  static const setupPreferenceKey = 'product_setup_sharing';
+
+  /// Kept for an opt-out made signed out that the account has not confirmed yet — the desktop's own
+  /// value, so the next sign-in turns the account's sharing off as well.
+  static const pendingSetupOptOut =
+      '{"enabled":false,"accountOptOutPending":true}';
+
+  /// Done once the kept choice is read: until then nothing is counted signed out.
+  late final Future<void> setupChoiceReady;
+
+  /// Done once the latest choice is written.
+  Future<void> get setupChoiceSaved => _setupSave ?? Future<void>.value();
+  Future<void>? _setupSave;
+  String? _persistedSetupChoice;
+  bool _accountOptOutPending = false;
+  int _setupChoiceGeneration = 0;
+
+  /// Turned off signed out, and not yet carried to the account: the next account read asks it to
+  /// turn sharing off (`AppNotifier.productUsageSettings`), and nothing is counted for it until then.
+  bool get accountOptOutPending => _sharingByDefault && _accountOptOutPending;
+
+  /// Signed-out reports say which kind they are: `sharing: 'default'` where sharing starts on (as on
+  /// the desktop — not consent), `consent: true` where it was only ever ticked.
+  bool get _sharingByDefault => setupStorage != null && surface != 'web';
 
   /// Which build reports: `{surface, release, platform, channel}`, as backend
   /// `ProductUsageContext` takes it. Sent with the account's reports only, so the totals split by
@@ -86,7 +131,14 @@ class ProductMeasurement extends ChangeNotifier {
   final _setup = <ProductFlow, void Function(ProductOutcome)>{};
   final _setupFacts = <ProductFlow, String>{};
 
-  bool get sharing => _account != null && _enabled == true;
+  bool get sharing =>
+      _account != null &&
+      _enabled == true &&
+      (!_sharingByDefault || choiceLoaded) &&
+      !accountOptOutPending;
+
+  /// Moves with every account or choice change: an observation begun before one never counts after.
+  int get observationGeneration => _accountEpoch;
 
   /// The account's choice has read off: what waits to be counted for it never is.
   bool get declined => _account != null && _enabled == false;
@@ -95,14 +147,70 @@ class ProductMeasurement extends ChangeNotifier {
       signedOutSharing &&
       (_account == null || _enabled == true);
 
-  Future<void> setSignedOutSharing(bool enabled) async {
-    _guestEpoch++;
-    signedOutSharing = enabled;
+  /// The kept choice: on unless it was turned off. One that cannot be read is an opt-out still to
+  /// carry to the account, as on the desktop — it must never come back on for an unreadable file.
+  Future<void> _loadSetupChoice() async {
+    final storage = setupStorage;
+    if (storage == null) {
+      choiceLoaded = true;
+      return;
+    }
+    final generation = _setupChoiceGeneration;
+    String? value;
+    try {
+      value = await storage.read(setupPreferenceKey);
+    } catch (_) {
+      value = pendingSetupOptOut;
+    }
+    // Ticked or unticked meanwhile, or the account answered: that word stands.
+    if (_disposed || generation != _setupChoiceGeneration) return;
+    _persistedSetupChoice = value;
+    _accountOptOutPending =
+        value != null && value != 'true' && value != 'false';
+    signedOutSharing = surface != 'web' && (value == null || value == 'true');
     choiceLoaded = true;
-    _clear('setup');
-    _setup.clear();
-    if (enabled) _observeSetupFacts();
+    if (signedOutSharing) _observeSetupFacts();
     notifyListeners();
+  }
+
+  /// The signed-out choice. [fromAccount]: the account's own confirmed choice, remembered for the next
+  /// signed-out launch — not an opt-out to carry to it.
+  Future<void> setSignedOutSharing(
+    bool enabled, {
+    bool fromAccount = false,
+  }) async {
+    _setupChoiceGeneration++;
+    _accountOptOutPending = _sharingByDefault && !enabled && !fromAccount;
+    if (accountOptOutPending) {
+      _accountEpoch++;
+      _clear('ui');
+    }
+    if (signedOutSharing != enabled || !choiceLoaded) {
+      _guestEpoch++;
+      signedOutSharing = enabled;
+      choiceLoaded = true;
+      _clear('setup');
+      _setup.clear();
+      if (enabled) _observeSetupFacts();
+      notifyListeners();
+    }
+    final storage = setupStorage;
+    if (storage == null) return;
+    final value = accountOptOutPending
+        ? pendingSetupOptOut
+        : enabled.toString();
+    // One write at a time, so an older one cannot land after a newer off. Best effort: a choice that
+    // is not kept still holds for this run.
+    final previous = _setupSave;
+    final saving = () async {
+      if (previous != null) await previous;
+      try {
+        await storage.write(setupPreferenceKey, value);
+        _persistedSetupChoice = value;
+      } catch (_) {}
+    }();
+    _setupSave = saving;
+    await saving;
   }
 
   /// The scope is RAM-only and never serialized. A sign-out or account change discards its queue.
@@ -123,10 +231,16 @@ class ProductMeasurement extends ChangeNotifier {
     _schedule();
   }
 
-  /// A saved switch applies immediately in this app, even while a report is in flight.
-  void savedChoice(Map<String, dynamic> value) {
+  /// A saved switch applies immediately in this app, even while a report is in flight. [explicit]: the
+  /// person set it just now (Settings ▸ Privacy), which also settles an opt-out still to carry.
+  void savedChoice(Map<String, dynamic> value, {bool explicit = false}) {
     final enabled = value['enabled'], revision = value['revision'];
     if (enabled is! bool || revision is! int || revision < 0) {
+      _enabled = null;
+      return;
+    }
+    // A default-on answer before this phone's own choice is read waits for it: it may be an opt-out.
+    if (_sharingByDefault && !choiceLoaded && enabled && !explicit) {
       _enabled = null;
       return;
     }
@@ -136,6 +250,15 @@ class ProductMeasurement extends ChangeNotifier {
     }
     _revision = revision;
     _enabled = enabled;
+    if (_sharingByDefault &&
+        (!accountOptOutPending || !enabled || explicit) &&
+        (signedOutSharing != enabled ||
+            !choiceLoaded ||
+            accountOptOutPending ||
+            _persistedSetupChoice != enabled.toString())) {
+      // The account's confirmed choice is the phone's next signed-out one, as on the desktop.
+      unawaited(setSignedOutSharing(enabled, fromAccount: true));
+    }
     if (!enabled) {
       _guestEpoch++;
       signedOutSharing = false;
@@ -238,6 +361,14 @@ class ProductMeasurement extends ChangeNotifier {
     if (_disposed || !sharing) return;
     final day = _now().toUtc().toIso8601String().substring(0, 10);
     _count('ui', day, 'ui_${surface}_${flow.wire}_$measure');
+  }
+
+  /// [screen] opened, by [how] — `ui_phone_screen_<screen>_<how>`, which the backend names for the phone
+  /// alone. For an account that shares; which page and which way, nothing more.
+  void screenOpened(PhoneScreen screen, ScreenOpening how) {
+    if (_disposed || !sharing || surface != 'phone') return;
+    final day = _now().toUtc().toIso8601String().substring(0, 10);
+    _count('ui', day, 'ui_${surface}_screen_${screen.name}_${how.name}');
   }
 
   /// One attempt counted under several flows at once — `sign_in` and the button that started it.
@@ -364,7 +495,12 @@ class ProductMeasurement extends ChangeNotifier {
           'id': _receipt(),
           'day': key.split(':')[1],
           'counters': batch,
-          if (channel == 'setup') 'consent': true else 'revision': _revision,
+          if (channel == 'setup' && _sharingByDefault)
+            'sharing': 'default'
+          else if (channel == 'setup')
+            'consent': true
+          else
+            'revision': _revision,
           if (channel == 'ui' && context != null) 'context': context,
         };
         _pending[channel] = report;

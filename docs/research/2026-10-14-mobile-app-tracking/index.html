@@ -271,9 +271,9 @@
       <tr><td>counters</td><td><code>{"ui_phone_computer_wait_started":1, "ui_phone_computer_wait_ok":1, "ui_phone_computer_wait_over_1m":1}</code></td></tr>
     </table></div>
     <p>The backend accepts only names on its list (any other name rejects the whole report) and adds them into daily totals. Who sent a report is used to check their
-      switch, and is not stored with the totals. Signed out there is no account, so nothing is sent unless the person ticked <b>Share setup and sign-in counts</b>.
-      That box starts off on every launch. Its reports go without credentials or cookies to <code>POST /api/product-usage/setup</code>, with
-      <code>"consent": true</code> instead of a revision. That is the only way sign-in is counted, because a sign-in happens before there is an account. A Google sign-in that worked:</p>
+      switch, and is not stored with the totals. Signed out there is no account, so the phone goes by its own <b>Share setup and sign-in counts</b> line,
+      on by default as on Desktop and kept across launches; turning it off also turns the account's sharing off at the next sign-in. Its reports go without
+      credentials or cookies to <code>POST /api/product-usage/setup</code>, with <code>"sharing": "default"</code> instead of a revision. That is the only way sign-in is counted, because a sign-in happens before there is an account. A Google sign-in that worked:</p>
     <div class="scroll"><table>
       <tr><th>Field</th><th>Value</th></tr>
       <tr><td>counters</td><td><code>{"setup_phone_sign_in_started":1, "setup_phone_sign_in_ok":1, "setup_phone_sign_in_1s_to_10s":1, "setup_phone_sign_in_google_started":1, "setup_phone_sign_in_google_ok":1, "setup_phone_sign_in_google_1s_to_10s":1}</code></td></tr>
@@ -334,7 +334,7 @@
         <tr><td>sign_in_switched</td><td>A sign-in that went through on another button than the first one tried</td></tr>
       </table></div>
       <p>Google and Apple were not counted at all before this change, so <code>sign_in</code> totals rise when it ships. A scan that fails and falls back to the emailed code counts as a failed scan; the code typed after it is its own email attempt.</p>
-      <div class="note">Every outcome, failures and cancels included, exists only for phones that ticked <b>Share setup and sign-in counts</b> (<code>setup_phone_*</code>), the one quiet line with ⓘ at the foot of every signed-out screen; it starts off on every launch.
+      <div class="note">Every outcome, failures and cancels included, exists only for phones whose <b>Share setup and sign-in counts</b> line is on (<code>setup_phone_*</code>), the one quiet line with ⓘ at the foot of every signed-out screen; it is on by default and remembered across launches.
         A sign-in that <b>went through</b> is counted again under the account's own sharing (<code>ui_phone_sign_in_*_ok</code>, the large population), with <code>retried</code> and <code>switched</code> saying how hard it was. People who never get in stay invisible: take installs and first opens from App Store Connect and Play Console as the denominator.</div></figcaption></figure>
   <figure class="phone-pair"><div class="shots"><img src="img/03-code.jpg" alt="Check your email: the 4-digit code"></div>
     <figcaption><div class="row"><span class="num">1b</span><span class="ttl2">What a failure carries</span></div>
@@ -421,13 +421,26 @@
     </ul>
   </div></div>
 
+  <h2>Added on 2026-10-16</h2>
+  <p class="sub">The flows the desktop already counted, the phone's two side pages, and who sent a request.</p>
+  <div class="card"><div class="card-body">
+    <ul class="plain">
+      <li><b>app_start</b>: a launch that came back signed in, to its first computer answering. <code>unknown</code> when the app left the screen first; a launch that signs in is the onboarding's and is not counted.</li>
+      <li><b>connect_user</b> / <b>connect_auto</b>: "Try again" on a computer apart from the app's own dials (launch, a dropped socket coming back), beside the unchanged <code>remote_connect</code>. A Try again fails at 12 s, as Desktop Connect does.</li>
+      <li><b>resume_recovery</b>: a stopped harness resumed from the phone, to its first live turn; <code>failed</code> when the computer refused it.</li>
+      <li><b>ui_phone_screen_find_swipe|button</b>, <b>ui_phone_screen_computers_swipe|button</b>: Find and Computers opened, by a swipe on the terminal or by a button (Computers in Settings, its link on a long wait at home). Find's key and screen-reader actions are not counted.</li>
+      <li><b>request_phone_*</b>: the computer's daemon counts the phone's requests (create, resume, close, search…) as the phone's, not as any app's. The phone says so inside the encrypted request (<code>usageSurface</code>); older phones still count as <code>app</code>.</li>
+      <li><b>Signed out, on by default</b>, as on Desktop: see sign-in above.</li>
+    </ul>
+  </div></div>
+
   <h2>Reading the numbers</h2>
   <div class="card"><div class="card-body">
     <p><code>cd backend &amp;&amp; npm run usage:daily -- 14</code> (read-only <code>DATABASE_URL</code>) prints JSON; its <code>review.flows</code> lists every flow per channel and surface with its starts,
       the four outcomes, <code>unmatchedStarts</code> and the duration buckets. The new flows appear there with no change, because the review reads the same vocabulary. Days are UTC; today is partial.</p>
     <ul class="plain">
       <li>Conversion between steps compares totals, not people: <code>session_open_started</code> ÷ <code>computer_wait_ok</code> is close to "joined, then went on", but nothing links the two counts.</li>
-      <li>Sign-in failure rates describe only phones that ticked the box: a self-selected group. Successes, <code>retried</code> and <code>switched</code> cover every sharing account.</li>
+      <li>Sign-in failure rates describe the phones that left the line on (the default); those that turned it off are missing. Successes, <code>retried</code> and <code>switched</code> cover every sharing account.</li>
       <li><code>resumed</code> marks a step started in an app run that did not sign in (the app reopened mid-step). Subtract it from starts for fresh starts.</li>
       <li>Every phone report carries its release and iOS/Android, so <code>usage:daily</code>'s <code>health.breakdowns</code> splits each <code>ui_phone_*</code> count by release and by platform: compare the release before and after a UI change. A margin appears above 20 collector days. Debug builds report as <code>development</code> and are not kept, but TestFlight builds are release builds and do count.</li>
       <li>The web build of the same app counts under <code>ui_web_*</code>. Signed out, web sends nothing.</li>
@@ -441,8 +454,8 @@
       <li>The email typed or shown ("Use ada@example.com"), the Google or Apple account, the account id.</li>
       <li>The computer's name ("MacBook Pro"), its id, the session or agent, the starter task and every message.</li>
       <li>Error text, the QR's contents, the one-time codes.</li>
-      <li>Any device or install id, app version, OS version, locale, time of day.</li>
-      <li>Taps, screens, scrolling, or anything from the offline sample.</li>
+      <li>Any device or install id, OS version, locale, time of day. (The app's release and iOS or Android are sent, as margins.)</li>
+      <li>Taps, scrolling, or anything from the offline sample. Of the screens, only that Find or Computers opened, and by swipe or button.</li>
     </ul>
   </div></div>
 
@@ -454,7 +467,7 @@
       <li>The phone's Privacy ▸ See what's shared now lists the sign-in buttons and the four setup steps. Desktop's copy of that text does not mention them yet.</li>
       <li>The signed-out choice is now drawn differently on each app (the phone's is one line with ⓘ), so the backend test compares its wording on both apps instead of the whole file.</li>
     </ul>
-    <p class="q">Should signed-out sign-in counts stay opt-in only (small numbers), or is the sign-in split good enough from phones that tick the box?</p>
+    <p class="q">Decided 2026-10-16: signed-out counts are on by default on the phone too, as on Desktop.</p>
   </div></div>
 </main>
 <dialog id="zoom"><img alt=""></dialog>

@@ -44,6 +44,14 @@ export const PRODUCT_USAGE_ONBOARDING_MARKS = ['ui_phone_sign_in_retried', 'ui_p
 export const PRODUCT_USAGE_ONBOARDING_METRICS = [...PRODUCT_USAGE_ONBOARDING_MARKS,
   ...PRODUCT_USAGE_LONG_FLOWS.flatMap(flow => PRODUCT_USAGE_LONG_MEASURES.map(measure => `ui_phone_${flow}_${measure}` as const)),
 ] as const
+/** The phone's two side pages, counted each time one opens and by how: a sideways swipe on the
+ * terminal (Find from the left, Computers from the right), or a button (Computers' row in Settings,
+ * its link on a long wait at home). Find's key and screen-reader actions are not counted. Which page
+ * and which way, nothing else. */
+export const PRODUCT_USAGE_PHONE_SCREENS = ['find', 'computers'] as const
+export const PRODUCT_USAGE_SCREEN_OPENINGS = ['swipe', 'button'] as const
+export const PRODUCT_USAGE_PHONE_SCREEN_METRICS = PRODUCT_USAGE_PHONE_SCREENS.flatMap(screen =>
+  PRODUCT_USAGE_SCREEN_OPENINGS.map(opening => `ui_phone_screen_${screen}_${opening}` as const))
 export const PRODUCT_USAGE_FLOWS = [...PRODUCT_USAGE_SETUP_FLOWS,
   'workspace_connect', 'computer_link', 'remote_connect', 'viewer_open', 'update_check', 'update_stage',
   ...HEALTH_FLOWS, ...PRODUCT_USAGE_ONBOARDING_FLOWS] as const
@@ -86,6 +94,7 @@ export const PRODUCT_USAGE_METRICS = [
     .map(measure => `${action}_user_${measure}` as const)),
   ...PRODUCT_USAGE_UI_METRICS,
   ...PRODUCT_USAGE_ONBOARDING_METRICS,
+  ...PRODUCT_USAGE_PHONE_SCREEN_METRICS,
 ] as const
 export type ProductUsageMetric = typeof PRODUCT_USAGE_METRICS[number]
 export interface ProductUsageReport {

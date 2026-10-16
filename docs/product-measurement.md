@@ -10,7 +10,7 @@ automatically proven improvement. Changes still need review, tests and a deliber
 | --- | --- | --- |
 | Does first measured use lead to work? | First-launch installation cohorts; work and first text response within 24 hours | Same participating installation, not signup conversion, same-task success or unique people. Existing users enter when updated; mature only after the full follow-up day ends. |
 | Where does a launch stall or fail? | Pending install/model/native waits; observed launch created/failed/cancelled/unconfirmed; fixed failure categories and duration buckets | Polls are not attempts. Missing outcomes, daemon restarts and the 15-minute observation bound reduce coverage. Inspect unknowns alongside failures. |
-| Which actions break? | Create, resume, restart, model-change, history, fork, close, delete, search, history paging, Store list/install/update/remove, model list/download/start/stop and browser-open requests, fixed outcomes/errors and latency buckets | Request acceptance is not task success. Pending/unknown requests are separate from completed replies. |
+| Which actions break? | Create, resume, restart, model-change, history, fork, close, delete, search, history paging, Store list/install/update/remove, model list/download/start/stop and browser-open requests, fixed outcomes/errors and latency buckets | Request acceptance is not task success. Pending/unknown requests are separate from completed replies. Requests are also counted by source: `app`, `tool`, `automatic` (fixed polls, whichever app makes them), `unknown` and `phone` — the phone marks the requests the daemon measures (`usageSurface: 'phone'`, inside the E2EE payload); older phones still count as `app`. |
 | Does work get a response promptly? | First text response buckets; over-one-minute waits; error events; matched ends without text; interruptions | Includes automation. Tool-only turns, interruptions and missing lifecycle events can explain missing text. No message is inspected. |
 | Do installations return to work? | D1/D7/D28 working-day cohorts, consecutive complete-week and calendar-month returns, return after a seven-day gap | Any working day can be a cohort; not new-signup retention. Local date flags produce unlinked totals. Opt-outs, reinstallations, resets and missing uploads affect results. |
 | Was the task useful? | Optional Completed / Partly completed / Not completed plus five fixed reason choices from clients that offer feedback; current Desktop Settings no longer exposes feedback controls | Voluntary and self-selected; not representative success or satisfaction. There is no free-text input. |
@@ -18,7 +18,9 @@ automatically proven improvement. Changes still need review, tests and a deliber
 
 | Which features get tried and used again? | First measured installations and daily first/repeat feature reach | Locally deduplicated installation-days, not unique accounts. Reads the apps make on their own (history, history paging, Store list, model list; `PRODUCT_USAGE_AUTOMATIC_ACTIONS`) count reliability only. The Store and model lists get reach only from the request an app marks `userAction` when a person opens them (`<action>_user_*`, `PRODUCT_USAGE_USER_OPENED_ACTIONS`); history has none. |
 | Where do app flows break? | Setup, Harness/tmux/clipboard steps, sign-in, workspace/remote connections, computer linking, viewer-pane opening and manual update checking/staging | Fixed started/ok/failed/cancelled/unknown counts and coarse duration buckets. Opening a viewer pane is not rendering its content; staging an update is not a successful relaunch. |
-| Where does the phone's onboarding stall? | After sign-in: waiting for the first computer, opening its session, the first message, the notification prompt. A sign-in that went through, by button, counted again under the account's sharing. Waits past a minute split into 1–5 min, 5–15 min, 15 min–1 h and over 1 h for the computer and the first message. Once per step per sign-in: `resumed` (reopened in a run that did not sign in), "Not you? Sign out", the address sent from the share sheet, a joining computer that wants its password or is offline | Stage totals per day, not a linked funnel. Subtract `resumed` from starts for fresh starts; an unmatched start is a closed app or a step still waiting. A resumed step's duration starts at the reopening. Signed-in sign-in counts are successes only; failures and cancels before an account remain the signed-out opt-in's, but a success is marked `retried` (a failed or cancelled try came first in that app run) or `switched` (another button was tried first). Phone reports carry release and iOS/Android, so every phone count also splits by those two margins (above 20 collector days); debug builds are not kept. A chosen sign-out sends what is queued first (up to 2 s), so "Not you? Sign out" reaches the totals. |
+| Where does the phone's onboarding stall? | After sign-in: waiting for the first computer, opening its session, the first message, the notification prompt. A sign-in that went through, by button, counted again under the account's sharing. Waits past a minute split into 1–5 min, 5–15 min, 15 min–1 h and over 1 h for the computer and the first message. Once per step per sign-in: `resumed` (reopened in a run that did not sign in), "Not you? Sign out", the address sent from the share sheet, a joining computer that wants its password or is offline | Stage totals per day, not a linked funnel. Subtract `resumed` from starts for fresh starts; an unmatched start is a closed app or a step still waiting. A resumed step's duration starts at the reopening. Signed-in sign-in counts are successes only; failures and cancels before an account remain the signed-out counts', but a success is marked `retried` (a failed or cancelled try came first in that app run) or `switched` (another button was tried first). Phone reports carry release and iOS/Android, so every phone count also splits by those two margins (above 20 collector days); debug builds are not kept. A chosen sign-out sends what is queued first (up to 2 s), so "Not you? Sign out" reaches the totals. |
+| How fast does the phone get back to work? | A launch that came back signed in, to its first computer answering (`app_start`); a dial the person asked for ("Try again", `connect_user`) apart from the app's own (`connect_auto`), beside the unchanged `remote_connect`; a stopped harness resumed from the phone, to its first live turn (`resume_recovery`) | A launch that signs in is the onboarding's and is not counted; one that leaves the screen before a computer answers is `unknown`, one whose computers never answer stays started. An asked-for dial fails at 12 s, as Desktop Connect does. A phone dial is `failed` only when the phone knows why (locked or offline), `unknown` otherwise; the reasons (`connect_error_*`) are Desktop health counters. |
+| Are the phone's side pages used? | Find and Computers opens, by a sideways swipe on the terminal or by a button (Computers' row in Settings, its link on a long wait at home) | Which page and which way, nothing more. Find's key and screen-reader actions are not counted; a swipe that lets Find go back opened nothing. |
 | Is measurement losing coverage? | Updated collector installation-days, pruned queues, full observation maps, unmatched app starts | Loss signals warrant caution. No signal does not prove complete collection. |
 | How many people use Harness, and do they come back? | People active / working / new per day and per app, and D1/D2/D3/D7 returns (backend rollup of 10-day pseudonymous marks) | Sharing accounts only, staff excluded; an app open across midnight counts on both days, so prefer working returns. Not available before `PRODUCT_USAGE_SUBJECT_KEY` is set. |
 
@@ -32,8 +34,11 @@ over after sign-in and is remembered for the next signed-out launch. An explicit
 before sign-in is applied to the account before Desktop sharing can resume; failures keep it pending
 and reporting off. An account's default-on response cannot erase that pending choice. Turning sharing off discards
 queued counts and open observations. It does not retract a request already sent.
-The phone retains its separate, off-by-default **Share setup and sign-in counts** choice for each
-app session. Neither native setup transport sends credentials/cookies or replays earlier actions.
+The phone's **Share setup and sign-in counts** line, under its signed-out screens, is on by default too
+and follows the same rules: unticking it is kept on the phone as a pending opt-out, applied to the
+account at the next sign-in before phone sharing resumes; an unreadable choice is off; the confirmed
+account preference is remembered for the next signed-out launch. With nowhere to keep the opt-out
+(tests, the sample) it starts off. Neither native setup transport sends credentials/cookies or replays earlier actions.
 Setup state already visible when sharing becomes enabled can start an observation; duration then
 begins at that observation, not necessarily at installation start. Web pre-sign-in collection stays
 disabled because that transport cannot guarantee omitted cookies. These untrusted setup counts are
@@ -144,8 +149,8 @@ their own. A backend that predates `tui` refuses only those, and the daemon then
 until the next UTC day or its own restart, without counting a failed delivery.
 
 The signed-out endpoint permits only setup counters. Older native clients send `consent: true`;
-default-on Desktop sends `sharing: "default"`, accepted only for Desktop counters and never recorded
-as an explicit opt-in. The two request forms are mutually exclusive. The endpoint rejects auth/cookie
+default-on Desktop and phone send `sharing: "default"`, accepted only when every counter is one
+surface's (Desktop or phone) and never recorded as an explicit opt-in. The two request forms are mutually exclusive. The endpoint rejects auth/cookie
 headers, limits bodies to 4 KiB and values to 1,000, and admits at most 120 writes/minute and four
 concurrent writes per server process. No IP-based analytics or new rate-limit identity is stored.
 Exhaustion drops measurement rather than affecting sign-in. Public counts remain susceptible to
@@ -221,7 +226,9 @@ is one source of evidence; a missing response does not identify why a person sto
 
 Deploy backend schema and the singleton worker first, including unique indexes and TTL indexes.
 Use synthetic data to verify duplicate receipts, transaction rollback/retry, off/on revision fencing
-and expiry. Then release CLI, desktop and phone together. Check that the switch saves and that reports
+and expiry. Then release CLI, desktop and phone together. An older backend refuses a whole report
+carrying a counter it does not know (a phone page opening, a `request_phone_*` count, a phone
+`sharing: "default"` setup report), so the backend always goes first. Check that the switch saves and that reports
 stop when it is off. Old clients stop contributing individual daily histories when the backend changes;
 the historical reporting command will no longer be a current-usage source.
 

@@ -15,9 +15,9 @@
 
 enum { POD_MEMBERS_MAX = 24 };   // == POD_PANES_MAX == SWARM_MEMBERS_MAX
 enum { POD_TAP_SLOP = 24 };   // px: farther than this from the DOWN and the contact is a drag, not a tap
-// Gestures: hold this long to talk; the top band's height (a swipe down from it opens Notices) and the travel of that
+// Gestures: the top band's height (a swipe down from it opens Notices) and the travel of that
 // swipe; the travel of a swipe up (Home).
-enum { POD_HOLD_MS = 400, POD_BAR_H = 72, POD_BAR_SWIPE = 80, POD_EDGE_SWIPE = 80, POD_BOTTOM_Y = 620 };   // POD_BOTTOM_Y: a swipe up that starts at or below it goes Home from a room or a recap
+enum { POD_BAR_H = 72, POD_BAR_SWIPE = 80, POD_EDGE_SWIPE = 80, POD_BOTTOM_Y = 620 };   // POD_BOTTOM_Y: a swipe up that starts at or below it goes Home from a room or a recap
 
 typedef struct { const char *id, *name, *engine, *machine; } pod_roster_row_t;
 
@@ -77,14 +77,12 @@ typedef struct {
     void *scroll_ctx;
     bool scroll_reversed, scroll_begun;
     uint32_t down_ms;
-    // Hold to talk: armed at a DOWN that may talk, fired by the first still sample at or after hold_due_ms (pod_ui_touch, on the touch task); hold_voice is a recording
-    // under way for this contact. bar: the contact began in the top band.
-    bool hold_armed, hold_fired, hold_voice, bar, edge;   // bar: the contact began in the top edge (y < POD_BAR_H) of a non-Talk screen: a swipe down opens the Inbox; edge: the contact began in the bottom zone (y >= POD_BOTTOM_Y) of a room or a recap: a swipe up goes Home, and it scrolls nothing
-    bool hands_free;   // the hold started a recording that outlives the finger; the next new tap sends it (cleared by END, ABORT, talk_over)
-    uint32_t hold_due_ms;
-    uint8_t hold_depth;
-    pod_view_t hold_view;            // the screen (nav depth and view) and agent the hold was armed on: it fires only there
-    char hold_agent[ID_MAX];
+    // Tap to talk: armed at a DOWN that may talk, fired by its lift if the finger stayed within POD_TAP_SLOP (pod_ui_touch, on the touch task).
+    bool talk_armed, bar, edge;   // bar: the contact began in the top edge (y < POD_BAR_H) of a non-Talk screen: a swipe down opens the Inbox; edge: the contact began in the bottom zone (y >= POD_BOTTOM_Y) of a room or a recap: a swipe up goes Home, and it scrolls nothing
+    bool hands_free;   // a tap started a recording; the next new tap sends it (cleared by END, ABORT, talk_over)
+    uint8_t talk_depth;
+    pod_view_t talk_view;            // the screen (nav depth and view) and agent the tap was armed on: it fires only there
+    char talk_agent[ID_MAX];
     // Following the host (see pod_ui_focus): the last contact, and a focus whose agent the model does not know yet.
     bool touched;
     uint32_t last_touch_ms;
@@ -188,10 +186,7 @@ bool pod_ui_take_changed(pod_ui_t *);
 // Where Recap drags are reported (NULL: nowhere) and which way the person's setting reads them. Cheap: call before each contact.
 void pod_ui_scroll_sink(pod_ui_t *, ht_scroll_emit_t emit, void *ctx, bool reversed);
 pod_out_t pod_ui_touch(pod_ui_t *, bool down, int x, int y, uint32_t now_ms, bool *changed);
-pod_out_t pod_ui_touch_cancel(pod_ui_t *);   // a recording the hold had open comes back as VOICE_ABORT: perform it
-// Fires the hold once its deadline has passed. The device never calls it: the hold fires from pod_ui_touch's held
-// samples, on the task that also ends the recording. Kept for tests that drive a deadline without a sample.
-pod_out_t pod_ui_tick(pod_ui_t *, uint32_t now_ms);
+pod_out_t pod_ui_touch_cancel(pod_ui_t *);   // the contact is dropped; an open recording does not depend on it and stays
 
 // ---- voice and clock ---------------------------------------------------------------------------------------
 bool pod_ui_talking(const pod_ui_t *);

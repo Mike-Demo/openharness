@@ -888,6 +888,34 @@ class WsConn {
   @visibleForTesting
   static bool worthLogging(String type) => !_unlogged.contains(type);
 
+  /// The requests this phone sends that a machine's daemon counts by who sent them — of `actions` and
+  /// `message` in cli/src/lib/productUsageSignals.ts, the ones it sends (never a type it does not:
+  /// every machine request named in `lib/` must be sealed, `encrypted_down_types_test.dart`). Over the
+  /// relay the phone is a remote app client like the browser, so these carry `usageSurface: 'phone'`
+  /// (as a model list a person opened carries `userAction`) and are counted as the phone's. Nothing
+  /// else gets the word: not the E2EE handshake, not the relay's own frames. A daemon from before it
+  /// reads past it.
+  @visibleForTesting
+  static const usageMeasuredRequests = {
+    'agent_create',
+    'agent_resume',
+    'agent_restart',
+    'agent_retarget',
+    'agent_recent',
+    'agent_fork',
+    'agent_delete',
+    'session_search',
+    'session_tail',
+    'dsh_list',
+    'dsh_install',
+    'dsh_update',
+    'dsh_remove',
+    'models_list',
+    'grid_models_list',
+    'browser_open',
+    'message',
+  };
+
   Future<Map<String, dynamic>> request(
     String type, {
     Map<String, dynamic> payload = const {},
@@ -1061,6 +1089,11 @@ class WsConn {
     final type = frame['type'] as String;
     var payload = (frame['payload'] as Map<String, dynamic>?) ?? {};
     if (onOutgoing != null) payload = await onOutgoing!(type, payload);
+    // Every JSON frame goes out through here — a request, a terminal's `message`, one held in the
+    // queue across a redial — so this is the one place the word is added.
+    if (usageMeasuredRequests.contains(type)) {
+      payload = {...payload, 'usageSurface': 'phone'};
+    }
     final channel = _channel;
     if (channel == null) throw StateError('WS is not connected');
     final out = <String, dynamic>{'type': type, 'payload': payload};

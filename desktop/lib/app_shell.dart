@@ -42,6 +42,7 @@ import 'shortcuts/app_keymap.dart';
 import 'shortcuts/keyboard_practice.dart';
 import 'widgets/shortcuts_sheet.dart';
 import 'widgets/new_device_notice.dart';
+import 'widgets/shared_tab_notice.dart';
 import 'widgets/update_notice.dart';
 import 'widgets/window_chrome.dart';
 import 'sharing/shared_agent_location.dart';
@@ -432,6 +433,13 @@ class _RootShellState extends ConsumerState<RootShell>
               NewDeviceNotice(notifier: app),
             if (app.deviceConflict != null && deviceBands)
               DeviceConflictNoticeBand(notifier: app),
+            if (deviceBands)
+              ListenableBuilder(
+                listenable: app.sharedTabs,
+                builder: (_, _) => SharedTabNotice.hasWork(app)
+                    ? SharedTabNotice(notifier: app)
+                    : const SizedBox.shrink(),
+              ),
             Expanded(child: framed),
           ],
         );

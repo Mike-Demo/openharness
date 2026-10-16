@@ -7,7 +7,7 @@ import type { RegisteredSession } from '../lib/registry.js'
 import { fakeCore } from '../testing/fakeCore.js'
 import { PaneInbox } from './inbox.js'
 import { deliveryKey, FYI_REASON, PUMP_MS } from './mailbox.js'
-import { header, LIMITS, LONG_TEXT, longAdvice, MessageError, parseMessage, type Message } from './model.js'
+import { header, LIMITS, LONG_TEXT, longAdvice, MessageError, parseMessage, RULES, type Message } from './model.js'
 import type { Rpc } from './rpc.js'
 import { HELD_OFF_REASON, HELD_OUTSIDE_MS, MESSAGES_OFF_TEXT, REMOTE_STATUS_MS, SETTING_FRESH_MS, startAgentMessages, SWEEP_AFTER_MS, TICK_MS, WHO_MS } from './service.js'
 import { MessageStore } from './store.js'
@@ -46,7 +46,7 @@ function setup(over: Setup = {}) {
   const windows: Array<Record<string, unknown>> = []
   const deliveryListeners = new Set<(event: TurnDelivery) => void>()
   const noticeListeners = new Set<(notice: BackendNotice) => void>()
-  const backend = vi.fn(async () => ({ status: over.backendStatus ?? 200, body: { success: true, data: directory } }))
+  const backend = vi.fn(async (_method: string, _path: string, _body?: unknown) => ({ status: over.backendStatus ?? 200, body: { success: true, data: directory } }))
   const rpcCalls: Array<[string, Record<string, unknown>]> = []
   const rpc: Rpc = over.rpc ?? (async (target, payload) => {
     rpcCalls.push([target.machineId, payload])
@@ -138,6 +138,8 @@ describe('harness send', () => {
     expect(roster.roster).toContain('Teammates:')
     expect(roster.roster).toMatch(/api\s+Claude Code · studio · api/)
     expect(roster.roster).toMatch(/phone\s+Claude Code · laptop · app/)
+    // A tab no other account shares: the note as it was before shared tabs, to the byte (no account, branch or GitHub lines).
+    expect(roster.roster).toBe(['[Harness] Agent Messages are on in tab "app". Teammates:', '  api    Claude Code · studio · api', '  phone  Claude Code · laptop · app', RULES].join('\n'))
     const fail = async (payload: Record<string, unknown>, asker = OWNER_LOCAL) => (await t.ask(payload, asker)).error
     expect(await fail({ action: 'send', pane: 'nope', to: 'api', text: 'x' })).toBe('NOT_A_HARNESS')
     expect(await fail({ action: 'send', pane: '%99', to: 'api', text: 'x' })).toBe('NOT_A_HARNESS')
@@ -779,7 +781,8 @@ describe('off costs nothing', () => {
     // Turned on for the account and kept here: the watch wakes it, and the notes go out at its next look.
     t.setting(true)
     await vi.advanceTimersByTimeAsync(0)
-    expect(t.backend).toHaveBeenCalledOnce()
+    // Its tabs, and once the shared tabs too (service.ts `sharedUp`).
+    expect(t.backend.mock.calls.map((c) => c[1]).sort()).toEqual(['/api/agent-messages', '/api/agent-messages/shares'])
     expect(t.watchers.size).toBe(0)
     await vi.advanceTimersByTimeAsync(TICK_MS)
     const notes = (pane: string) => (require('node:fs').readdirSync(t.inbox.paneDir(pane)!) as string[]).filter((n) => n.startsWith('0note-'))
@@ -806,7 +809,8 @@ describe('off costs nothing', () => {
     signedIn = true
     t.service.reconnected!()
     await vi.advanceTimersByTimeAsync(0)
-    expect(t.backend).toHaveBeenCalledOnce()
+    // Its tabs, and once the shared tabs too (service.ts `sharedUp`).
+    expect(t.backend.mock.calls.map((c) => c[1]).sort()).toEqual(['/api/agent-messages', '/api/agent-messages/shares'])
     expect(vi.getTimerCount()).toBe(3)
     // Turned off at its next look, then signed out: the watch goes with the rest.
     t.setting(false)
@@ -861,7 +865,8 @@ describe('off costs nothing', () => {
     setAgentSettingsForTest(root, { agentMessages: true })
     t.service.settingsChanged()
     await vi.advanceTimersByTimeAsync(0)
-    expect(t.backend).toHaveBeenCalledOnce()
+    // Its tabs, and once the shared tabs too (service.ts `sharedUp`).
+    expect(t.backend.mock.calls.map((c) => c[1]).sort()).toEqual(['/api/agent-messages', '/api/agent-messages/shares'])
     expect(vi.getTimerCount()).toBe(3)
     t.service.stop()
   })

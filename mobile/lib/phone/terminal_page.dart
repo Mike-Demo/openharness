@@ -1386,6 +1386,11 @@ class _TerminalPageState extends State<TerminalPage>
       _swipingFind = false;
       if (velocity >= _swipeFlick ||
           (velocity > -_swipeFlick && _searchOpen.value > 0.3)) {
+        // Counted once it stays: a swipe that lets Find go back opened nothing.
+        widget.notifier.productMeasurement.screenOpened(
+          PhoneScreen.find,
+          ScreenOpening.swipe,
+        );
         _searchOpen.forward();
       } else {
         _closeSearch();
@@ -1393,6 +1398,11 @@ class _TerminalPageState extends State<TerminalPage>
       return;
     }
     if (_swipedLeft >= _computersReach || velocity <= -_swipeFlick) {
+      // The swipe alone is counted here: Find's key and a screen reader's actions are not.
+      widget.notifier.productMeasurement.screenOpened(
+        PhoneScreen.computers,
+        ScreenOpening.swipe,
+      );
       unawaited(_openComputers());
     }
   }

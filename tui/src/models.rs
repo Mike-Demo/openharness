@@ -560,12 +560,13 @@ fn due(last: Option<&Instant>, every: Duration, now: Instant) -> bool { last.is_
 #[derive(Clone, Debug)]
 pub struct Target { pub machine: String, pub agent: String, pub engine: String, pub grid_model: String, pub base_url: String }
 
-/// The desktop offers pane model switches for these verified engines. Other engines keep
-/// their own in-terminal controls; the global Models view still manages local models.
+/// The desktop offers pane model switches for these verified engines (Pi since its move onto a grid
+/// keeps its home, #1318). Other engines keep their own in-terminal controls; the global Models view
+/// still manages local models.
 pub fn pane_supports(app: &App, pane: u64) -> bool {
     let Some(p) = app.panes.get(&pane) else { return false };
     app.fleet.machine(&p.machine_id).is_some_and(|m| !m.shared)
-        && app.fleet.agent(&p.machine_id, &p.agent_id).is_some_and(|a| a.status != "stopped" && ["codex", "claude", "opencode"].contains(&a.engine.as_str()))
+        && app.fleet.agent(&p.machine_id, &p.agent_id).is_some_and(|a| a.status != "stopped" && ["codex", "claude", "opencode", "pi"].contains(&a.engine.as_str()))
 }
 
 /// The model the pane's harness runs, as its title names it: Grid's, or what the engine reported.
@@ -2692,6 +2693,17 @@ mod tests {
     /// A harness just opened reads as its terminal until the daemon sees the engine in it (OpenCode:
     /// ~7 s). Models opened in that window takes the engine once it is seen — the same pane, never
     /// another — instead of saying "focus a harness" until it is closed and opened again.
+    /// "Change model…" on a pane: the engines whose move has been watched work, Pi among them.
+    #[test]
+    fn a_pi_pane_offers_change_model_and_an_unverified_engine_does_not() {
+        let mut app = app();
+        app.panes.insert(1, crate::pane::Pane::new(1, "local", "t1", 75, 40));
+        for (engine, offered) in [("pi", true), ("opencode", true), ("claude", true), ("cursor", false), ("terminal", false)] {
+            app.fleet.agents.insert(("local".into(), "t1".into()), crate::fleet::agent_from("local", &json!({ "id": "t1", "name": "a", "engine": engine }), None));
+            assert_eq!(pane_supports(&app, 1), offered, "{engine}");
+        }
+    }
+
     #[test]
     fn models_opened_while_a_harness_starts_takes_it_once_its_engine_is_seen() {
         let mut app = app();

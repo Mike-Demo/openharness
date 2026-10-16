@@ -248,10 +248,11 @@ it('setup ingestion never reads an account and expires after yesterday', async (
 it('keeps anonymous transport and the phone opt-in unchanged while Desktop evolves independently', () => {
   expect(readFileSync(new URL('../../../desktop/lib/measurement/setup_transport.dart', import.meta.url), 'utf8'))
     .toBe(readFileSync(new URL('../../../mobile/lib/measurement/setup_transport.dart', import.meta.url), 'utf8'))
-  // Desktop now uses its Settings-only default-on preference; the phone retains its own opt-in.
+  // Desktop keeps its Settings-only default-on preference; the phone defaults on too, with its opt-out
+  // kept on the phone and carried to the account at sign-in — and says so on its signed-out line.
   const choice = (app: string) => readFileSync(new URL(`../../../${app}/lib/measurement/setup_usage_choice.dart`, import.meta.url), 'utf8')
   for (const words of ['Share setup and sign-in counts',
-    'Optional for this app session. Help us find setup problems without sharing account details, prompts, or files.']) {
+    'On unless you turn it off; off also turns it off for your account when you sign in. Helps us find setup problems without sharing account details, prompts, or files.']) {
     expect(choice('mobile')).toContain(`'${words}'`)
   }
   const mobile = readFileSync(new URL('../../../mobile/lib/measurement/product_measurement.dart', import.meta.url), 'utf8')

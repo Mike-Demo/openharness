@@ -11,6 +11,7 @@ import 'package:harness_mobile/demo/sample_mode.dart'
     show SampleMode, SampleSession, openSampleMode;
 import 'package:harness_mobile/core/device_name.dart';
 import 'package:harness_mobile/notify/system_notices.dart';
+import 'package:harness_mobile/measurement/product_measurement.dart';
 import 'package:harness_mobile/shared/widgets/app_dialog.dart';
 import 'package:harness_mobile/shared/theme/app_theme.dart';
 import 'package:harness_mobile/shared/theme/appearance_prefs_store.dart';
@@ -172,8 +173,10 @@ class _Body extends StatelessWidget {
           if (_sample(context) == null)
             SettingsRow(title: 'Privacy', onTap: () => Navigator.of(context).push(
               phoneRoute((_) => PrivacyPage(request: ({bool? enabled}) async {
-                final value = await notifier.api.productUsageSettings(enabled: enabled);
-                notifier.productMeasurement.savedChoice(value);
+                final value = await notifier.productUsageSettings(enabled: enabled);
+                // Set here by the person: it also settles an opt-out made before sign-in.
+                notifier.productMeasurement.savedChoice(value, explicit: enabled != null);
+                await notifier.productMeasurement.setupChoiceSaved;
                 return value;
               }, feedback: notifier.api.productUsageFeedback)),
             )),
@@ -183,15 +186,21 @@ class _Body extends StatelessWidget {
           // it, take it off the account (`machine_actions.dart`).
           SettingsRow(
             title: 'Computers',
-            onTap: () => Navigator.of(context).push(
-              phoneRoute(
-                (_) => MachinesTab(
-                  notifier: notifier,
-                  large: false,
-                  fromSettings: true,
+            onTap: () {
+              notifier.productMeasurement.screenOpened(
+                PhoneScreen.computers,
+                ScreenOpening.button,
+              );
+              Navigator.of(context).push(
+                phoneRoute(
+                  (_) => MachinesTab(
+                    notifier: notifier,
+                    large: false,
+                    fromSettings: true,
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
           ),
           // Which computer's tabs this phone shows — the desktop's Profiles. Beside Computers: it
           // is a choice among them, and changes nothing on any of them. Only once there IS a choice

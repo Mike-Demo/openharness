@@ -1344,7 +1344,15 @@ impl App {
             // Whole machines other accounts share with this one: those named for it and those it added
             // are its machines too; one shared with its domain waits to be added. A list that could not
             // say (no `sharedMachines`) keeps the ones it had.
+            let before = app.fleet.shares.clone();
             let rows = &app.fleet.take_shared(owned, reply.get("sharedMachines").and_then(Value::as_array));
+            // A machine its owner stopped sharing leaves the list, and its panes close with it: the
+            // status line says why (a fresh list says so; an outage's copy proves nothing).
+            if reply["stale"] != true && reply.get("sharedMachines").is_some() {
+                let ended: Vec<String> = before.iter().filter(|(id, _)| !app.fleet.shares.contains_key(*id))
+                    .map(|(id, share)| format!("{} stopped sharing {} with you", share.owner, app.fleet.machine_name(id))).collect();
+                for said in ended { app.say(said, crate::theme::WARN) }
+            }
             let local = app.fleet.local_id.clone();
             // Only a fresh response is authoritative for removals. Outage caches may
             // predate a connected computer, so their omissions must retain its views.
@@ -1492,6 +1500,29 @@ impl App {
                     agent.activity.unknown = unknown;
                 }
                 let needs_link = error.code == "NO_PEER_LINK";
+                // Its owner stopped sharing it: no reconnect brings it back. Say so on its panes and in
+                // the status line, and read the list again, which takes it (and them) away.
+                if error.code == "NOT_YOUR_MACHINE" {
+                    if let Some(share) = self.fleet.shares.get(&machine_id).cloned() {
+                        let name = self.fleet.machine_name(&machine_id);
+                        let close = self.keymap.hint("confirm-before -p \"kill-pane #P? (y/n)\" kill-pane").unwrap_or_else(|| "C-b x".into());
+                        for pane in self.panes.values_mut().filter(|p| p.machine_id == machine_id) {
+                            pane.stream = None;
+                            pane.opening = false;
+                            pane.open_token += 1;
+                            pane.phase = Phase::Card {
+                                title: format!("{} stopped sharing {name} with you", share.owner),
+                                detail: "The harness stays on their machine. What is shown here is read only.".into(),
+                                keys: vec![(close.clone(), "close pane".into())],
+                            };
+                            pane.dirty = true;
+                        }
+                        if let Some(state) = self.links.get_mut(&machine_id) { if let Some(link) = state.link.take() { link.close(); } state.retry_at = None; }
+                        self.say(format!("{} stopped sharing {name} with you", share.owner), crate::theme::WARN);
+                        self.refresh_machines();
+                        return;
+                    }
+                }
                 if let Some(machine) = self.fleet.machine_mut(&machine_id) {
                     machine.reach = if needs_link { Reach::NeedsLink } else if machine.online() { Reach::Error(error.to_string()) } else { Reach::Offline };
                 }
@@ -7164,6 +7195,28 @@ mod recovery_tests {
         assert!(app.panes[&1].stream.is_none());
         assert_eq!(app.panes[&1].open_token, 8);
         app.links["test-peer"].link.as_ref().unwrap().close();
+    }
+
+    // Seen 2026-10-16: the owner stopped sharing and the person's panes waited to reconnect forever.
+    #[tokio::test]
+    async fn a_machine_its_owner_stops_sharing_says_who_and_stops_reconnecting() {
+        let mut app = fixture();
+        app.fleet.shares.insert("test-peer".into(), crate::fleet::MachineShare { owner: "Dee".into(), email: "dee@acme.io".into(), team: false });
+        app.on_machine("test-peer".into(), 1, MachineEvent::Failed(RpcError::new("NOT_YOUR_MACHINE", "")));
+        let on_it: Vec<u64> = app.panes.values().filter(|p| p.machine_id == "test-peer").map(|p| p.id).collect();
+        assert!(!on_it.is_empty());
+        for id in on_it {
+            match &app.panes[&id].phase {
+                Phase::Card { title, keys, .. } => {
+                    assert!(title.starts_with("Dee stopped sharing"), "{title}");
+                    assert_eq!(keys.iter().map(|(_, what)| what.as_str()).collect::<Vec<_>>(), ["close pane"]);
+                }
+                other => panic!("pane {id} shows {other:?}"),
+            }
+            assert!(app.panes[&id].stream.is_none());
+        }
+        assert!(app.links["test-peer"].link.is_none());
+        assert!(app.links["test-peer"].retry_at.is_none(), "no reconnect is scheduled");
     }
 
     #[tokio::test]

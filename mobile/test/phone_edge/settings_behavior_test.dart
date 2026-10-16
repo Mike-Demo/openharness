@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:harness_mobile/core/models.dart';
 import 'package:harness_mobile/demo/sample_mode.dart';
+import 'package:harness_mobile/measurement/product_measurement.dart';
 import 'package:harness_mobile/phone/machines_tab.dart';
 import 'package:harness_mobile/phone/settings_page.dart';
 import 'package:harness_mobile/phone/welcome/how_it_works.dart';
@@ -31,9 +32,10 @@ void main() {
     bool large = true,
     bool sample = false,
     CurrentUserProfile? user,
+    ProductMeasurement? usage,
   }) async {
     setPhone(tester, largePhone);
-    final app = edgeApp();
+    final app = edgeApp(productMeasurement: usage);
     app.currentUser =
         user ??
         const CurrentUserProfile(
@@ -109,10 +111,12 @@ void main() {
   testWidgets('Computers and How Harness works open their pages', (
     tester,
   ) async {
-    final app = await openSettings(tester, large: false);
+    final usage = RecordedOpenings();
+    final app = await openSettings(tester, large: false, usage: usage);
     await tapInView(tester, find.text('Computers'));
     await frames(tester, count: 6);
     expect(find.byType(MachinesTab), findsOneWidget);
+    expect(usage.opened, [(PhoneScreen.computers, ScreenOpening.button)]);
     await tester.binding.handlePopRoute();
     await frames(tester, count: 6);
 

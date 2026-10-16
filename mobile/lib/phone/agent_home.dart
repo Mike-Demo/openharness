@@ -1096,13 +1096,7 @@ class _AgentHomeState extends State<AgentHome>
                 key: const ValueKey('home-wait-computers'),
                 label: 'See your computers ›',
                 size: TtySize.meta,
-                onPressed: () => unawaited(
-                  Navigator.of(context).push(
-                    phoneRoute(
-                      (_) => MachinesTab(notifier: notifier, large: false),
-                    ),
-                  ),
-                ),
+                onPressed: () => _seeComputers(context, notifier),
               ),
             )
           : null,
@@ -1635,6 +1629,18 @@ class _AgentHomeLoading extends StatelessWidget {
   }
 }
 
+/// "See your computers ›" under a wait: Computers over the wait, counted as asked for by a button.
+void _seeComputers(BuildContext context, AppNotifier notifier) {
+  notifier.productMeasurement.screenOpened(
+    PhoneScreen.computers,
+    ScreenOpening.button,
+  );
+  unawaited(
+    Navigator.of(context)
+        .push(phoneRoute((_) => MachinesTab(notifier: notifier, large: false))),
+  );
+}
+
 /// Under a wait that has gone on: what is true, and the computers — each with what it needs, a
 /// password form behind a locked one — over the wait rather than in place of it, so back returns
 /// to it and a wait that ends meanwhile still lands where it would have.
@@ -1659,13 +1665,7 @@ class _SlowWaitHint extends StatelessWidget {
           TtyTextButton(
             key: const ValueKey('home-wait-computers'),
             label: 'See your computers ›',
-            onPressed: () => unawaited(
-              Navigator.of(context).push(
-                phoneRoute(
-                  (_) => MachinesTab(notifier: notifier, large: false),
-                ),
-              ),
-            ),
+            onPressed: () => _seeComputers(context, notifier),
           ),
         ],
       ),

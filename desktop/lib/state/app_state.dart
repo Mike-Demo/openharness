@@ -8,6 +8,7 @@ import 'task_route.dart';
 import '../core/permission_modes.dart';
 
 import 'dart:async';
+import 'dart:convert' show jsonDecode, jsonEncode;
 import 'dart:io'
     show Directory, FileSystemEntity, FileSystemEntityType, Platform, exit, pid;
 import 'dart:math' show Random, min;
@@ -32,6 +33,10 @@ import 'essential_harness_controller.dart';
 import 'agent_handoff_file.dart';
 import 'agent_switch_handoff.dart';
 import '../agent_messages/agent_messages.dart';
+import '../agent_messages/shared_tab_errors.dart';
+import '../agent_messages/shared_tab_placement.dart';
+import '../agent_messages/shared_tabs.dart';
+import '../agent_messages/shared_tabs_model.dart';
 import '../api/api_client.dart';
 import '../viewer/sign_in_browser.dart';
 import '../viewer/direct_link.dart';
@@ -359,6 +364,13 @@ Map<String, dynamic> eventWithClearPayload(
 
 class MachineState {
   Machine machine;
+
+  /// Whether this is not the signed-in account's own computer: one harness
+  /// another account shares (`isShared`) or a whole machine another account
+  /// shares (`isSharedMachine`). Its daemon answers as its owner, so shared
+  /// tabs never ask it, and a harness on it is never this account's own.
+  bool get belongsToOtherAccount =>
+      machine.isShared || machine.isSharedMachine;
   int _agentRevision = 0;
   final _agentRemovals = <String, int>{};
   final _agentStopRevisions = <String, int>{};
@@ -1353,6 +1365,24 @@ class AppNotifier extends ChangeNotifier {
   /// Machines other accounts share with this one's domain, not added yet: Add machine lists them, and
   /// [addSharedMachine] adds one.
   List<Machine> machinesToAdd = const [];
+
+  /// Machines another account shared with this one and no longer does, by id: what a pane left on one
+  /// says once the machine itself has left the list. Forgotten when it is shared again.
+  final Map<String, ({String name, String owner})> _sharingEnded = {};
+
+  /// Who stopped sharing [machineId] with this account, and its name, if they did.
+  ({String name, String owner})? sharingEnded(String machineId) =>
+      _sharingEnded[machineId];
+
+  void _noteSharingEnded(Machine machine) {
+    final share = machine.machineShare;
+    if (share == null) return;
+    _sharingEnded[machine.machineId] = (
+      name: machine.displayName,
+      owner: share.owner,
+    );
+  }
+
   final Map<String, MachineState> machineStates = {};
   final Set<String> expandedMachines = {};
   String? selectedMachineId;
@@ -1505,7 +1535,379 @@ class AppNotifier extends ChangeNotifier {
             .where((agent) => agent.id == agentId)
             .firstOrNull
             ?.displayName,
+    // A member's shared tab: its desk id is derived from the shared tab id
+    // the daemons file it under (R1).
+    logTabsOf: (deskTabId) => sharedTabs.agentMessagesTabIds(deskTabId),
+    deskTabOf: deskTabIdForMessages,
   );
+
+  /// Tabs shared with other accounts, as this computer's daemon holds them
+  /// (1c). On the web one of the account's own machines answers (R5): window
+  /// frames reach only a computer's own windows, so the browser reads on open,
+  /// after its actions and every 60 s in front.
+  late final sharedTabs = SharedTabsController(
+    request: (payload) {
+      final target = sharedTabsTarget;
+      if (target == null) {
+        return Future.error(
+          const WsRequestFailure(
+            responseType: 'agent_messages_result',
+            code: 'MACHINE_AWAY',
+            detail: 'No computer of yours is online.',
+          ),
+        );
+      }
+      try {
+        return _conn(target.machine.machineId).request(
+          'agent_messages',
+          payload: payload,
+          timeout: const Duration(seconds: 8),
+        );
+      } catch (error) {
+        return Future.error(error);
+      }
+    },
+    foreground: foreground,
+    onActivity: applySharedActivity,
+  );
+
+  /// The machine [sharedTabs] asks: this computer natively; on the web one of
+  /// the account's own online machines, never a shared one.
+  MachineState? get sharedTabsTarget {
+    if (viewer == null) return localMachineState;
+    final owned = ownedActionMachine;
+    if (owned != null && !owned.belongsToOtherAccount && !owned.isOffline) {
+      return owned;
+    }
+    MachineState? best;
+    for (final machine in machineStates.values) {
+      if (machine.belongsToOtherAccount || machine.isOffline) continue;
+      if (machine.connectionStatus != ConnectionStatus.connected) continue;
+      if (best == null ||
+          machine.machine.machineId.compareTo(best.machine.machineId) < 0) {
+        best = machine;
+      }
+    }
+    return best;
+  }
+
+  /// Where this computer keeps, per shared tab, the other accounts'
+  /// harnesses it has seen in the roster (R2): `{sharedTabId: [paneKey]}`,
+  /// one record per account, so one person's record on a shared computer
+  /// never reads as another's closed tab.
+  static String sharedTabsPlacedKey(String accountId) =>
+      'shared_tabs.placed.$accountId';
+
+  /// [sharedTabsPlacedKey] of [_sharedPlacedAccount] as last read or
+  /// written; null until the first placement of this sign-in reads it.
+  Map<String, Set<String>>? _sharedPlaced;
+  String? _sharedPlacedAccount;
+  bool _sharedPlacing = false, _sharedPlaceAgain = false;
+
+  /// Machines a roster names that the inventory lacked (or had without the
+  /// harness's grant) when placement or the desk wanted them: asked about
+  /// once per roster read, so an absent grant is not a read loop.
+  final _sharedRereadAsked = <String>{};
+
+  void _sharedTabsChanged() {
+    _sharedRereadAsked.clear();
+    // A pane restored (or carried by the desk) before the roster was read,
+    // whose machine this window does not know yet: the roster now says it is
+    // another account's, so its machine is asked for (seam 2).
+    for (final pane in allPanes) {
+      if (pane.agentId != null && machineStates[pane.machineId] == null) {
+        _bindShared(pane);
+      }
+    }
+    _placeSharedPanesSoon();
+  }
+
+  void _placeSharedPanesSoon() => unawaited(_placeSharedPanes());
+
+  /// Places other accounts' harnesses from the rosters this computer holds
+  /// onto the desk, once each ([planSharedPlacement]; R1, R2): only while the
+  /// desk is joined and the rosters are read. One run at a time; a call while
+  /// one runs asks for one more after it.
+  Future<void> _placeSharedPanes() async {
+    if (_sharedPlacing) {
+      _sharedPlaceAgain = true;
+      return;
+    }
+    _sharedPlacing = true;
+    try {
+      do {
+        _sharedPlaceAgain = false;
+        await _placeSharedPanesOnce();
+      } while (_sharedPlaceAgain && !_disposed);
+    } finally {
+      _sharedPlacing = false;
+    }
+  }
+
+  Future<void> _placeSharedPanesOnce() async {
+    if (_disposed ||
+        !_desk.enabled ||
+        workspaceEnabled?.call() == false ||
+        sharedTabs.state != SharedTabsState.ready) {
+      return;
+    }
+    final revision = _authRevision;
+    final storage = _paneLayout?.storage;
+    final account = sharedTabs.snapshot.me?.accountId;
+    if (account == null) return;
+    if (_sharedPlaced == null || _sharedPlacedAccount != account) {
+      final loaded = <String, Set<String>>{};
+      try {
+        final raw = await storage?.read(sharedTabsPlacedKey(account));
+        final json = raw == null ? null : jsonDecode(raw);
+        if (json is Map) {
+          for (final MapEntry(:key, :value) in json.entries) {
+            if (key is String && value is List) {
+              loaded[key] = {...value.whereType<String>()};
+            }
+          }
+        }
+      } catch (error) {
+        appLog.warn('desk', 'shared tab placements unreadable: $error');
+      }
+      if (!_authWorkCurrent(revision)) return;
+      if (_sharedPlaced == null || _sharedPlacedAccount != account) {
+        _sharedPlaced = loaded;
+        _sharedPlacedAccount = account;
+      }
+    }
+    final snapshot = sharedTabs.snapshot;
+    final me = snapshot.me?.accountId;
+    if (me == null ||
+        me != _sharedPlacedAccount ||
+        !_desk.enabled ||
+        sharedTabs.state != SharedTabsState.ready) {
+      return;
+    }
+    // A member's desk tab is derived from the shared tab id (R1): only a
+    // roster whose id has the shape the daemon accepts may make one.
+    final tabs = snapshot.tabs
+        .where((tab) => isSharedTabId(tab.sharedTabId))
+        .toList();
+    final deskTabs = swarms.where(_deskTracks).toList();
+    final plan = planSharedPlacement(
+      me: me,
+      tabs: tabs,
+      deskTabIds: {for (final tab in deskTabs) tab.id},
+      deskPaneKeys: {
+        for (final tab in deskTabs)
+          for (final pane in tab.panes)
+            if (pane.agentId != null) '${pane.machineId}\u0000${pane.agentId}',
+      },
+      seen: _sharedPlaced!,
+    );
+    final seen = plan.seen;
+    for (final tab in plan.createTabs) {
+      openSharedDeskTab(tab.id, tab.name);
+    }
+    final sharedTabFor = <String, String>{
+      for (final tab in tabs) ?tab.deskTabId(me): tab.sharedTabId,
+    };
+    for (final add in plan.addPanes) {
+      final machine = machineStates[add.machineId];
+      final known =
+          machine != null &&
+          machine.agents.any((agent) => agent.id == add.agentId);
+      final target = swarms.where((s) => s.id == add.deskTabId).firstOrNull;
+      // The desk holds 9 harnesses a tab (`DESK_MAX_PANES`); the rest of a
+      // shared tab is listed under People. Counted as [assignAgentToPane]
+      // counts, so placement asks only for what it takes, and never sets an
+      // error nobody asked for (final review of 1c, M1).
+      final full =
+          target != null &&
+          (deskTabFull(target) || target.panes.length >= maxPanes);
+      if (!known || target == null || full) {
+        // Not placed, so not seen: tried again at the next inventory change
+        // (or roster read), once the grant has reached this window or a pane
+        // of the tab has gone.
+        seen[sharedTabFor[add.deskTabId]]?.remove(
+          '${add.machineId}\u0000${add.agentId}',
+        );
+        if (!known && _sharedRereadAsked.add(add.machineId)) {
+          unawaited(_rereadMachinesInBackground(pushed: true));
+        }
+        continue;
+      }
+      // Never `share_add` and never a person's intent: the roster already
+      // lists it, and nobody at this window asked (C4 hooks the person's).
+      // The pane goes in before the call's first wait, so whether it landed
+      // is known at once.
+      unawaited(
+        assignAgentToPane(
+          null,
+          add.machineId,
+          add.agentId,
+          swarmId: add.deskTabId,
+          focus: false,
+          intent: AttachIntent.automatic,
+        ),
+      );
+      if (!target.panes.any(
+        (p) => p.machineId == add.machineId && p.agentId == add.agentId,
+      )) {
+        // Refused (the tab is full, the agent gone): not seen, so it is tried
+        // again, as R2 says, rather than never placed.
+        seen[sharedTabFor[add.deskTabId]]?.remove(
+          '${add.machineId}\u0000${add.agentId}',
+        );
+      }
+    }
+    if (_sameSeen(_sharedPlaced!, seen)) return;
+    _sharedPlaced = seen;
+    try {
+      await storage?.write(
+        sharedTabsPlacedKey(account),
+        jsonEncode({
+          for (final MapEntry(:key, :value) in seen.entries)
+            key: value.toList()..sort(),
+        }),
+      );
+    } catch (error) {
+      appLog.warn('desk', 'shared tab placements not saved: $error');
+    }
+  }
+
+  /// Whether a shared desk tab holds all the harnesses the desk keeps a tab
+  /// (`DESK_MAX_PANES`, [PaneLayoutStore.maxPanes]). The desk counts harness
+  /// panes only (a viewer or an empty tile is not on it), so placement, a
+  /// person's add and a move all count the same way (final review of 1c, M1).
+  /// An unshared tab is held to [maxPanes] alone, as before.
+  bool deskTabFull(Swarm swarm) =>
+      sharedTabs.isShared(swarm.id) &&
+      swarm.panes.where((p) => p.agentId != null).length >=
+          PaneLayoutStore.maxPanes;
+
+  static bool _sameSeen(Map<String, Set<String>> a, Map<String, Set<String>> b) {
+    if (a.length != b.length) return false;
+    for (final MapEntry(:key, :value) in a.entries) {
+      final other = b[key];
+      if (other == null ||
+          other.length != value.length ||
+          !other.containsAll(value)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// A member's desk tab [id] (R1, derived from its shared tab's id by
+  /// `memberDeskTabId`): a desk tab with that id,
+  /// at the end of the row and not selected. The desk learns it through
+  /// [_persistLayout] (`tab.create` takes the client's id, idempotently).
+  /// [name] is another account's: it is made plain and fitted to the desk
+  /// ([sharedDeskTabName]), since a name the desk refuses would fail every
+  /// desk write queued with it.
+  void openSharedDeskTab(String id, String name) {
+    if (_disposed || swarms.any((s) => s.id == id)) return;
+    swarms.add(
+      Swarm(id: id, name: sharedDeskTabName(name) ?? Swarm.defaultName),
+    );
+    _persistLayout();
+    notifyListeners();
+  }
+
+  /// The roster entry naming [agentId] on [machineId] under another account,
+  /// in a shared tab this computer holds.
+  ({SharedTab tab, SharedTabHarness harness})? _foreignRosterEntry(
+    String machineId,
+    String agentId,
+  ) {
+    final snapshot = sharedTabs.snapshot;
+    final me = snapshot.me?.accountId;
+    if (me == null) return null;
+    for (final tab in snapshot.tabs) {
+      for (final harness in tab.harnesses) {
+        if (harness.accountId != me &&
+            harness.machineId == machineId &&
+            harness.agentId == agentId) {
+          return (tab: tab, harness: harness);
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Who a foreign pane waits for when its machine is not in this window's
+  /// inventory yet (seam 3): the owner's name, else email, from the roster.
+  /// Null when no roster this computer holds lists the harness.
+  String? sharedWaitingName(String machineId, String agentId) {
+    final entry = _foreignRosterEntry(machineId, agentId);
+    if (entry == null) return null;
+    final account = entry.harness.accountId;
+    final member = entry.tab.members
+        .where((m) => m.accountId == account)
+        .firstOrNull;
+    for (final candidate in [
+      member?.name,
+      member?.email,
+      if (account == entry.tab.ownerAccountId) entry.tab.ownerEmail,
+    ]) {
+      final plain = plainSharedText(candidate ?? '');
+      if (plain.isNotEmpty) return plain;
+    }
+    return 'Another account';
+  }
+
+  /// A pane on a shared machine is a Share pane at once (seam 2), as the
+  /// inventory merge and [_attachSession] make it; a pane whose machine this
+  /// window does not know yet, that a roster lists under another account,
+  /// asks for the machine list once.
+  void _bindShared(TerminalPane pane) {
+    final agentId = pane.agentId;
+    if (agentId == null) return;
+    final machine = machineStates[pane.machineId];
+    if (machine == null) {
+      if (_foreignRosterEntry(pane.machineId, agentId) != null &&
+          _sharedRereadAsked.add(pane.machineId)) {
+        unawaited(_rereadMachinesInBackground(pushed: true));
+      }
+      return;
+    }
+    if (!machine.machine.isShared) return;
+    pane.sharedHarness =
+        machine.machine.sharedHarnesses
+            .where((g) => g.agentId == agentId)
+            .firstOrNull ??
+        pane.sharedHarness;
+    pane.sharedOwnerName = machine.machine.ownerName;
+  }
+
+  /// Another account's harness in a shared tab started or stopped working
+  /// (seam 1): its tab's status slot follows it, on the lease it was sent with.
+  void applySharedActivity(SharedActivity a) {
+    final machine = machineStates[a.machineId];
+    // A machine another account shares whole counts too: a member's harness
+    // can sit on it, and the roster names it by that machine's id.
+    if (machine == null || !machine.belongsToOtherAccount) return;
+    final applied = _applyReportedActivity(
+      machine,
+      a.agentId,
+      // One epoch for every shared tab: the controller's revision already
+      // grows across them, and an epoch per tab retired the first tab's for
+      // good once a harness in two shared tabs was heard from the second
+      // (final review of 1c, M2).
+      AgentActivity(a.state, 'shared', a.revision, a.validForMs),
+    );
+    if (applied.changed) notifyListeners();
+  }
+
+  /// Whether a desk tab may be given a fresh desk id when its only agent ends
+  /// (a Change agent, an engine that left its shell): never a shared tab,
+  /// whose id the shared tab is found by — a member's (derived from its
+  /// shared tab id, R1) or the one this account shares (`shares`' `tabId`).
+  /// Re-minting the owner's would orphan its roster, and placement would read
+  /// either as closed.
+  /// Never either before the first `shares` answer after a launch: which tabs
+  /// are shared is not known yet (final review of 1c, B3).
+  bool _mayReidentify(Swarm swarm) =>
+      isDeskId(swarm.id) &&
+      sharedTabs.state != SharedTabsState.unknown &&
+      !sharedTabs.isShared(swarm.id);
 
   /// Whether [tabId] has an Agent Messages log to show: a tab the desk holds,
   /// since the daemons know a tab by its desk id, once the daemon and backend
@@ -1530,7 +1932,7 @@ class AppNotifier extends ChangeNotifier {
       ?localMachineState?.machine.machineId,
       for (final pane in tab?.panes ?? const <TerminalPane>[])
         if (pane.agentId != null &&
-            machineStates[pane.machineId]?.machine.isShared != true)
+            machineStates[pane.machineId]?.belongsToOtherAccount != true)
           pane.machineId,
     };
   }
@@ -1539,7 +1941,7 @@ class AppNotifier extends ChangeNotifier {
   List<String> agentMessageMachines(String tabId) => [
     for (final id in _agentMessageMembers(tabId))
       if (machineStates[id] case final machine?
-          when !machine.machine.isShared &&
+          when !machine.belongsToOtherAccount &&
               !machine.needsLink &&
               machine.nodeOnline != false &&
               machine.connectionStatus == ConnectionStatus.connected)
@@ -1579,7 +1981,7 @@ class AppNotifier extends ChangeNotifier {
   int _messagingHarnesses(Swarm swarm) => {
     for (final pane in swarm.panes)
       if (pane.agentId case final agentId?
-          when machineStates[pane.machineId]?.machine.isShared != true)
+          when machineStates[pane.machineId]?.belongsToOtherAccount != true)
         agentMessageKey(pane.machineId, agentId),
   }.length;
 
@@ -3343,6 +3745,8 @@ class AppNotifier extends ChangeNotifier {
     addListener(_firstArrivalBehindTour);
     _autoRenameTabs = appearancePrefsStore.value.autoRenameTabs;
     appearancePrefsStore.addListener(_autoRenameChanged);
+    // Other accounts' harnesses reach the desk as the rosters are read (R2).
+    sharedTabs.addListener(_sharedTabsChanged);
   }
 
   void _syncProductMeasurement() {
@@ -3933,6 +4337,8 @@ class AppNotifier extends ChangeNotifier {
     machine._selectedConnection =
         connectionForTest?.call(machineId) ?? _pool?[machineId];
     _rereadDevicesAfterDaemonReconnect(machineId);
+    // The daemon may have restarted: read the shared tabs again now, not in 60 s.
+    if (viewer == null && machine.isLocalMachine) sharedTabs.changed();
     // A viewer build keeps its own trust group (a CLI build's daemon keeps one for it): any session
     // that comes up is the moment to compare it with this machine.
     unawaited(_syncGroup(machineId));
@@ -4281,6 +4687,59 @@ class AppNotifier extends ChangeNotifier {
   MachinesRequest? takeMachinesRequest() {
     final request = _machinesRequest;
     _machinesRequest = null;
+    return request;
+  }
+
+  bool _sharedTabsRequest = false;
+
+  /// Settings ▸ Tab invites was asked for from outside Settings (the invitation notice) and the
+  /// workspace has not opened it yet.
+  bool get sharedTabsRequested => _sharedTabsRequest;
+
+  void requestSharedTabs() {
+    if (_disposed) return;
+    _sharedTabsRequest = true;
+    notifyListeners();
+  }
+
+  /// The workspace takes the request it is about to open.
+  bool takeSharedTabsRequest() {
+    final requested = _sharedTabsRequest;
+    _sharedTabsRequest = false;
+    return requested;
+  }
+
+  String? _newHarnessRequest;
+
+  /// The desk tab a New Harness was asked for from outside the workspace ("New
+  /// Harness here" in Add harnesses), until the workspace opens it.
+  String? get newHarnessRequested => _newHarnessRequest;
+
+  /// New Harness in shared tab [sharedTabId], in its desk tab: the derived one
+  /// for a member (R1, [memberDeskTabId]), the tab it shared for the owner.
+  void requestNewHarnessInSharedTab(String sharedTabId) {
+    if (_disposed) return;
+    final desk = sharedDeskTabId(sharedTabId);
+    if (desk == null || !swarms.any((s) => s.id == desk)) return;
+    _newHarnessRequest = desk;
+    notifyListeners();
+  }
+
+  /// The desk tab shared tab [sharedTabId] shows in: the tab the owner
+  /// shared, or a member's derived one (R1), also before the roster is read.
+  String? sharedDeskTabId(String sharedTabId) {
+    final me = sharedTabs.snapshot.me?.accountId;
+    final tab = sharedTabs.snapshot.tabs
+        .where((t) => t.sharedTabId == sharedTabId)
+        .firstOrNull;
+    return tab == null || me == null
+        ? memberDeskTabId(sharedTabId)
+        : tab.deskTabId(me);
+  }
+
+  String? takeNewHarnessRequest() {
+    final request = _newHarnessRequest;
+    _newHarnessRequest = null;
     return request;
   }
 
@@ -5872,6 +6331,9 @@ class AppNotifier extends ChangeNotifier {
     if (notices) _clearDeviceNoticeState();
     experimentalFeatures.bind(null);
     agentMessages.reset();
+    sharedTabs.reset();
+    _sharedPlaced = null;
+    _sharedRereadAsked.clear();
     _agentChanges.clear();
     ++_layoutRevision;
     // Sign-out sends the desk nothing: the tabs closing here are this window
@@ -7451,8 +7913,11 @@ class AppNotifier extends ChangeNotifier {
       );
     }
     final visible = machines.map((machine) => machine.machineId).toSet();
+    _sharingEnded.removeWhere((id, _) => visible.contains(id));
     for (final entry in machineStates.entries) {
       if (!visible.contains(entry.key)) {
+        // A shared machine that left the list was taken back by its owner (a fresh list says so).
+        if (!machinesAreStale) _noteSharingEnded(entry.value.machine);
         _clearMachineActivity(entry.value);
         _stopOfflineRetry(entry.key);
         _stopLinkRetry(entry.key);
@@ -7555,6 +8020,8 @@ class AppNotifier extends ChangeNotifier {
       });
     }
     notifyListeners();
+    // A grant that has just arrived places what waited for it (R2).
+    _placeSharedPanesSoon();
   }
 
   /// Whether this viewer has no machine socket open, so no push can reach it.
@@ -10786,7 +11253,7 @@ class AppNotifier extends ChangeNotifier {
         ? swarms.where((swarm) {
             final agents = swarm.panes.where((pane) => pane.agentId != null);
             return _deskTracks(swarm) &&
-                isDeskId(swarm.id) &&
+                _mayReidentify(swarm) &&
                 agents.isNotEmpty &&
                 agents.every(
                   (pane) =>
@@ -12921,6 +13388,7 @@ class AppNotifier extends ChangeNotifier {
       swarmId: targetId,
       split: split,
       autoTile: placement != null,
+      intent: AttachIntent.person,
     );
     return null;
   }
@@ -14304,7 +14772,7 @@ class AppNotifier extends ChangeNotifier {
         ? swarms.where((swarm) {
             final agents = swarm.panes.where((pane) => pane.agentId != null);
             return _deskTracks(swarm) &&
-                isDeskId(swarm.id) &&
+                _mayReidentify(swarm) &&
                 agents.isNotEmpty &&
                 agents.every(
                   (pane) =>
@@ -15332,6 +15800,138 @@ class AppNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
+  static bool _listedIn(SharedTab tab, String machineId, String agentId) =>
+      tab.harnesses.any((h) => h.machineId == machineId && h.agentId == agentId);
+
+  /// Listed in [tab], or still `Joining…`: an add this computer's daemon holds
+  /// for the owner's computer. Withdrawn then, it must be taken back too, or
+  /// the owner applies it later (final review of 1c, I3).
+  bool _inSharedTab(SharedTab tab, String machineId, String agentId) =>
+      _listedIn(tab, machineId, agentId) ||
+      sharedTabs.snapshot.pending.any(
+        (p) =>
+            p.op == 'add' &&
+            p.sharedTabId == tab.sharedTabId &&
+            p.machineId == machineId &&
+            p.agentId == agentId,
+      );
+
+  /// Whether this account owns [tab]: its own harnesses are in it by being in
+  /// the desk tab it shared, and the sharing computer refuses `share_add` and
+  /// `share_remove` for them (`OWNER_PANE`; final review of 1c, I2).
+  bool _ownsSharedTab(SharedTab tab) {
+    final me = sharedTabs.snapshot.me?.accountId;
+    return me != null && tab.ownedBy(me);
+  }
+
+  /// The shared tab whose desk tab holds this harness, or null.
+  SharedTab? sharedTabHolding(String machineId, String agentId) {
+    for (final swarm in swarms) {
+      if (!swarm.panes.any(
+        (p) => p.machineId == machineId && p.agentId == agentId,
+      )) {
+        continue;
+      }
+      final tab = sharedTabs.tabForDesk(swarm.id);
+      if (tab != null) return tab;
+    }
+    return null;
+  }
+
+  /// Whether Remove from Tab applies: one of the person's own harnesses that
+  /// the shared tab lists, or that is still joining it, in a tab another
+  /// account owns. In the tab this account shares, its harnesses follow the
+  /// desk tab: moving the pane out is how one leaves.
+  bool canRemoveFromSharedTab(String machineId, String agentId) {
+    if (machineStates[machineId]?.belongsToOtherAccount != false) return false;
+    final tab = sharedTabHolding(machineId, agentId);
+    return tab != null &&
+        !_ownsSharedTab(tab) &&
+        _inSharedTab(tab, machineId, agentId);
+  }
+
+  /// Remove from Tab: the harness leaves the shared tab; its pane stays on the
+  /// desk as an ordinary pane.
+  Future<void> removeFromSharedTab(String machineId, String agentId) async {
+    if (!canRemoveFromSharedTab(machineId, agentId)) return;
+    await _shareAction(
+      sharedTabHolding(machineId, agentId)!,
+      'share_remove',
+      {'machineId': machineId, 'agentId': agentId},
+    );
+  }
+
+  /// The `share_add` for a person's pane in a shared tab; null when none is
+  /// due. A refusal goes to [onFailure] when given (the Add harnesses dialog
+  /// shows it), otherwise to the transient notice.
+  Future<void>? _shareAddIfShared(
+    String deskTabId,
+    String machineId,
+    String agentId, {
+    void Function(SharedTabsFailure)? onFailure,
+  }) {
+    final tab = sharedTabs.tabForDesk(deskTabId);
+    final state = machineStates[machineId];
+    if (tab == null || state == null || state.belongsToOtherAccount) return null;
+    // The owner's harnesses join by being in its desk tab.
+    if (_ownsSharedTab(tab) || _listedIn(tab, machineId, agentId)) return null;
+    final agent = state.agents.where((a) => a.id == agentId).firstOrNull;
+    return _shareAction(tab, 'share_add', {
+      'harness': {
+        'machineId': machineId,
+        'agentId': agentId,
+        'name': agent?.displayName ?? agentId,
+        'engine': agent?.engine ?? '',
+      },
+    }, onFailure: onFailure);
+  }
+
+  void _shareRemoveIfShared(String deskTabId, String machineId, String agentId) {
+    final tab = sharedTabs.tabForDesk(deskTabId);
+    if (tab == null ||
+        _ownsSharedTab(tab) ||
+        machineStates[machineId]?.belongsToOtherAccount != false ||
+        !_inSharedTab(tab, machineId, agentId)) {
+      return;
+    }
+    unawaited(
+      _shareAction(tab, 'share_remove', {
+        'machineId': machineId,
+        'agentId': agentId,
+      }),
+    );
+  }
+
+  /// One add/remove for [tab]; a refusal is told in the transient notice, or
+  /// handed to [onFailure] when the caller tells it itself.
+  Future<void> _shareAction(
+    SharedTab tab,
+    String action,
+    Map<String, dynamic> body, {
+    void Function(SharedTabsFailure)? onFailure,
+  }) async {
+    try {
+      await sharedTabs.act(action, {'sharedTabId': tab.sharedTabId, ...body});
+    } on SharedTabsFailure catch (e) {
+      if (onFailure != null) {
+        onFailure(e);
+        return;
+      }
+      if (_disposed) return;
+      // The computer that is away is the one holding the harness, named when it
+      // is one of the person's own.
+      final holder = machineStates[body['machineId'] ?? (body['harness'] as Map?)?['machineId']];
+      _lastError = sharedTabErrorText(
+        e,
+        machine: holder != null && !holder.belongsToOtherAccount
+            ? holder.machine.displayName
+            : null,
+      );
+      _lastErrorRetryable = false;
+      notifyListeners();
+    }
+  }
+
   /// Put an agent into a specific tile, or into a NEW tile when [paneId] is
   /// null — which is what a drop on the empty slot means.
   Future<void> assignAgentToPane(
@@ -15352,6 +15952,11 @@ class AppNotifier extends ChangeNotifier {
     /// A new tile goes right after this one, where the tab reads it, rather
     /// than at the end: a harness another harness started opens beside it.
     int? besidePaneId,
+
+    /// Tells a refused `share_add` (a person's pane in a shared tab) to the
+    /// caller instead of the transient notice; the call then waits for the
+    /// daemon's answer.
+    void Function(SharedTabsFailure)? onShareFailure,
   }) async {
     final target = swarms
         .where((s) => s.id == (swarmId ?? activeSwarmId))
@@ -15384,6 +15989,22 @@ class AppNotifier extends ChangeNotifier {
         .firstOrNull;
     if (paneId == null && existing != null) {
       if (focus && target == activeSwarm) focusPane(existing.id);
+      // A pane a refused share_add left unshared: a person's retry shares it.
+      if (intent == AttachIntent.person) {
+        final retry = _shareAddIfShared(
+          target.id,
+          machineId,
+          agentId,
+          onFailure: onShareFailure,
+        );
+        if (retry != null) {
+          if (onShareFailure == null) {
+            unawaited(retry);
+          } else {
+            await retry;
+          }
+        }
+      }
       return;
     }
     final replaced = targetPanes.where((p) => p.id == paneId).firstOrNull;
@@ -15398,6 +16019,20 @@ class AppNotifier extends ChangeNotifier {
           'This tab holds $maxPanes harnesses. Open another tab to add more.';
       _lastErrorRetryable = false;
       notifyListeners();
+      return;
+    }
+    // A shared desk tab holds the desk's 9 harnesses: a 10th would never
+    // reach the desk ([deskTabFull]). Placement asks quietly and tries again
+    // later; a person is told.
+    if (existing == null &&
+        replaced?.agentId == null &&
+        deskTabFull(target)) {
+      if (intent == AttachIntent.person) {
+        _lastError =
+            'This tab holds ${PaneLayoutStore.maxPanes} harnesses. Close one, then try again.';
+        _lastErrorRetryable = false;
+        notifyListeners();
+      }
       return;
     }
     final beside = replaced == null && split == null && besidePaneId != null
@@ -15436,6 +16071,21 @@ class AppNotifier extends ChangeNotifier {
       pane.sharedOwnerName = machine.machine.ownerName;
     }
     targetPanes.insert(insertion.clamp(0, targetPanes.length), pane);
+    // Only a person's drop or New Harness puts a harness into a shared tab for
+    // the others; placement and the desk's reconcile never do.
+    Future<void>? shareAdd;
+    if (intent == AttachIntent.person && existing == null) {
+      shareAdd = _shareAddIfShared(
+        target.id,
+        machineId,
+        agentId,
+        onFailure: onShareFailure,
+      );
+      if (onShareFailure == null && shareAdd != null) {
+        unawaited(shareAdd);
+        shareAdd = null;
+      }
+    }
     // Attaching a conversation to a reserved slot is not a layout removal.
     if (pendingLayout != null &&
         pendingLayout.tiles.length == targetPanes.length) {
@@ -15520,6 +16170,8 @@ class AppNotifier extends ChangeNotifier {
     // The agent may already have a viewer the grid could not show until now,
     // because this tile is what it hangs beside.
     _syncViewerPane(machine, agent);
+    // The caller that tells a refusal itself waits for the daemon's answer.
+    if (shareAdd != null) await shareAdd;
 
     if (machine.nodeOnline == false) {
       machine.pendingOfflineAgentId = agentId;
@@ -16027,14 +16679,27 @@ class AppNotifier extends ChangeNotifier {
                     p.machineId == pane.machineId && p.agentId == pane.agentId,
               )
               .firstOrNull;
-    if (twin == null && target.panes.length >= maxPanes) {
+    if (twin == null &&
+        (target.panes.length >= maxPanes ||
+            (pane.agentId != null && deskTabFull(target)))) {
+      final most = target.panes.length >= maxPanes
+          ? maxPanes
+          : PaneLayoutStore.maxPanes;
       _lastError =
-          'That tab holds $maxPanes harnesses. Close one there to move this in.';
+          'That tab holds $most harnesses. Close one there to move this in.';
       _lastErrorRetryable = false;
       notifyListeners();
       return false;
     }
     source.remove(pane);
+    // Into a shared tab the harness joins it; out of one it leaves it.
+    if (!pane.isWeb && pane.agentId != null) {
+      _shareRemoveIfShared(source.id, pane.machineId, pane.agentId!);
+      if (twin == null) {
+        final add = _shareAddIfShared(target.id, pane.machineId, pane.agentId!);
+        if (add != null) unawaited(add);
+      }
+    }
     // A harness's viewer lives beside its terminal, so it travels with it —
     // the same rule `closePane` keeps when the terminal goes.
     final viewers = <TerminalPane>[];
@@ -16382,10 +17047,12 @@ class AppNotifier extends ChangeNotifier {
     // Whether the daemon and backend have Agent Messages, which Show Agent
     // Messages waits for, is read once the desk is.
     unawaited(agentMessages.refresh());
+    unawaited(sharedTabs.refresh());
     // Tabs from before the desk carry per-window ids (`swarm-N`) two computers
     // would both mint. Give them desk ids once; the layout store keys by the
     // same string, so it follows on the next save.
     for (final swarm in swarms) {
+      // A member's shared tab is a desk id already (R1, `memberDeskTabId`).
       if (_deskTracks(swarm) && !isDeskId(swarm.id)) {
         final was = swarm.id;
         swarm.id = newDeskId();
@@ -16654,6 +17321,9 @@ class AppNotifier extends ChangeNotifier {
             agentId: ref.agentId,
           ),
         );
+        // Another account's harness the desk carries is a Share pane at once,
+        // not an "Open here" tile until the next inventory (seam 2).
+        _bindShared(pane);
         // After the agent pane the desk lists before it, whatever else (a
         // viewer, an empty tile) sits between; at the end when it is first.
         final after = i == 0
@@ -16818,6 +17488,7 @@ class AppNotifier extends ChangeNotifier {
     }
     _announceAppFocus();
     notifyListeners();
+    _placeSharedPanesSoon();
   }
 
   void _ensureProfileFocus() {
@@ -17139,8 +17810,10 @@ class AppNotifier extends ChangeNotifier {
   }) {
     final machineId = machine.machine.machineId;
     for (final pane in allPanes.toList()) {
-      if (!panes.contains(pane) && pane.session == null) continue;
       if (pane.machineId != machineId) continue;
+      // A shared machine's pane is drawn from its grant, never attached (seam 2).
+      _bindShared(pane);
+      if (!panes.contains(pane) && pane.session == null) continue;
       // Navigation may mount a new view; it must never retry a retained stream
       // or discard its output while the machine is unavailable.
       if (!retryExisting && pane.session != null) continue;
@@ -17660,6 +18333,18 @@ class AppNotifier extends ChangeNotifier {
       _orchestratorProjects['$machineId/${payload['id']}']?.changed();
       return;
     }
+    // Window frames come only from this computer's own daemon; another
+    // connection's are not about this window's tabs.
+    if (type == 'shared_tabs_changed' || type == 'shared_activity') {
+      if (viewer == null && machine.isLocalMachine) {
+        if (type == 'shared_tabs_changed') {
+          sharedTabs.changed();
+        } else {
+          sharedTabs.handleActivity(payload);
+        }
+      }
+      return;
+    }
     if (type == 'messages_changed') {
       // Before the activity check below: this payload is traffic between
       // harnesses, never a turn of the pane's own.
@@ -18094,9 +18779,21 @@ class AppNotifier extends ChangeNotifier {
         await _applyNodeStatus(machine, online, why: 'node_status');
         break;
       case 'machine_select_error':
-        _lastError =
-            'Machine selection failed: ${payload['error'] ?? 'unknown error'}';
-        _lastErrorRetryable = true;
+        final code = '${payload['error'] ?? ''}';
+        final name = machine.machine.displayName;
+        if (code == 'NOT_YOUR_MACHINE' &&
+            machine.machine.machineShare != null) {
+          // Its owner stopped sharing it: no retry brings it back, and the list drops it.
+          _noteSharingEnded(machine.machine);
+          _lastError =
+              '${machine.machine.machineShare!.owner} stopped sharing $name with you.';
+          _lastErrorRetryable = false;
+          unawaited(refreshMachines());
+        } else {
+          _lastError = machineSelectErrorText(code, name);
+          _lastErrorRetryable =
+              code != 'NOT_YOUR_MACHINE' && code != 'MACHINE_ENV_MISMATCH';
+        }
         machine.connectionStatus = ConnectionStatus.disconnected;
         break;
       case 'agent_synced':
@@ -18517,6 +19214,7 @@ class AppNotifier extends ChangeNotifier {
     _modelsMenu?.dispose();
     agentMessagesRemote.dispose();
     agentMessages.dispose();
+    sharedTabs.dispose();
     for (final project in _orchestratorProjects.values) {
       project.dispose();
     }
@@ -18579,3 +19277,14 @@ final appStateProvider = Provider<AppNotifier>((ref) {
   app.bootstrap();
   return app;
 });
+
+/// What a refused `machine_select` means, in words a person can act on (backend lib/webWs.ts codes).
+String machineSelectErrorText(String code, String machine) => switch (code) {
+  'NOT_YOUR_MACHINE' => '$machine is no longer on your account.',
+  'MACHINE_ENV_MISMATCH' =>
+    '$machine belongs to another Autonomous environment. Sign in to that one to use it.',
+  'MACHINE_PAYMENT_PENDING' => '$machine is waiting for its payment to finish.',
+  'MACHINE_SUBSCRIPTION_REQUIRED' =>
+    'The subscription for $machine has ended. Renew it to use it again.',
+  _ => 'Could not connect to $machine. Try again in a moment.',
+};

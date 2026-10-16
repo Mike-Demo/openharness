@@ -64,15 +64,13 @@ class MachineSharingFormState extends State<MachineSharingForm> {
   /// Why the sharing could not be read at all; the form offers Retry instead of its controls.
   String? _unavailable;
 
-  /// What is wrong with what was typed, said under the field it was typed in.
+  /// What is wrong with what was typed, said under the field it was typed in ([_fieldIsError]: in
+  /// error ink; otherwise a quiet note, "Already shared with …").
   String? _fieldError;
+  bool _fieldIsError = true;
 
-  /// What the last change came to: an error (in error ink) or a quiet confirmation.
+  /// Why the last change was refused. A change that went through says nothing: the list shows it.
   String? _status;
-  bool _statusIsError = false;
-
-  /// The address the last removal took off, while its Undo is offered.
-  String? _undo;
 
   /// Something changed while the form was open: Done leaves a summary in the machine's details.
   bool _changed = false;
@@ -192,27 +190,20 @@ class MachineSharingFormState extends State<MachineSharingForm> {
     }
   }
 
-  void _say(String message, {bool error = false, String? undo}) {
+  void _fieldSays(String message, {bool error = true}) {
     setState(() {
-      _status = message;
-      _statusIsError = error;
-      _undo = undo;
+      _fieldError = message;
+      _fieldIsError = error;
     });
   }
 
   /// Make the machine's sharing [emails] and [sameDomain], at once. While it is written nothing else
   /// can change; a refusal leaves the sharing as it was and says why.
-  Future<bool> _apply(
-    List<String> emails,
-    bool sameDomain, {
-    required String done,
-    String? undo,
-  }) async {
+  Future<bool> _apply(List<String> emails, bool sameDomain) async {
     if (_busy) return false;
     setState(() {
       _busy = true;
       _status = null;
-      _undo = null;
     });
     Map<String, dynamic> answer;
     try {
@@ -231,17 +222,15 @@ class MachineSharingFormState extends State<MachineSharingForm> {
     final error = answer['error'];
     setState(() {
       _busy = false;
-      if (error == null) _show(answer);
+      if (error == null) {
+        _show(answer);
+      } else {
+        _status =
+            answer['message'] as String? ?? 'Could not share it ($error).';
+      }
     });
-    if (error != null) {
-      _say(
-        answer['message'] as String? ?? 'Could not share it ($error).',
-        error: true,
-      );
-      return false;
-    }
+    if (error != null) return false;
     _changed = true;
-    _say(done, undo: undo);
     return true;
   }
 
@@ -274,84 +263,55 @@ class MachineSharingFormState extends State<MachineSharingForm> {
         .where((email) => !_emailPattern.hasMatch(email))
         .firstOrNull;
     if (bad != null) {
-      setState(() => _fieldError = '“$bad” is not an email address.');
+      _fieldSays('“$bad” is not an email address.');
       _input.requestFocus();
       return;
     }
     final fresh = typed.where((email) => !_emails.contains(email)).toSet();
     if (fresh.isEmpty) {
       _value.clear();
-      _say(
+      _fieldSays(
         typed.length == 1
             ? 'Already shared with ${typed.single}.'
             : 'Already shared with them.',
+        error: false,
       );
       return;
     }
     if (_emails.length + fresh.length > machineShareEmailsMax) {
-      setState(
-        () => _fieldError =
-            'A machine can be shared with up to $machineShareEmailsMax people.',
+      _fieldSays(
+        'A machine can be shared with up to $machineShareEmailsMax people.',
       );
       return;
     }
-    final added = await _apply(
-      [..._emails, ...fresh],
-      _sameDomain,
-      done: fresh.length == 1
-          ? 'Shared with ${fresh.single}.'
-          : 'Shared with ${fresh.length} people.',
-    );
+    final added = await _apply([..._emails, ...fresh], _sameDomain);
     if (added) _value.clear();
     if (mounted) _input.requestFocus();
   }
 
   Future<void> _remove(String email) async {
-    await _apply(
-      [..._emails]..remove(email),
-      _sameDomain,
-      done: 'Stopped sharing with $email.',
-      undo: email,
-    );
+    await _apply([..._emails]..remove(email), _sameDomain);
     if (mounted) focus();
   }
 
-  Future<void> _undoRemove() async {
-    final email = _undo;
-    if (email == null) return;
-    await _apply(
-      [..._emails, email],
-      _sameDomain,
-      done: 'Shared with $email again.',
-    );
-  }
-
   Future<void> _toggleDomain() async {
-    final domain = _domain;
-    if (domain == null) return;
-    final on = !_sameDomain;
-    await _apply(
-      _emails,
-      on,
-      done: on
-          ? 'Everyone at $domain can add it now.'
-          : 'No longer shared with everyone at $domain.',
-    );
+    if (_domain == null) return;
+    await _apply(_emails, !_sameDomain);
   }
 
   // ── keys ──────────────────────────────────────────────────────────────────────────────────────
 
-  /// The editor's stops after the field, in reading order: Share, each person's remove, Undo, then
-  /// Done (or Retry and Done when the sharing could not be read). The domain switch reads before the
-  /// field.
+  /// The editor's stops, in reading order: Back, the domain switch, (the field,) Share, each person's
+  /// remove (or Back and Retry when the sharing could not be read).
   List<({String id, VoidCallback? run})> get _stops {
     if (_loading || _unavailable != null) {
       return [
+        (id: 'back', run: _done),
         if (!_loading) (id: 'retry', run: () => unawaited(_load())),
-        (id: 'done', run: _done),
       ];
     }
     return [
+      (id: 'back', run: _done),
       if (_domain != null)
         (id: 'domain', run: _busy ? null : () => unawaited(_toggleDomain())),
       (
@@ -366,9 +326,6 @@ class MachineSharingFormState extends State<MachineSharingForm> {
             id: 'remove:${person.email}',
             run: _busy ? null : () => unawaited(_remove(person.email)),
           ),
-      if (_undo != null)
-        (id: 'undo', run: _busy ? null : () => unawaited(_undoRemove())),
-      (id: 'done', run: _done),
     ];
   }
 
@@ -378,12 +335,13 @@ class MachineSharingFormState extends State<MachineSharingForm> {
   List<FocusNode> get _nodes {
     final stops = _stops.where((stop) => stop.run != null).toList();
     final field = !_loading && _unavailable == null && !_busy;
+    const beforeField = {'back', 'domain'};
     return [
       for (final stop in stops)
-        if (stop.id == 'domain') _node(stop.id),
+        if (beforeField.contains(stop.id)) _node(stop.id),
       if (field) _input,
       for (final stop in stops)
-        if (stop.id != 'domain') _node(stop.id),
+        if (!beforeField.contains(stop.id)) _node(stop.id),
     ];
   }
 
@@ -537,11 +495,31 @@ class MachineSharingFormState extends State<MachineSharingForm> {
     const small = SizedBox(height: DesktopChrome.controlGap);
     final muted13 = DesktopChrome.text(size: 13, color: DesktopChrome.muted);
 
-    final heading = Text(
-      'Share $_name',
-      style: DesktopChrome.heading(),
-      maxLines: 2,
-      overflow: TextOverflow.ellipsis,
+    // Back to the machine's details: the way out, beside what it leaves (Esc does the same). The
+    // arrow's glyph sits on the column's edge, its 32-point target reaching past it.
+    final heading = Transform.translate(
+      offset: const Offset(-8, 0),
+      child: Row(
+        children: [
+          AppIconButton(
+            key: const ValueKey('machine-sharing:back'),
+            icon: AppIcons.arrowLeft,
+            tooltip: 'Back',
+            color: DesktopChrome.foreground,
+            focusNode: _node('back'),
+            onPressed: _done,
+          ),
+          const SizedBox(width: 2),
+          Expanded(
+            child: Text(
+              'Share $_name',
+              style: DesktopChrome.heading(),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
     );
 
     // What sharing gives, said once and plainly: these people get the owner's own rights.
@@ -642,13 +620,15 @@ class MachineSharingFormState extends State<MachineSharingForm> {
           ),
           prefixIconConstraints: const BoxConstraints(minWidth: 36),
           border: fieldBorder,
-          enabledBorder: _fieldError == null
+          enabledBorder: _fieldError == null || !_fieldIsError
               ? fieldBorder
               : fieldBorder.copyWith(borderSide: BorderSide(color: error)),
           disabledBorder: fieldBorder,
           focusedBorder: fieldBorder.copyWith(
             borderSide: BorderSide(
-              color: _fieldError == null ? DesktopChrome.focusRing : error,
+              color: _fieldError == null || !_fieldIsError
+                  ? DesktopChrome.focusRing
+                  : error,
               width: grid.AppDesktop.focusWidth,
             ),
           ),
@@ -754,30 +734,7 @@ class MachineSharingFormState extends State<MachineSharingForm> {
       ),
     );
 
-    final empty = Container(
-      key: const ValueKey('machine-sharing:empty'),
-      decoration: inset,
-      padding: const EdgeInsets.all(12),
-      child: Row(
-        children: [
-          Icon(
-            AppIcons.lock,
-            size: AppIcons.inlineSize,
-            color: DesktopChrome.muted,
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              _sameDomain
-                  ? 'No one at $_domain has added it yet.'
-                  : 'Not shared. Only your own devices can use it.',
-              style: muted13,
-            ),
-          ),
-        ],
-      ),
-    );
-
+    // Only what needs saying: the change under way, or why it was refused.
     final status = Semantics(
       liveRegion: true,
       child: Row(
@@ -786,11 +743,7 @@ class MachineSharingFormState extends State<MachineSharingForm> {
             _spinner(),
             const SizedBox(width: 8),
           ] else if (_status != null) ...[
-            Icon(
-              _statusIsError ? AppIcons.circleAlert : AppIcons.check,
-              size: 14,
-              color: _statusIsError ? error : DesktopChrome.muted,
-            ),
+            Icon(AppIcons.circleAlert, size: 14, color: error),
             const SizedBox(width: 8),
           ],
           Flexible(
@@ -798,22 +751,30 @@ class MachineSharingFormState extends State<MachineSharingForm> {
               _busy ? 'Saving…' : _status ?? '',
               style: DesktopChrome.text(
                 size: 12,
-                color: _statusIsError ? error : DesktopChrome.muted,
+                color: _busy ? DesktopChrome.muted : error,
               ),
             ),
           ),
-          if (!_busy && _undo != null) ...[
-            const SizedBox(width: 4),
-            TextButton(
-              key: const ValueKey('machine-sharing:undo'),
-              focusNode: _node('undo'),
-              onPressed: () => unawaited(_undoRemove()),
-              child: const Text('Undo'),
-            ),
-          ],
         ],
       ),
     );
+
+    // Said only when there is something to say: a change under way, a refusal, or Retry.
+    final retry = !_loading && _unavailable != null;
+    final actions = _busy || _status != null || retry
+        ? Row(
+            children: [
+              Expanded(child: status),
+              if (retry)
+                TextButton(
+                  key: const ValueKey('machine-sharing:retry'),
+                  focusNode: _node('retry'),
+                  onPressed: () => unawaited(_load()),
+                  child: const Text('Retry'),
+                ),
+            ],
+          )
+        : null;
 
     final List<Widget> content;
     if (_loading) {
@@ -866,77 +827,27 @@ class MachineSharingFormState extends State<MachineSharingForm> {
               child: Text(
                 problem,
                 key: const ValueKey('machine-sharing:field-error'),
-                style: DesktopChrome.text(size: 12, color: error),
-              ),
-            ),
-          ),
-        small,
-        if (people.isEmpty) empty else ...people.map(personRow),
-      ];
-    }
-
-    final actions = Row(
-      children: [
-        Expanded(child: status),
-        const SizedBox(width: DesktopChrome.controlGap),
-        if (!_loading && _unavailable != null) ...[
-          TextButton(
-            key: const ValueKey('machine-sharing:retry'),
-            focusNode: _node('retry'),
-            onPressed: () => unawaited(_load()),
-            child: const Text('Retry'),
-          ),
-          const SizedBox(width: DesktopChrome.controlGap),
-        ],
-        // Quiet: every change has already applied, and Share is this surface's one strong action.
-        TextButton(
-          key: const ValueKey('machine-sharing:done'),
-          focusNode: _node('done'),
-          onPressed: _done,
-          child: const Text('Done'),
-        ),
-      ],
-    );
-    String? hint(String command) => effectiveCommandHint(
-      context,
-      command,
-      contextKind: KeymapContext.picker,
-    )?.replaceAll('⇥', 'Tab').replaceAll('↵', 'Enter');
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(18, 14, 18, 8),
-            child: Align(
-              alignment: Alignment.topLeft,
-              // A short form keeps a short reading line, whatever the pane's width.
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 520),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: content,
+                style: DesktopChrome.text(
+                  size: 12,
+                  color: _fieldIsError ? error : DesktopChrome.muted,
                 ),
               ),
             ),
           ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(18, 8, 18, 0),
-          child: actions,
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(18, 8, 18, 14),
-          child: Text(
-            [
-              if (hint('picker.accept') case final enter?) '$enter share',
-              if (hint('picker.complete') case final tab?) '$tab next',
-              if (hint('picker.cancel') case final escape?) '$escape done',
-            ].join('  ·  '),
-            style: DesktopChrome.metadata(),
-          ),
-        ),
-      ],
+        if (people.isNotEmpty) ...[small, ...people.map(personRow)],
+      ];
+    }
+
+    // The pane's whole width: the form is the pane while it is open.
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(18, 10, 18, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ...content,
+          if (actions != null) ...[gap, actions],
+        ],
+      ),
     );
   }
 
@@ -969,7 +880,13 @@ class MachineSharingFormState extends State<MachineSharingForm> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          line('Share $_name'),
+          Row(
+            children: [
+              action('back', '←', _done),
+              SizedBox(width: cell.width),
+              line('Share $_name'),
+            ],
+          ),
           gap,
           if (_loading)
             line('Reading who it is shared with…', color: theme.muted)
@@ -1028,11 +945,6 @@ class MachineSharingFormState extends State<MachineSharingForm> {
               ],
             ),
             gap,
-            if (people.isEmpty)
-              line(
-                'Not shared. Only your own devices can use it.',
-                color: theme.muted,
-              ),
             for (final person in people)
               Row(
                 children: [
@@ -1055,16 +967,12 @@ class MachineSharingFormState extends State<MachineSharingForm> {
               ),
           ],
           if (_fieldError case final problem?)
-            line(problem, color: theme.yellow),
+            line(problem, color: _fieldIsError ? theme.yellow : theme.muted),
           gap,
           if (_busy)
             line('Saving…', color: theme.muted)
           else if (_status case final status?)
-            line(status, color: _statusIsError ? theme.yellow : theme.muted),
-          if (!_busy && _undo != null)
-            action('undo', 'Undo', () => unawaited(_undoRemove())),
-          gap,
-          action('done', 'Done', _done),
+            line(status, color: theme.yellow),
         ],
       ),
     );

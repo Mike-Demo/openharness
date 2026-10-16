@@ -676,7 +676,7 @@ static void flush_scroll(void)
 static void cancel_locked(void)
 {
     pod_ui_scroll_sink(&s_pod, scroll_emit, NULL, false);
-    settle(pod_ui_touch_cancel(&s_pod));   // a cancelled drag ends with a zero UP (P4); a recording the hold opened is aborted
+    settle(pod_ui_touch_cancel(&s_pod));   // a cancelled drag ends with a zero UP (P4); an open recording stays (the next tap sends it)
 }
 
 bool pro_app_touch(bool down, int x, int y)

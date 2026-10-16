@@ -1,3 +1,4 @@
+import 'measurement/launch_measurement.dart';
 import 'measurement/setup_usage_choice.dart';
 
 import 'package:flutter/material.dart';
@@ -52,6 +53,8 @@ Future<void> startHarness({
   // is an offset into THIS launch. Touched before any awaited work so the origin
   // is the entrypoint rather than whatever step happens to mark itself first.
   StartupTrace.mark('startHarness');
+  // The same origin for the launch the account's `app_start` counts.
+  LaunchMeasurement.launched();
   // ⚠️ **No keymap.** The desktop loads its keyboard configuration here, a file
   // and its watchers, beside the appearance. Nothing on the phone reads a keymap
   // — no key is ever matched against one — so the file a touchscreen could not

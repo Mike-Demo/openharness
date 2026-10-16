@@ -1,5 +1,7 @@
 /** Fixed health vocabulary. Keep the CLI/backend copies identical. No arbitrary labels. */
-export const HEALTH_SOURCES = ['app', 'tool', 'automatic', 'unknown'] as const
+// `phone`: the phone app's requests, which it marks itself (`usageSurface`) — over the relay it is a
+// remote app client like the browser, and only it can say which one it is.
+export const HEALTH_SOURCES = ['app', 'tool', 'automatic', 'unknown', 'phone'] as const
 export const HEALTH_ACTIONS = ['create', 'resume', 'restart', 'model_change', 'history', 'fork', 'close', 'delete',
   'search', 'history_page', 'store_list', 'store_install', 'store_update', 'store_remove',
   'model_list', 'model_download', 'model_start', 'model_stop', 'browser_open', 'message'] as const

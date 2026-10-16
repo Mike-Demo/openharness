@@ -102,6 +102,17 @@ it('takes a phone build context: its release and iOS or Android, nothing finer',
   expect(model.statusCode).toBe(400)
 })
 
+it('takes how the phone opened Find or Computers, and the phone\'s own requests, and nothing else', async () => {
+  const context = { surface: 'phone', release: '1.0.4', platform: 'ios', channel: 'production' }
+  const counters = { ui_phone_screen_find_swipe: 2, ui_phone_screen_find_button: 1, ui_phone_screen_computers_swipe: 1,
+    ui_phone_screen_computers_button: 1, request_phone_create_started: 1, request_phone_resume_error_other: 1,
+    request_phone_resume_reason_busy: 1 }
+  expect((await submit({ ...good, context, counters })).statusCode).toBe(200)
+  for (const name of ['ui_phone_screen_settings_swipe', 'ui_phone_screen_find_pinch', 'ui_desktop_screen_find_swipe']) {
+    expect((await submit({ ...good, context, counters: { [name]: 1 } })).statusCode).toBe(400)
+  }
+})
+
 it('rejects extra context, custom versions and device fingerprints without echoing them', async () => {
   const context = { surface: 'desktop', release: '1.2.73', platform: 'macos', channel: 'production' }
   for (const c of [{ ...context, path: 'PRIVATE_CANARY' }, { ...context, release: 'PRIVATE_CANARY' },
@@ -129,16 +140,19 @@ it('keeps legacy explicit setup opt-in without credentials or account lookup', a
   }
   for (const headers of [{ authorization: 'fixture' }, { cookie: 'PRIVATE_CANARY' }]) expect((await sendSetup(setup, headers)).statusCode).toBe(400)
 })
-it('accepts default-on sharing only for Desktop setup without asserting consent', async () => {
+it('accepts default-on sharing only for Desktop or phone setup, one at a time, without asserting consent', async () => {
   const { consent: _, ...fields } = setup
   const report = { ...fields, sharing: 'default' }
-  expect((await sendSetup(report)).statusCode).toBe(200)
-  expect(methods.ingestSetupUsage).toHaveBeenCalledWith(report)
+  const phone = { ...report, counters: { setup_phone_sign_in_started: 1, setup_phone_sign_in_google_ok: 1 } }
+  for (const accepted of [report, phone]) {
+    expect((await sendSetup(accepted)).statusCode).toBe(200)
+    expect(methods.ingestSetupUsage).toHaveBeenCalledWith(accepted)
+  }
   expect(methods.productUsageChoice).not.toHaveBeenCalled()
   expect(methods.ingestProductUsage).not.toHaveBeenCalled()
   methods.ingestSetupUsage.mockClear()
   for (const payload of [fields, { ...report, consent: true }, { ...report, sharing: 'off' },
-    { ...report, counters: { setup_phone_sign_in_started: 1 } },
+    { ...report, counters: { setup_web_sign_in_started: 1 } },
     { ...report, counters: { ...setup.counters, setup_phone_sign_in_started: 1 } },
     { ...report, counters: { ui_desktop_sign_in_started: 1 } },
     { ...report, account: 'PRIVATE_CANARY' }]) {

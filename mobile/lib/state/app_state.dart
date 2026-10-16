@@ -1,7 +1,10 @@
 import '../core/app_version.dart';
 import '../core/test_run.dart';
+import '../measurement/launch_measurement.dart';
 import '../measurement/onboarding_measurement.dart';
+import '../measurement/product_connections.dart';
 import '../measurement/product_measurement.dart';
+import '../measurement/product_resumes.dart';
 import '../measurement/setup_transport.dart';
 
 import 'dart:async';
@@ -284,6 +287,15 @@ class AppNotifier extends ChangeNotifier {
   /// The phone's onboarding steps after sign-in, counted through [productMeasurement].
   late final onboardingMeasurement = OnboardingMeasurement(productMeasurement);
   final _measurementConnections = <String, void Function(ProductOutcome)>{};
+
+  /// Each machine's dials, the person's (`connect_user`) apart from the app's own (`connect_auto`).
+  late final productConnections = ProductConnections(productMeasurement);
+
+  /// A stopped harness resumed from here, until it works again (`resume_recovery`).
+  late final productResumes = ProductResumes(productMeasurement);
+
+  /// This launch, to its first computer (`app_start`). The app's alone: none in a test or the sample.
+  LaunchMeasurement? launchMeasurement;
 
   /// Says whether this device is signed in, and signs it out: [ViewerServices.login], the app's own
   /// session. The name is the desktop's, where the harness CLI holds the session instead.
@@ -1123,9 +1135,17 @@ class AppNotifier extends ChangeNotifier {
         ProductMeasurement(
           surface: kIsWeb ? 'web' : 'phone',
           automatic: !kUnderTest,
+          // Signed-out counts start on, as the desktop's do, where an opt-out can be kept: the app's
+          // own store. A test or the sample (`demo/`) has none, and stays off.
+          setupStorage: paneLayoutStore?.storage,
           sendSetup: (report) =>
               sendSetupMeasurement(this.config.apiBaseUrl, report),
         );
+    // On the stores' terms above: no layout store is a test or the sample (`demo/`), and neither is
+    // a launch of this app.
+    if (!kUnderTest && paneLayoutStore != null) {
+      launchMeasurement = LaunchMeasurement(this.productMeasurement);
+    }
     addListener(_syncProductMeasurement);
     unawaited(_measurementContext());
     _initDeviceLog();
@@ -1165,10 +1185,29 @@ class AppNotifier extends ChangeNotifier {
         : null;
     productMeasurement.account(
       scope,
-      choice: () => api.productUsageSettings(),
+      choice: () => productUsageSettings(),
       send: api.productUsageReport,
     );
-    if (scope == null) _measurementConnections.clear();
+    launchMeasurement?.account(
+      signedIn: scope != null,
+      restored: !signedInThisRun,
+    );
+    if (scope == null) {
+      _measurementConnections.clear();
+      productConnections.clear();
+      productResumes.clear();
+    }
+  }
+
+  /// The account's product-usage choice — or, while an opt-out made before sign-in waits to be
+  /// carried to the account, set off: the desktop's rule. Pending until the server confirms it, so a
+  /// failed request or a default-on answer never quietly restores sharing.
+  Future<Map<String, dynamic>> productUsageSettings({bool? enabled}) async {
+    await productMeasurement.setupChoiceReady;
+    return api.productUsageSettings(
+      enabled:
+          enabled ?? (productMeasurement.accountOptOutPending ? false : null),
+    );
   }
 
   // Connection keys already belong to the app. Only fixed outcomes reach measurement, never the key.
@@ -2335,6 +2374,15 @@ class AppNotifier extends ChangeNotifier {
       settling ? ConnectionStatus.connecting : nextStatus,
       ProductFlow.remoteConnect,
     );
+    productConnections.status(
+      machineId,
+      connecting:
+          settling ||
+          nextStatus == ConnectionStatus.connecting ||
+          nextStatus == ConnectionStatus.reconnecting,
+      connected: nextStatus == ConnectionStatus.connected,
+      failed: machine.needsLink || machine.nodeOnline == false,
+    );
     machine.connectionStatus = settling
         ? ConnectionStatus.connecting
         : nextStatus;
@@ -2342,6 +2390,8 @@ class AppNotifier extends ChangeNotifier {
       typingEvent('link ${_shortId(machineId)} → ${nextStatus.name}');
     }
     if (nextStatus == ConnectionStatus.connected) {
+      // The first computer to answer ends the launch.
+      launchMeasurement?.ready();
       _refreshDeviceLogAfterReconnect();
       machine.needsLink = false;
       // Let in: a later refusal is a new story ([_redialOnceVouched], [_settleTrust]).
@@ -6738,6 +6788,11 @@ class AppNotifier extends ChangeNotifier {
     // No transport — the same guard [reachAllMachines] keeps: [_conn] would build one out of a
     // null pool.
     if (_pool == null && connectionForTest == null) return failure;
+    // Before the dial, whose `connecting` may be reported at once: this one is the person's.
+    productConnections.manual(
+      machineId,
+      connected: state.connectionStatus == ConnectionStatus.connected,
+    );
     _connectMachine(state);
     _redialNow(machineId);
     await _loadMachineData(state, force: true);
@@ -6932,8 +6987,12 @@ class AppNotifier extends ChangeNotifier {
     final checking = _agentResumes[key];
     final receipt = checking ?? _newReceiptId();
     _agentResumes[key] = receipt;
-    RestartAgentResult settle(String error) {
+    // Counted from the resume being sent — the desktop's rule — not from a status check on one.
+    final measured = _turnActivityKey(machine.machine.machineId, stopped.id);
+    if (checking == null) productResumes.sent(measured);
+    RestartAgentResult settle(String error, {bool refused = true}) {
       _agentResumes.remove(key);
+      if (refused) productResumes.refused(measured);
       return RestartAgentResult(error: error);
     }
 
@@ -6985,7 +7044,11 @@ class AppNotifier extends ChangeNotifier {
           error: 'The machine is still resuming this harness. Tap it again in a moment.',
         );
       case 'unavailable':
-        return settle('That harness is no longer available. Search again.');
+        // Gone rather than refused: the desktop leaves its resume open for this one too.
+        return settle(
+          'That harness is no longer available. Search again.',
+          refused: false,
+        );
       case 'failed':
         final failure = result['failure'];
         if (failure is! Map || failure['code'] is! String) return unconfirmed;
@@ -8717,6 +8780,12 @@ class AppNotifier extends ChangeNotifier {
             stats.onTurnStarted(
               _turnActivityKey(machine.machine.machineId, agentId),
             );
+            // Live work, not a reconnect's replay: a harness resumed from here is back.
+            if (event['replay'] != true) {
+              productResumes.worked(
+                _turnActivityKey(machine.machine.machineId, agentId),
+              );
+            }
           }
         } else {
           final sessionId = _eventSessionId(event, payload);
@@ -9147,6 +9216,9 @@ class AppNotifier extends ChangeNotifier {
 
   @override
   void dispose() {
+    launchMeasurement?.dispose();
+    productConnections.dispose();
+    productResumes.dispose();
     onboardingMeasurement.dispose();
     productMeasurement.dispose();
     _measurementConnections.clear();

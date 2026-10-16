@@ -121,7 +121,7 @@ void main() {
           'Turn on to have a harness another agent started add one line to the pull requests it '
           'opens: 🤝 Started by another agent in Harness.',
       'Agents in the same tab can message each other':
-          'Turn on to let Claude Code and Codex in one tab send each other messages with harness send.',
+          'Turn on to let Claude Code and Codex in one tab send each other messages with harness send. Invite people to a tab and their harnesses join it from their own computers.',
     };
     for (final MapEntry(key: label, value: detail) in copy.entries) {
       expect(find.text(label), findsOneWidget);

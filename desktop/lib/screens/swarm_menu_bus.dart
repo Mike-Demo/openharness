@@ -87,6 +87,12 @@ class SwarmMenuState extends ChangeNotifier {
   /// Whether the active tab has an Agent Messages log to show: not the Store,
   /// and not with an older CLI or backend. File's Show Agent Messages needs it.
   bool canShowAgentMessages = false;
+
+  /// What File offers about sharing the active tab with other accounts (1c),
+  /// by action (`invitePeople`, `stopSharingTab`, `moveTabHere`,
+  /// `leaveTab`): a row shows only for an action listed here.
+  /// SwarmTitlebar.swift hides and validates its rows from the same map.
+  Map<String, bool> tabShareActions = const {};
   List<SwarmMenuEntry> history = const [];
   List<SwarmMenuEntry> closedHistory = const [];
 
@@ -110,6 +116,11 @@ class SwarmMenuState extends ChangeNotifier {
         canGoBack = args['canGoBack'] as bool? ?? false;
         canGoForward = args['canGoForward'] as bool? ?? false;
         canShowAgentMessages = args['canShowAgentMessages'] as bool? ?? false;
+        tabShareActions = {
+          if (args['tabShareActions'] case final Map actions)
+            for (final MapEntry(:key, :value) in actions.entries)
+              if (key is String && value == true) key: true,
+        };
         history = _parseEntries(args['history'], closed: false);
         closedHistory = _parseEntries(args['closedHistory'], closed: true);
         paneActions = {
@@ -135,6 +146,7 @@ class SwarmMenuState extends ChangeNotifier {
     canGoBack = false;
     canGoForward = false;
     canShowAgentMessages = false;
+    tabShareActions = const {};
     history = const [];
     closedHistory = const [];
     paneActions = const {};

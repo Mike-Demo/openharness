@@ -26,12 +26,16 @@ const setupFields = {
   counters: z.partialRecord(z.enum(PRODUCT_USAGE_SETUP_METRICS), z.number().int().min(1).max(1000))
     .refine(c => Object.keys(c).length > 0 && Object.keys(c).length <= 32),
 }
+// The surfaces whose signed-out counts may be on by default, each report wholly one surface's.
+const DEFAULT_SETUP_PREFIXES = ['setup_desktop_', 'setup_phone_']
 export const setupUsageSchema = z.union([
-  // Older native clients (including the phone) still require explicit opt-in.
+  // Older native clients (earlier phone builds included) still require explicit opt-in.
   z.strictObject({ ...setupFields, consent: z.literal(true) }),
-  // Desktop defaults on with a persistent Settings opt-out. Do not call that consent.
+  // Desktop and the phone default on, with an opt-out each keeps (Desktop's Settings, the line under
+  // the phone's signed-out screens). Do not call that consent.
   z.strictObject({ ...setupFields, sharing: z.literal('default') })
-    .refine(report => Object.keys(report.counters).every(key => key.startsWith('setup_desktop_'))),
+    .refine(report => DEFAULT_SETUP_PREFIXES.some(prefix =>
+      Object.keys(report.counters).every(key => key.startsWith(prefix)))),
 ])
 
 export async function productUsageRoutes(app: FastifyInstance): Promise<void> {
