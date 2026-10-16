@@ -6,8 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { asWindows } from '../../testing/windowsOpen.js'
 import { daemonTokenPath, ensureDaemonToken, readDaemonToken } from './pipeAuth.js'
 
-// linkSync goes through [hooks], so a spec can run something just before the link (another start winning the race).
-const hooks = vi.hoisted(() => ({ beforeLink: null as null | (() => void) }))
+// linkSync and unlinkSync go through [hooks], so a spec can run something just before the link (another start
+// winning the race) or fail the temp file's removal (a Windows antivirus or indexer holding it).
+const hooks = vi.hoisted(() => ({ beforeLink: null as null | (() => void), unlinkError: null as null | NodeJS.ErrnoException }))
 vi.mock('node:fs', async (importOriginal) => {
   const fs = (await import('../../testing/windowsOpen.js')).windowsOpenFs(await importOriginal<typeof import('node:fs')>())
   const linkSync: typeof fs.linkSync = (from, to) => {
@@ -16,12 +17,17 @@ vi.mock('node:fs', async (importOriginal) => {
     run?.()
     return fs.linkSync(from, to)
   }
-  return { ...fs, linkSync, default: { ...fs, linkSync } }
+  const unlinkSync: typeof fs.unlinkSync = (path) => {
+    if (hooks.unlinkError) throw hooks.unlinkError
+    return fs.unlinkSync(path)
+  }
+  return { ...fs, linkSync, unlinkSync, default: { ...fs, linkSync, unlinkSync } }
 })
 
 const dirs: string[] = []
 afterEach(() => {
   hooks.beforeLink = null
+  hooks.unlinkError = null
   vi.restoreAllMocks()
   dirs.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true }))
 })
@@ -57,6 +63,17 @@ describe.skipIf(process.platform === 'win32')('the daemon token', () => {
     const token = ensureDaemonToken(dir)
     expect(readFileSync(daemonTokenPath(dir), 'utf8')).toBe(`${token.toString('hex')}\n`)
     expect(readdirSync(dir)).toEqual(['daemon-token'])
+  })
+
+  it('starts when the temp file cannot be removed after the link, and that failure never hides an earlier one', () => {
+    const busy = Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })
+    const dir = scratch()
+    hooks.unlinkError = busy
+    const token = ensureDaemonToken(dir)
+    expect(readDaemonToken(dir)!.equals(token)).toBe(true)
+    const other = scratch()
+    hooks.beforeLink = () => { throw Object.assign(new Error('EIO: i/o error, link'), { code: 'EIO' }) }
+    expect(() => ensureDaemonToken(other)).toThrow(/EIO/)
   })
 
   it('accepts 64 lowercase hex digits and at most one newline, nothing else', () => {

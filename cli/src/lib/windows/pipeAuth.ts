@@ -190,7 +190,9 @@ function publish(dataDir: string, file: string, token: Buffer): boolean {
     syncStateDirectory(dataDir)
     return true
   } finally {
-    unlinkSync(temp)
+    // Best effort: on Windows an antivirus or indexer may still hold the temp file. A token already published must
+    // not fail the start, and an earlier error must not be hidden by this one; a leftover temp file is harmless.
+    try { unlinkSync(temp) } catch { /* left behind */ }
   }
 }
 
