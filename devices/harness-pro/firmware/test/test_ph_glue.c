@@ -1,4 +1,4 @@
-// Pets gestures in the glue (pod_glue.c): hold to talk (hands free: a later tap sends), the bar's swipe down, tab swipes.
+// Pets gestures in the glue (pod_glue.c): tap to talk (hands free: a later tap sends), the bar's swipe down, tab swipes.
 // Synthetic times; the hits come from a real render of the Pets views.
 #include <assert.h>
 #include <stdio.h>
@@ -62,46 +62,38 @@ static void calm(void) { pod_model_turn(&U.model, "a1", "done", NULL, 0, 30); }
 // A new contact (DOWN then UP) at x,y: the hands-free send.
 static pod_out_t tap_(int x, int y, uint32_t t) { t_(true, x, y, t); return t_(false, x, y, t + 50); }
 
-static void hold_agent(void) {
+static void tap_agent(void) {
     fresh();
     to_agent(0, 0);   // a1, working: Agent
     CHECK(top()->view == POD_V_AGENT);
     render(1000);
-    CHECK(t_(true, MID_X, MID_Y, 1000).fx == POD_FX_NONE);
-    CHECK(pod_ui_tick(&U, 1399).fx == POD_FX_NONE);
-    pod_out_t o = pod_ui_tick(&U, 1400);
-    CHECK(o.fx == POD_FX_VOICE_BEGIN && !strcmp(o.agent, "a1") && top()->view == POD_V_TALK);
-    CHECK(pod_ui_tick(&U, 1500).fx == POD_FX_NONE);   // once
-    // v2: the lift does nothing; the next new tap sends.
-    CHECK(t_(false, MID_X, MID_Y, 1600).fx == POD_FX_NONE && top()->view == POD_V_TALK && !U.nav.sending && U.hands_free);
+    CHECK(t_(true, MID_X, MID_Y, 1000).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
+    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_NONE && top()->view == POD_V_AGENT);   // a still finger alone does nothing
+    pod_out_t o = t_(false, MID_X, MID_Y, 1450);   // the lift talks
+    CHECK(o.fx == POD_FX_VOICE_BEGIN && !strcmp(o.agent, "a1") && top()->view == POD_V_TALK && !U.nav.sending && U.hands_free);
     render(1700);
-    o = tap_(MID_X, MID_Y, 2000);
+    o = tap_(MID_X, MID_Y, 2000);   // the next tap sends
     CHECK(o.fx == POD_FX_VOICE_END && top()->view == POD_V_TALK && U.nav.sending && !U.hands_free);
-}
-
-// v1 hold_then_cancel (slide down 120 px aborts) became: a slide does nothing.
-static void hold_slide_does_nothing(void) {
-    fresh();
-    to_agent(0, 0);
-    render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    CHECK(pod_ui_tick(&U, 1400).fx == POD_FX_VOICE_BEGIN);
-    CHECK(t_(true, MID_X, MID_Y + 119, 1450).fx == POD_FX_NONE && top()->view == POD_V_TALK);
-    CHECK(t_(true, MID_X, MID_Y + 200, 1500).fx == POD_FX_NONE && top()->view == POD_V_TALK);
-    CHECK(t_(false, MID_X, MID_Y + 200, 1700).fx == POD_FX_NONE && top()->view == POD_V_TALK && U.hands_free);
-    // Held on a recap, moved up and down before the lift: never a scroll.
+    // A tap on a recap talks too.
     fresh();
     to_agent(0, 2);
     CHECK(top()->view == POD_V_RECAP);
     render(1000);
+    o = tap_(MID_X, MID_Y, 1000);
+    CHECK(o.fx == POD_FX_VOICE_BEGIN && !strcmp(o.agent, "a3") && top()->view == POD_V_TALK);
+}
+
+// A drag past the slop is never a tap: it scrolls (or swipes) and does not talk, even if it comes back to the DOWN.
+static void drag_is_not_a_tap(void) {
+    fresh();
+    to_agent(0, 0);
+    render(1000);
     t_(true, MID_X, MID_Y, 1000);
-    CHECK(pod_ui_tick(&U, 1400).fx == POD_FX_VOICE_BEGIN);
-    t_(true, MID_X, MID_Y - 90, 1500);
-    CHECK(sc_events == 0 && top()->scroll == 0);
-    CHECK(t_(false, MID_X, MID_Y - 90, 1600).fx == POD_FX_NONE);   // the lift does nothing
-    CHECK(sc_events == 0);
-    render(1700);
-    CHECK(tap_(MID_X, MID_Y, 2000).fx == POD_FX_VOICE_END);
+    t_(true, MID_X, MID_Y + 60, 1100);
+    CHECK(t_(false, MID_X, MID_Y, 1200).fx == POD_FX_NONE && top()->view == POD_V_AGENT && !U.hands_free);
+    // A lift farther than the slop from the DOWN, with no sample in between.
+    t_(true, MID_X, MID_Y, 2000);
+    CHECK(t_(false, MID_X + 40, MID_Y, 2050).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
 }
 
 static void drift_cancels(void) {
@@ -110,7 +102,7 @@ static void drift_cancels(void) {
     render(1000);
     t_(true, MID_X, MID_Y, 1000);
     t_(true, MID_X, MID_Y + 30, 1200);
-    CHECK(pod_ui_tick(&U, 1500).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
+    CHECK(top()->view == POD_V_AGENT && !U.talk_armed);
     t_(true, MID_X, MID_Y + 60, 1550);
     t_(false, MID_X, MID_Y + 60, 1600);
     CHECK(sc_events > 0 && top()->view == POD_V_AGENT && U.nav.depth == 3);   // Pets: a drag on the room scrolls the host's pane and changes nothing else
@@ -120,17 +112,10 @@ static void drift_cancels(void) {
     render(1000);
     t_(true, MID_X, MID_Y, 1000);
     t_(true, MID_X, MID_Y - 30, 1200);
-    CHECK(pod_ui_tick(&U, 1500).fx == POD_FX_NONE);
+    CHECK(!U.talk_armed);
     t_(true, MID_X, MID_Y - 60, 1550);
     t_(false, MID_X, MID_Y - 60, 1600);
     CHECK(sc_events > 0 && top()->view == POD_V_RECAP && U.nav.depth == 3);   // the host pane scrolls; the nav stays
-    // A contact lifted before the deadline is a tap/no hold: a late tick does nothing.
-    fresh();
-    to_agent(0, 0);
-    render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    t_(false, MID_X, MID_Y, 1100);
-    CHECK(pod_ui_tick(&U, 1500).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
 }
 
 static void bar_swipe(void) {
@@ -159,18 +144,17 @@ static void bar_swipe(void) {
     CHECK(U.nav.depth == 2 && top()->view == POD_V_INBOX);
 }
 
-static void no_hold_views(void) {
+static void no_talk_views(void) {
     fresh();
-    render(1000);   // Overview
-    t_(true, MID_X, MID_Y, 1000);
-    CHECK(pod_ui_tick(&U, 1400).fx == POD_FX_NONE && top()->view == POD_V_TABS);
-    t_(false, MID_X, MID_Y, 1500);
+    calm();   // Home on tab 0
+    render(1000);
+    U.frame.hit_count = 0;   // a tap on nothing on Home
+    CHECK(tap_(MID_X, MID_Y, 1000).fx == POD_FX_NONE && top()->view == POD_V_TABS && !pod_ui_talking(&U));
     act(POD_A_INBOX, 0);
     CHECK(top()->view == POD_V_INBOX);
     render(3000);
-    t_(true, MID_X, MID_Y, 3000);
-    CHECK(pod_ui_tick(&U, 3400).fx == POD_FX_NONE && top()->view == POD_V_INBOX);
-    t_(false, MID_X, MID_Y, 3500);
+    U.frame.hit_count = 0;
+    CHECK(tap_(MID_X, MID_Y, 3000).fx == POD_FX_NONE && top()->view == POD_V_INBOX);
 }
 
 static void offline(void) {
@@ -178,78 +162,64 @@ static void offline(void) {
     to_agent(0, 0);
     ((pod_agent_t *)pod_model_find(&U.model, "a1"))->state = POD_OFFLINE;
     render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    CHECK(pod_ui_tick(&U, 1400).fx == POD_FX_NONE);
+    CHECK(tap_(MID_X, MID_Y, 1000).fx == POD_FX_NONE);
     CHECK(U.notice_on && !strcmp(U.notice, "That machine is offline") && top()->view == POD_V_AGENT);
-    CHECK(t_(false, MID_X, MID_Y, 1500).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
 }
 
-// H1: the hold fires on the touch path. The touch task reports a still finger every few ms, and that sample is what
-// finds the deadline passed: the begin and the end/abort then run on the one task, and no render wake is needed.
-static void hold_fires_on_held_samples(void) {
+// The tap talks on the touch path: its lift begins the recording, on the task that also ends or aborts it.
+static void tap_talks_on_its_lift(void) {
     fresh();
     to_agent(0, 0);
     render(1000);
     CHECK(t_(true, MID_X, MID_Y, 1000).fx == POD_FX_NONE);
-    for (uint32_t t = 1004; t < 1400; t += 4) CHECK(t_(true, MID_X, MID_Y, t).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
-    pod_out_t o = t_(true, MID_X, MID_Y, 1400);
+    for (uint32_t t = 1004; t < 2000; t += 4) CHECK(t_(true, MID_X, MID_Y, t).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
+    pod_out_t o = t_(false, MID_X, MID_Y, 2000);
     CHECK(o.fx == POD_FX_VOICE_BEGIN && !strcmp(o.agent, "a1") && top()->view == POD_V_TALK);
-    CHECK(t_(true, MID_X, MID_Y, 1404).fx == POD_FX_NONE);   // once
-    CHECK(t_(false, MID_X, MID_Y, 1500).fx == POD_FX_NONE);
     // A move inside the slop keeps it armed.
     fresh();
     to_agent(0, 0);
     render(1000);
     t_(true, MID_X, MID_Y, 1000);
-    CHECK(t_(true, MID_X + 5, MID_Y, 1200).fx == POD_FX_NONE);
-    o = t_(true, MID_X + 5, MID_Y, 1400);
+    CHECK(t_(true, MID_X + 5, MID_Y, 1100).fx == POD_FX_NONE);
+    o = t_(false, MID_X + 5, MID_Y, 1150);
     CHECK(o.fx == POD_FX_VOICE_BEGIN && !strcmp(o.agent, "a1") && top()->view == POD_V_TALK);
-    // Home's still samples never begin voice: the hold is the agent screens' own.
-    fresh();
-    render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    for (uint32_t t = 1004; t <= 2000; t += 4) CHECK(t_(true, MID_X, MID_Y, t).fx == POD_FX_NONE && top()->view == POD_V_TABS);
 }
 
-// H2 (v2): a contact cancelled after the hold fired (an untrusted sample, a second finger, the glass turning, sleep) no
-// longer ends a hands-free recording: it does not depend on the finger.
-static void hold_cancel_keeps_recording(void) {
+// A cancelled contact (an untrusted sample, a second finger, sleep) never talks, and never ends a hands-free recording.
+static void cancel_keeps_recording(void) {
     fresh();
     to_agent(0, 0);
     render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_VOICE_BEGIN);
+    CHECK(tap_(MID_X, MID_Y, 1000).fx == POD_FX_VOICE_BEGIN);
+    render(1100);
+    t_(true, MID_X, MID_Y, 1200);
     pod_out_t o = pod_ui_touch_cancel(&U);
     CHECK(o.fx == POD_FX_NONE && top()->view == POD_V_TALK && U.hands_free);
-    CHECK(t_(false, MID_X, MID_Y, 1500).fx == POD_FX_NONE);
+    CHECK(t_(false, MID_X, MID_Y, 1300).fx == POD_FX_NONE);
     render(1600);
     CHECK(tap_(MID_X, MID_Y, 1700).fx == POD_FX_VOICE_END);   // still sends with a new tap
-    // A cancel before the hold fires, or after the lift, has nothing to abort.
+    // A cancel before the lift: the contact never talks.
     fresh();
     to_agent(0, 0);
     render(1000);
     t_(true, MID_X, MID_Y, 1000);
     CHECK(pod_ui_touch_cancel(&U).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
-    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_NONE);   // the cancelled contact never talks
-    // A refused start (the glue already left Talk): the cancel has no recording to abort.
+    CHECK(t_(false, MID_X, MID_Y, 1100).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
+    // A refused start (the glue already left Talk): the cancel has nothing to abort.
     fresh();
     to_agent(0, 0);
     render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_VOICE_BEGIN);
+    CHECK(tap_(MID_X, MID_Y, 1000).fx == POD_FX_VOICE_BEGIN);
     pod_ui_talk_over(&U);
     CHECK(pod_ui_touch_cancel(&U).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
 }
 
-// Hands free: any new tap on Talk sends, even over the bar crumb or the chip; the first lift does not; the holding
-// contact's cancel, a slide, and a swipe from the bar do nothing.
+// Hands free: any new tap on Talk sends, even over the bar crumb or the chip; a swipe from the bar does nothing.
 static void hands_free_taps_anywhere(void) {
     fresh();
     to_agent(0, 0);
     render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_VOICE_BEGIN);
-    CHECK(t_(false, MID_X, MID_Y, 1500).fx == POD_FX_NONE);
+    CHECK(tap_(MID_X, MID_Y, 1000).fx == POD_FX_VOICE_BEGIN);
     render(1600);
     CHECK(U.frame.hit_count >= 1 && U.frame.hits[U.frame.hit_count - 1].action == POD_A_TALK);   // the topmost hit
     CHECK(U.frame.hits[U.frame.hit_count - 1].w == POD_W && U.frame.hits[U.frame.hit_count - 1].y == 0);
@@ -262,9 +232,7 @@ static void hands_free_taps_anywhere(void) {
     fresh();
     to_agent(0, 0);
     render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    t_(true, MID_X, MID_Y, 1400);
-    t_(false, MID_X, MID_Y, 1500);
+    CHECK(tap_(MID_X, MID_Y, 1000).fx == POD_FX_VOICE_BEGIN);
     render(1600);
     t_(true, 300, 20, 2000);
     t_(true, 300, 70, 2050);
@@ -274,16 +242,14 @@ static void hands_free_taps_anywhere(void) {
     CHECK(!U.hands_free);
 }
 
-// The send tap right after the hold fires, before Talk is drawn: whatever the old Agent frame had at that point (it had a back crumb) must not apply.
+// The send tap right after the talk tap, before Talk is drawn: whatever the old Agent frame had at that point (it had a back crumb) must not apply.
 static void send_before_talk_drawn(void) {
     fresh();
     to_agent(0, 0);
     render(1000);
     CHECK(!find(POD_A_BACK));   // the room has no bar and no back crumb: the tap lands where the bar was
     int bx = 100, by = 36;
-    t_(true, MID_X, MID_Y, 1000);
-    CHECK(pod_ui_tick(&U, 1400).fx == POD_FX_VOICE_BEGIN);
-    t_(false, MID_X, MID_Y, 1500);
+    CHECK(tap_(MID_X, MID_Y, 1000).fx == POD_FX_VOICE_BEGIN);
     pod_out_t o = tap_(bx, by, 1600);   // no render in between
     CHECK(o.fx == POD_FX_VOICE_END && top()->view == POD_V_TALK && U.nav.sending);
 }
@@ -293,9 +259,7 @@ static void offline_tap_aborts(void) {
     fresh();
     to_agent(0, 0);
     render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    CHECK(pod_ui_tick(&U, 1400).fx == POD_FX_VOICE_BEGIN);
-    t_(false, MID_X, MID_Y, 1500);
+    CHECK(tap_(MID_X, MID_Y, 1000).fx == POD_FX_VOICE_BEGIN);
     render(1600);
     ((pod_agent_t *)pod_model_find(&U.model, "a1"))->state = POD_OFFLINE;
     pod_out_t o = tap_(MID_X, MID_Y, 2000);
@@ -340,50 +304,47 @@ static void animation_rates(void) {
     CHECK(most > 33 || most == 33);   // the pet's own animation sets the beat: there is no wave
 }
 
-// M9: voice on an asking agent stays refused, so the hold does not arm there (no notice either).
-static void asking_agents_do_not_hold(void) {
+// M9: voice on an asking agent stays refused, so the tap does not arm there (no notice either).
+static void asking_agents_do_not_talk(void) {
     fresh();
     to_agent(1, 0);   // a4, asking
     CHECK(top()->view == POD_V_AGENT && !strcmp(top()->agent, "a4"));
     render(1000);
     t_(true, MID_X, MID_Y, 1000);
-    CHECK(!U.hold_armed);
-    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_NONE && top()->view == POD_V_AGENT && !U.notice_on);
-    t_(false, MID_X, MID_Y, 1500);
+    CHECK(!U.talk_armed);
+    CHECK(t_(false, MID_X, MID_Y, 1050).fx == POD_FX_NONE && top()->view == POD_V_AGENT && !U.notice_on);
 }
 
-// L10: the hold belongs to the screen and agent it was armed on; a contact on nothing carries no stale hit.
-static void hold_stays_with_its_target(void) {
+// L10: the tap belongs to the screen and agent it was armed on; a contact on nothing carries no stale hit.
+static void talk_stays_with_its_target(void) {
     fresh();
     to_agent(0, 0);
     render(1000);
     t_(true, MID_X, MID_Y, 1000);
-    pod_nav_act(&U.nav, &U.model, POD_A_NEXT, 0, 1100);   // a pane swipe's effect, a notification or a host focus change the agent
+    pod_nav_act(&U.nav, &U.model, POD_A_NEXT, 0, 1010);   // a pane swipe's effect, a notification or a host focus change the agent
     CHECK(strcmp(top()->agent, "a1") != 0);
-    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
+    CHECK(t_(false, MID_X, MID_Y, 1050).fx == POD_FX_NONE && top()->view != POD_V_TALK);
     fresh();
     to_agent(0, 0);
     render(1000);
     t_(true, MID_X, MID_Y, 1000);
     act(POD_A_BACK, 0);   // the screen changed under the finger: Home
-    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_NONE && top()->view == POD_V_TABS);
+    CHECK(t_(false, MID_X, MID_Y, 1050).fx == POD_FX_NONE && top()->view != POD_V_TALK);
 }
 
-// L11: a refused start (the gate refused the recording) leaves the hold's agent screen where it was.
-static void refused_hold_stays_on_the_agent(void) {
+// L11: a refused start (the gate refused the recording) leaves the tap's agent screen where it was.
+static void refused_talk_stays_on_the_agent(void) {
     fresh();
     to_agent(0, 0);
     render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_VOICE_BEGIN);
+    CHECK(tap_(MID_X, MID_Y, 1000).fx == POD_FX_VOICE_BEGIN);
     pod_ui_talk_over(&U);
     CHECK(top()->view == POD_V_AGENT);
     fresh();   // and on a Recap
     to_agent(0, 2);
     CHECK(top()->view == POD_V_RECAP);
     render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_VOICE_BEGIN);
+    CHECK(tap_(MID_X, MID_Y, 1000).fx == POD_FX_VOICE_BEGIN);
     pod_ui_talk_over(&U);
     CHECK(top()->view == POD_V_RECAP);
 }
@@ -542,9 +503,7 @@ static void bottom_up_goes_back(void) {
     fresh();
     to_agent(0, 0);
     render(1000);
-    t_(true, MID_X, MID_Y, 1000);
-    CHECK(t_(true, MID_X, MID_Y, 1400).fx == POD_FX_VOICE_BEGIN);
-    t_(false, MID_X, MID_Y, 1500);
+    CHECK(tap_(MID_X, MID_Y, 1000).fx == POD_FX_VOICE_BEGIN);
     render(1600);
     int d = U.nav.depth;
     swipe(360, 690, 360, 500, 2000);
@@ -663,7 +622,7 @@ static void recap_and_agent_host_scroll(void) {
     CHECK(U.nav.depth == 1 && top()->view == POD_V_TABS && sc_events == 0);
 }
 
-// A Pets RECAP frame has no hit: a tap on it changes nothing (no tap-to-open, no close), and it read the entry when it opened.
+// A Pets RECAP frame has no hit: a tap on it talks to its agent (no tap-to-open, no close), and it read the entry when it opened.
 static void recap_has_no_tap_and_reads(void) {
     fresh();
     pod_model_unread_add(&U.model, "a3", "Gamma", "It works.", 20, 21);
@@ -671,10 +630,8 @@ static void recap_has_no_tap_and_reads(void) {
     CHECK(top()->view == POD_V_RECAP && U.model.unread_count == 0);
     render(1000);
     CHECK(U.frame.hit_count == 0 || !find(POD_A_NONE));
-    for (int i = 0; i < 3; i++) {
-        pod_out_t o = tap_(360, 300 + i * 100, 1000 + (uint32_t)i * 200);
-        CHECK(o.fx == POD_FX_NONE && U.nav.depth == 3 && top()->view == POD_V_RECAP);
-    }
+    pod_out_t t = tap_(360, 400, 1000);
+    CHECK(t.fx == POD_FX_VOICE_BEGIN && !strcmp(t.agent, "a3") && top()->view == POD_V_TALK);
     // Notices: a row opens the agent on its recap, read
     fresh();
     pod_model_unread_add(&U.model, "a3", "Gamma", "It works.", 20, 21);
@@ -1002,14 +959,11 @@ static void bottom_start_sideways_is_a_pane_swipe(void) {
     t_(true, 380, 680, 1040);
     t_(false, 450, 660, 1080);   // dx 150, dy -30
     CHECK(U.nav.depth == 3 && (top()->view == POD_V_AGENT || top()->view == POD_V_RECAP) && strcmp(top()->agent, "a1") != 0);   // NEXT pane, not BACK
-    // A hold that starts in the bottom zone still talks, and its lift is not a back.
+    // A tap in the bottom zone still talks, and is not a back.
     fresh();
     to_agent(0, 0);
     render(1000);
-    t_(true, 360, 690, 1000);
-    CHECK(pod_ui_tick(&U, 1400).fx == POD_FX_VOICE_BEGIN && top()->view == POD_V_TALK);
-    t_(false, 360, 690, 1500);
-    CHECK(top()->view == POD_V_TALK && U.nav.depth == 3);
+    CHECK(tap_(360, 690, 1000).fx == POD_FX_VOICE_BEGIN && top()->view == POD_V_TALK && U.nav.depth == 3);
 }
 
 static void bar_down_opens_inbox(void) {
@@ -1079,14 +1033,14 @@ static void toast_tap_opens_notices(void) {
     CHECK(pod_model_unread_find(&U.model, "a1"));   // still unread: Notices lists it
     render(1200);
     CHECK(!U.frame.banner);
-    // a tap beside the toast reaches the room (nothing there to open: the room stays)
+    // a tap beside the toast reaches the room: it talks to the room's agent, not to the toast's
     fresh();
     calm();
     to_agent(0, 2);
     pod_ui_notify(&U, "a1", true, 1000);
     render(1000);
-    tap_(360, 300, 1100);
-    CHECK(U.ban_on && top()->view == POD_V_RECAP);
+    o = tap_(360, 300, 1100);
+    CHECK(o.fx == POD_FX_VOICE_BEGIN && !strcmp(o.agent, "a3") && top()->view == POD_V_TALK);
 }
 static void toast_swipe_up_dismisses(void) {
     fresh();
@@ -1095,9 +1049,9 @@ static void toast_swipe_up_dismisses(void) {
     pod_ui_notify(&U, "a1", true, 1000);
     render(1000);
     const int depth = U.nav.depth;
-    CHECK(!U.hold_armed);
+    CHECK(!U.talk_armed);
     t_(true, 360, 110, 1100);
-    CHECK(!U.hold_armed);   // a contact on the toast never holds to talk
+    CHECK(!U.talk_armed);   // a contact on the toast never talks
     t_(true, 360, 80, 1140);
     t_(false, 360, 40, 1180);
     CHECK(!U.ban_on && U.nav.depth == depth && top()->view == POD_V_RECAP && pod_model_unread_find(&U.model, "a1"));
@@ -1324,19 +1278,18 @@ static void overview_scroll_follows_tab_removal(void) {
     CHECK(top()->scroll == 7);
 }
 
-// L3: the hold does not arm anywhere in the bar's band.
-static void hold_not_in_bar(void) {
+// L3: the tap does not arm anywhere in the bar's band.
+static void talk_not_in_bar(void) {
     // a DOWN anywhere in the bar (no hit there) does not arm either
     fresh();
     to_agent(0, 0);
     render(1000);
     t_(true, 330, 10, 1000);
-    CHECK(!U.hold_armed);
-    t_(false, 330, 10, 1100);
+    CHECK(!U.talk_armed);
+    CHECK(t_(false, 330, 10, 1100).fx == POD_FX_NONE && top()->view == POD_V_AGENT);
     // and the body still arms
     t_(true, MID_X, MID_Y, 2000);
-    CHECK(U.hold_armed);
-    t_(false, MID_X, MID_Y, 2100);
+    CHECK(U.talk_armed);
 }
 
 // L4: no bar swipe on Talk.
@@ -1530,14 +1483,14 @@ int main(void) {
     bottom_start_sideways_is_a_pane_swipe();
     bar_down_opens_inbox();
     toast_and_edges();
-    hold_agent();
-    hold_slide_does_nothing();
+    tap_agent();
+    drag_is_not_a_tap();
     drift_cancels();
     bar_swipe();
-    no_hold_views();
+    no_talk_views();
     offline();
-    hold_fires_on_held_samples();
-    hold_cancel_keeps_recording();
+    tap_talks_on_its_lift();
+    cancel_keeps_recording();
     hands_free_taps_anywhere();
     send_before_talk_drawn();
     offline_tap_aborts();
@@ -1548,14 +1501,14 @@ int main(void) {
     home_page();
     recent_swipe_steps_tabs();
     overview_scroll_follows_tab_removal();
-    hold_not_in_bar();
+    talk_not_in_bar();
     talk_ignores_bar_swipe();
     toast_cap_only_when_drawn();
     wake_rates();
     agent_screen_wakes();
-    asking_agents_do_not_hold();
-    hold_stays_with_its_target();
-    refused_hold_stays_on_the_agent();
+    asking_agents_do_not_talk();
+    talk_stays_with_its_target();
+    refused_talk_stays_on_the_agent();
     printf("test_ph_glue: %d checks ok\n", checks);
     return 0;
 }

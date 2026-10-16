@@ -197,25 +197,20 @@ static pod_out_t tap_by_nav(pod_action_t a, int arg) {
     render();
     return effect_of();
 }
-// No screen draws a Talk button: a still press on an agent or its recap starts the recording and the lift keeps it (hands free).
-static pod_out_t hold_talk(void) {
+// No screen draws a Talk button: a tap on an agent or its recap starts the recording (hands free; the next tap sends).
+static pod_out_t tap_talk(void) {
     bool c = false;
     CHECK(contact(true, 360, 400, &c).fx == POD_FX_NONE);
-    now += 450;
-    pod_out_t begin = contact(true, 360, 400, &c);   // the still sample that finds the deadline
-    unsigned char at_begin[sizeof R];
-    memcpy(at_begin, &R, sizeof R);
-    pod_out_t lift = contact(false, 360, 400, &c);
+    pod_out_t o = contact(false, 360, 400, &c);
     render();
-    if (begin.fx != POD_FX_NONE) { memcpy(&R, at_begin, sizeof R); return begin; }   // what the begin made the app do, not the lift's nothing
-    return lift;
+    return o;
 }
 static pod_out_t nav_act(pod_action_t a);
 static pod_out_t tap(pod_action_t a, int arg) {
     const pod_hit_t *h = hit(a, arg);
     if (!h && (a == POD_A_BACK || a == POD_A_TABS || a == POD_A_PANES || a == POD_A_PREV || a == POD_A_NEXT)) return nav_act(a);   // the side button's path
     if (!h && (a == POD_A_OPEN_TAB || a == POD_A_OPEN_AGENT)) return tap_by_nav(a, arg);
-    if (!h && a == POD_A_TALK && (top() == POD_V_AGENT || top() == POD_V_RECAP)) return hold_talk();
+    if (!h && a == POD_A_TALK && (top() == POD_V_AGENT || top() == POD_V_RECAP)) return tap_talk();
     CHECK(h);
     CHECK(h->w >= 1 && h->h >= 1);
     return tap_at(h->x + h->w / 2, h->y + h->h / 2);
@@ -1235,10 +1230,11 @@ static void recap_drag_scrolls_the_host(void) {
     total = 0;
     for (int i = 0; i < SC.n; i++) if (SC.phase[i] != HT_SCROLL_DOWN) total += SC.dy[i];
     CHECK(total == 180 && SC.v[SC.n - 1] > 100);
-    // A tap, or a cancelled contact, closes cleanly: nothing for a tap; a cancelled drag ends with a zero UP.
+    // A tap, or a cancelled contact, closes cleanly: nothing for a tap (it talks); a cancelled drag ends with a zero UP.
     open_recap_for_scroll(false);
     contact(true, 360, 300, &c); now += 40; contact(false, 360, 300, &c);
-    CHECK(SC.n == 0);
+    CHECK(SC.n == 0 && pod_ui_talking(&U));
+    open_recap_for_scroll(false);
     contact(true, 360, 300, &c);
     for (int y = 300; y >= 220; y -= 20) { now += 16; contact(true, 360, y, &c); }
     pro_app_touch_cancel();
@@ -1745,17 +1741,14 @@ static void side_button_console(void) {
     CHECK(top() == POD_V_TABS && U.nav.depth == 1 && LOCK_DEPTH == 0 && U.started);
 }
 
-// Pets hands free: the hold opens the recording, the lift keeps it, a cancel keeps it, the side button discards it.
+// Pets hands free: a tap opens the recording, a cancel keeps it, the side button discards it.
 static void side_button_discards_hands_free(void) {
     setup();
     render();
     tap(POD_A_ENTER_TAB, 0);   // Pets Home: a tap on the tab walks straight to its first agent
     bool c;
     contact(true, 360, 400, &c);
-    now += 450;
-    expect(contact(true, 360, 400, &c), POD_FX_VOICE_BEGIN, "a1");
-    CHECK(top() == POD_V_TALK);
-    expect(contact(false, 360, 400, &c), POD_FX_NONE, NULL);   // the lift does nothing
+    expect(contact(false, 360, 400, &c), POD_FX_VOICE_BEGIN, "a1");   // the lift talks
     CHECK(top() == POD_V_TALK && R.end_abort == 0 && R.end_send == 0);
     contact(true, 360, 400, &c);                                // a second contact, cancelled: still recording
     pro_app_touch_cancel();
@@ -2022,7 +2015,7 @@ static void voice_refused_while_updating(void) {
     const int tx = 360, ty = 400;
     fw_update_ui_begin("0.1.2", "0.1.3");
     CHECK(!strcmp(pro_app_voice_block_reason("a1"), "Updating"));
-    // A still press where the hold records, and the side button: no recording starts and none is left open.
+    // A tap where it would record, and the side button: no recording starts and none is left open.
     memset(&R, 0, sizeof R);
     bool changed;
     contact(true, tx, ty, &changed); contact(false, tx, ty, &changed);
@@ -2057,7 +2050,7 @@ static void update_gate(void) {
     // The race: the gate lands inside a start that already passed its own check. The start is cancelled, not recorded.
     memset(&R, 0, sizeof R);
     GATE_IN_BEGIN = true;
-    (void)hold_talk();
+    (void)tap_talk();
     GATE_IN_BEGIN = false;
     CHECK(R.begins == 1 && R.end_abort == 1 && !V.open && !pod_ui_talking(&U));
     fw_update_ui_failed();                                         // an accepted transfer that failed also lets go
@@ -2150,67 +2143,52 @@ static void updated_notice(void) {
     WAS_UPDATED = false;
 }
 
-// H1/H2/L11: the Pets hold runs on the touch path. The still finger's samples find the deadline (no render, no tick), so
-// the begin and the end or abort share the touch task; a contact cancelled after the hold ends the recording with it.
-static void console_agent_for_hold(void) {
+// The Pets tap to talk runs on the touch path: the lift begins the recording (no render, no tick), so the begin and
+// the end or abort share the touch task; a later contact's cancel leaves the recording open.
+static void console_agent_for_talk(void) {
     setup();
     render();
     tap(POD_A_ENTER_TAB, 0);
     CHECK(top() == POD_V_AGENT && !pod_ui_talking(&U));
 }
-// DOWN, then still samples 16 ms apart until the recorder is asked; returns the sample's index (the DOWN is 0), or -1.
-static int hold_until_begin(void) {
+static void console_tap_talks_on_the_touch_path(void) {
+    console_agent_for_talk();
     bool c;
     contact(true, 360, 400, &c);
-    for (int i = 1; i <= 60; i++) {
-        contact(true, 360, 400, &c);
-        if (R.begins) return i;
-    }
-    return -1;
-}
-static void console_hold_fires_on_the_touch_path(void) {
-    console_agent_for_hold();
-    const int at = hold_until_begin();
-    CHECK(at == 25);   // 25 * 16 ms = 400 ms: the first sample at the deadline, with no pro_app_tick and no render between
-    CHECK(V.open && !strcmp(V.agent, "a1") && pod_ui_talking(&U) && LOCK_DEPTH == 0);
-    bool c;
-    expect(contact(false, 360, 400, &c), POD_FX_NONE, NULL);   // v2: the lift does nothing, the recording stays open
-    CHECK(V.open && R.end_send == 0 && pod_ui_talking(&U));
+    for (int i = 0; i < 60; i++) contact(true, 360, 400, &c);   // a long still press: nothing until the lift
+    CHECK(R.begins == 0 && !V.open && top() == POD_V_AGENT);
+    contact(false, 360, 400, &c);                                // the lift talks, with no pro_app_tick and no render between
+    CHECK(R.begins == 1 && V.open && !strcmp(V.agent, "a1") && pod_ui_talking(&U) && LOCK_DEPTH == 0);
     render();                                                    // the Talk frame, whose full-screen hit is topmost
     contact(true, 20, 20, &c);                                  // a new tap anywhere (here over the bar) sends
     contact(false, 20, 20, &c);
     CHECK(R.end_send == 1 && V.waiting);
-    // A tick while the finger is still down never starts it: a tap-length contact does not talk.
-    console_agent_for_hold();
+    // A drag is not a tap: it never starts it.
+    console_agent_for_talk();
     contact(true, 360, 400, &c);
-    now += 1000;
+    contact(true, 360, 480, &c);
+    contact(false, 360, 480, &c);
     pro_app_tick();
     CHECK(R.begins == 0 && !V.open && top() == POD_V_AGENT);
 }
-// v2: a contact cancel no longer ends a hands-free recording (it was: abort); the side button / tap end it.
-static void console_hold_cancel_keeps_the_recording(void) {
-    console_agent_for_hold();
-    CHECK(hold_until_begin() == 25 && V.open);
+// A contact cancel never ends a hands-free recording; the side button / tap end it.
+static void console_cancel_keeps_the_recording(void) {
+    console_agent_for_talk();
+    CHECK(tap_talk().fx == POD_FX_VOICE_BEGIN && V.open);
     memset(&R, 0, sizeof R);
-    pro_app_touch_cancel();   // a second finger, an untrusted sample, the glass turning or sleep
-    CHECK(R.end_abort == 0 && V.open && pod_ui_talking(&U) && LOCK_DEPTH == 0);
     bool c;
-    contact(false, 360, 400, &c);
-    CHECK(R.end_send == 0 && V.open);
-    // The finger task's own rule: an untrusted sample mid-hold.
-    console_agent_for_hold();
-    CHECK(hold_until_begin() == 25 && V.open);
+    contact(true, 360, 400, &c);
+    pro_app_touch_cancel();   // a second finger, an untrusted sample, the glass turning or sleep
+    CHECK(R.end_abort == 0 && R.end_send == 0 && V.open && pod_ui_talking(&U) && LOCK_DEPTH == 0);
+    // The finger task's own rule: an untrusted sample mid-contact.
+    console_agent_for_talk();
+    CHECK(tap_talk().fx == POD_FX_VOICE_BEGIN && V.open);
     memset(&R, 0, sizeof R);
+    contact(true, 360, 400, &c);
     pro_touch_feed(&TCH, PRO_TOUCH_BAD, 360, 400);
     CHECK(R.end_abort == 0 && V.open && pod_ui_talking(&U));
-    // A slide down 200 px while the hold is still down does nothing either.
-    console_agent_for_hold();
-    CHECK(hold_until_begin() == 25 && V.open);
-    memset(&R, 0, sizeof R);
-    contact(true, 360, 600, &c);
-    CHECK(R.end_abort == 0 && V.open && pod_ui_talking(&U));
 }
-// The hold to talk is the agent screens' own: a long still press on Home never asks the recorder, and its lift
+// Tap to talk is the agent screens' own: a long still press on Home never asks the recorder, and its lift
 // walks into the tab as a tap does.
 static void console_tile_long_press_is_a_tap(void) {
     setup();
@@ -2272,7 +2250,7 @@ int main(int argc, char **argv) {
         {"ota_screen_and_touch", ota_screen_and_touch}, {"voice_refused_while_updating", voice_refused_while_updating},
         {"update_gate", update_gate}, {"ota_failed_returns", ota_failed_returns}, {"ota_keeps_awake", ota_keeps_awake},
         {"ota_notifications_quiet", ota_notifications_quiet}, {"updated_notice", updated_notice},
-        {"console_hold_fires_on_the_touch_path", console_hold_fires_on_the_touch_path}, {"console_hold_cancel_keeps_the_recording", console_hold_cancel_keeps_the_recording},
+        {"console_tap_talks_on_the_touch_path", console_tap_talks_on_the_touch_path}, {"console_cancel_keeps_the_recording", console_cancel_keeps_the_recording},
         {"console_tile_long_press_is_a_tap", console_tile_long_press_is_a_tap},
     };
     if (argc > 1 && !strcmp(argv[1], "--each")) {   // every replay in its own process: which ones fail, not just the first

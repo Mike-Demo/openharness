@@ -238,14 +238,14 @@ static bool swipes(const pod_ui_t *u)
     return f && (f->view == POD_V_AGENT || f->view == POD_V_RECAP || f->view == POD_V_TALK ||
                  f->view == POD_V_TABS || f->view == POD_V_INBOX);   // Home pages, the Inbox goes back
 }
-// Hold to talk: only on the agent's own screens (Agent, Recap). Not on a Tab tile or a Recent row (a long press there is
-// a tap: its lift opens the agent), not in the top band, not on an agent that asks (voice stays refused
-// there, so the hold does not arm and no notice fires). Returns the agent id the hold would talk to, or NULL.
-static const char *hold_target(const pod_ui_t *u)
+// Tap to talk: only on the agent's own screens (Agent, Recap). Not in the top band, not on the back crumb or the
+// Notices hit, not on an agent that asks (voice stays refused there, so the tap does not arm and no notice fires).
+// Returns the agent id the tap would talk to, or NULL.
+static const char *talk_target(const pod_ui_t *u)
 {
     const pod_frame_t *f = top(u);
     if (!f || u->ban_touch) return NULL;
-    if (u->start_y < POD_BAR_H) return NULL;   // nothing in the top band holds
+    if (u->start_y < POD_BAR_H) return NULL;   // nothing in the top band talks
     if (u->hit_valid && (u->hit.action == POD_A_BACK || u->hit.action == POD_A_INBOX)) return NULL;
     const char *id = f->view == POD_V_AGENT || f->view == POD_V_RECAP ? f->agent : NULL;
     const pod_agent_t *a = id ? pod_model_find(&u->model, id) : NULL;
@@ -287,21 +287,17 @@ static pod_out_t banner_open(pod_ui_t *u, uint32_t now_ms)
     return pod_nav_act(&u->nav, &u->model, POD_A_INBOX, 0, now_ms);   // the toast opens Notices, which lists the entry
 }
 
-// The hold's deadline passed with the finger still: talk to the agent on screen. An offline
-// machine gets the notice instead. The contact is the hold's from here on, tap or not. It runs from the touch samples
-// (pod_ui_touch), the one task that also ends or aborts the recording, so a begin can never be overtaken by its end.
-static pod_out_t hold_fire(pod_ui_t *u, uint32_t now_ms)
+// The tap's lift: talk to the agent on screen. An offline machine gets the notice instead. It runs from the touch
+// samples (pod_ui_touch), the one task that also ends or aborts the recording, so a begin can never be overtaken by its end.
+static pod_out_t talk_fire(pod_ui_t *u, uint32_t now_ms)
 {
     pod_out_t none;
     memset(&none, 0, sizeof none);
-    u->hold_armed = false;
     const pod_frame_t *t = top(u);
-    if (!t || u->nav.depth != u->hold_depth || t->view != u->hold_view || strcmp(t->agent, u->hold_agent))
-        return none;   // the screen or the agent changed under the finger since the DOWN: not this hold's any more
-    u->hold_fired = true;
-    u->hit_valid = false;
+    if (!t || u->nav.depth != u->talk_depth || t->view != u->talk_view || strcmp(t->agent, u->talk_agent))
+        return none;   // the screen or the agent changed under the finger since the DOWN: not this tap's any more
     char id[ID_MAX];
-    pod_copy_str(id, sizeof id, u->hold_agent);
+    pod_copy_str(id, sizeof id, u->talk_agent);
     const pod_agent_t *ag = pod_model_find(&u->model, id);
     if (!ag || pod_model_eff(&u->model, ag) == POD_ASKING) return none;
     if (ag->state == POD_OFFLINE) {
@@ -313,8 +309,7 @@ static pod_out_t hold_fire(pod_ui_t *u, uint32_t now_ms)
         u->dirty = true;
         return none;
     }
-    u->hold_voice = true;
-    u->hands_free = true;   // the lift of this contact does nothing; a later tap sends
+    u->hands_free = true;   // a later tap sends
     u->dirty = true;
     return o;
 }
@@ -335,9 +330,8 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
         u->last_touch_ms = now_ms;
         u->cancelled = u->dragging = u->hit_valid = u->ban_touch = false;
         memset(&u->hit, 0, sizeof u->hit);   // a DOWN on nothing carries nothing over from the last contact
-        if (u->hands_free && !pod_ui_talking(u)) u->hands_free = u->hold_voice = false;   // Talk ended some other way
-        u->hold_armed = u->hold_fired = false;
-        if (!u->hands_free) u->hold_voice = false;   // a hands-free recording keeps its owner for this tap
+        if (u->hands_free && !pod_ui_talking(u)) u->hands_free = false;   // Talk ended some other way
+        u->talk_armed = false;
         u->bar = !u->hands_free && y < POD_BAR_H && top(u)->view != POD_V_TALK;
         u->rows_moved = false;
         u->start_x = x;
@@ -371,24 +365,18 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
             u->ban_touch = true;
             u->sw_ok = false;
         }
-        const char *target = hold_target(u);
-        if (target) {   // the hold belongs to this screen and this agent: if either changes before it fires, it does not
-            u->hold_armed = true;
-            u->hold_due_ms = now_ms + POD_HOLD_MS;
-            u->hold_depth = u->nav.depth;
-            u->hold_view = top(u)->view;
-            pod_copy_str(u->hold_agent, sizeof u->hold_agent, target);
+        const char *target = talk_target(u);
+        if (target) {   // the tap belongs to this screen and this agent: if either changes before its lift, it does not talk
+            u->talk_armed = true;
+            u->talk_depth = u->nav.depth;
+            u->talk_view = top(u)->view;
+            pod_copy_str(u->talk_agent, sizeof u->talk_agent, target);
         }
         return none;
     }
     if (down) {
         if (!u->down || u->cancelled || u->ban_touch) return none;
-        if (u->hold_armed && (iabs(x - u->start_x) > POD_TAP_SLOP || iabs(y - u->start_y) > POD_TAP_SLOP)) u->hold_armed = false;
-        if (u->hold_armed && (int32_t)(now_ms - u->hold_due_ms) >= 0) {   // the still finger's sample that finds the deadline passed
-            pod_out_t held = hold_fire(u, now_ms);
-            if (u->hold_fired) { *changed = true; return held; }
-        }
-        if (u->hold_fired) return none;   // after the hold the contact only waits for its lift: never a scroll, a swipe or a tap
+        if (iabs(x - u->start_x) > POD_TAP_SLOP || iabs(y - u->start_y) > POD_TAP_SLOP) u->talk_armed = false;
         if (iabs(x - u->start_x) > POD_TAP_SLOP || iabs(y - u->start_y) > POD_TAP_SLOP) u->hit_valid = false;
         if (u->sw_ok) {
             if ((int32_t)(now_ms - u->sw_last_ms) > 0) {
@@ -421,11 +409,8 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
     if (u->down) { u->touched = true; u->last_touch_ms = now_ms; }
     if (was) u->started = true;   // the person is driving: a later model feed never starts over them
     u->down = false;
-    u->hold_armed = false;
-    if (u->hold_fired) {   // the hold already took this contact: its lift does nothing (a recording stays open, hands free)
-        u->hold_fired = false;
-        return none;
-    }
+    const bool talk = u->talk_armed && iabs(x - u->start_x) <= POD_TAP_SLOP && iabs(y - u->start_y) <= POD_TAP_SLOP;
+    u->talk_armed = false;
     if (u->scroll_begun) {   // the lift carries the rest of the travel and the speed it left at
         ht_scroll_end(&u->scroll, x, y, now_ms);
         u->scroll_begun = false;
@@ -484,6 +469,10 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
             return pod_nav_act(&u->nav, &u->model, dx < 0 ? POD_A_NEXT : POD_A_PREV, 0, now_ms);
         }
     }
+    if (was && talk && !u->dragging) {   // a tap on the agent's own screen: talk to it
+        *changed = true;
+        return talk_fire(u, now_ms);
+    }
     if (!was || u->dragging || !u->hit_valid || !inside(&u->hit, x, y)) return none;
     // The list can have changed since the scene was drawn: a hit that names its agent or tab is resolved now.
     int arg = u->hit.arg;
@@ -519,7 +508,7 @@ pod_out_t pod_ui_touch(pod_ui_t *u, bool down, int x, int y, uint32_t now_ms, bo
     }
     pod_out_t out = pod_nav_act(&u->nav, &u->model, u->hit.action, arg, now_ms);
     *changed = true;
-    if (u->hands_free && out.fx == POD_FX_VOICE_END) u->hands_free = u->hold_voice = false;   // sent
+    if (u->hands_free && out.fx == POD_FX_VOICE_END) u->hands_free = false;   // sent
     return out;
 }
 
@@ -532,29 +521,10 @@ pod_out_t pod_ui_touch_cancel(pod_ui_t *u)
     u->cancelled = true;
     u->hit_valid = false;
     u->ban_touch = false;
-    // The hold fired and a recording may be open: the finger is gone, so end it (and Talk).
-    pod_out_t o = none;
-    if (u->hands_free && pod_ui_talking(u)) {   // hands free: the recording does not depend on this contact
-        u->hold_armed = u->hold_fired = u->bar = false;
-        return none;
-    }
-    if (u->hold_voice && pod_ui_talking(u)) {
-        o.fx = POD_FX_VOICE_ABORT;
-        pod_copy_str(o.agent, sizeof o.agent, top(u)->agent);
-        pod_nav_talk_over(&u->nav);
-        u->dirty = true;
-    }
-    u->hold_armed = u->hold_fired = u->hold_voice = u->bar = u->hands_free = false;
-    return o;
-}
-
-// Fires the hold for a deadline passed outside a touch sample (tests; the device reaches it through pod_ui_touch only).
-pod_out_t pod_ui_tick(pod_ui_t *u, uint32_t now_ms)
-{
-    pod_out_t none;
-    memset(&none, 0, sizeof none);
-    if (!u->hold_armed || !u->down || u->cancelled || (int32_t)(now_ms - u->hold_due_ms) < 0) return none;
-    return hold_fire(u, now_ms);
+    // A recording a tap started does not depend on this contact: it stays open, and the next tap sends it.
+    u->talk_armed = u->bar = false;
+    if (!pod_ui_talking(u)) u->hands_free = false;
+    return none;
 }
 
 // ---- voice and clock ---------------------------------------------------------------------------------------
@@ -570,7 +540,7 @@ bool pod_ui_talking(const pod_ui_t *u)
 void pod_ui_talk_over(pod_ui_t *u)
 {
     pod_nav_talk_over(&u->nav);   // back on the screen TALK came from, same stack; no ABORT: nothing records
-    u->hold_voice = u->hands_free = false;
+    u->hands_free = false;
 }
 
 void pod_ui_unsend(pod_ui_t *u, uint32_t now_ms)
