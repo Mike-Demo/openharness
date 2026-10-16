@@ -19,7 +19,7 @@ class SetupUsageChoice extends StatelessWidget {
 
   static const title = 'Share setup and sign-in counts';
   static const detail =
-      'Optional for this app session. Help us find setup problems without sharing account details, prompts, or files.';
+      'On unless you turn it off; off also turns it off for your account when you sign in. Helps us find setup problems without sharing account details, prompts, or files.';
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(

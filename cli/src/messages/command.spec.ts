@@ -6,6 +6,8 @@ import { formatSent, paneOwner, parseSendArgs, readMessageFile, SEND_USAGE, send
 import { MessageError } from './model.js'
 import type { Rpc } from './rpc.js'
 
+const SEND_NEXT = 'Next: harness send  (alone: who is here, and any reply to you)'
+
 let dir: string
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'send-')) })
 afterEach(() => rmSync(dir, { recursive: true, force: true }))
@@ -94,10 +96,17 @@ describe('what harness send prints', () => {
       'm1234567 → web: queued · working: arrives at its next tool call',
       'm1234567 → phone: delivered (at its tool call)',
       'm1234567 → lead: delivered (it read it)',
+      SEND_NEXT,
     ].join('\n'))
     expect(formatSent({ id: 'm7', recipients: [{ name: 'api', state: 'queued' }], advice: 'This message is 2000 characters…' }))
-      .toBe('m7 → api: queued\nThis message is 2000 characters…')
+      .toBe(`m7 → api: queued\nThis message is 2000 characters…\n${SEND_NEXT}`)
     expect(formatSent({})).toBe('')
+  })
+
+  it('says where a reply comes after a message is sent, and nothing more for the roster', () => {
+    const text = formatSent({ id: 'm1', recipients: [{ name: 'mate', state: 'delivered', via: 'hook' }] })
+    expect(text.split('\n').at(-1)).toBe('Next: harness send  (alone: who is here, and any reply to you)')
+    expect(formatSent({ roster: 'Teammates: api' })).not.toMatch(/Next:/)
   })
 
   it('asks the pane\'s daemon, and prints its answer or its error', async () => {
@@ -111,7 +120,7 @@ describe('what harness send prints', () => {
     const io = { rpc, out: (l: string) => out.push(l), err: (l: string) => err.push(l), pane: '%4', owner: () => ({ port: 19000, dataDir: '/d' }) }
     expect(await sendCommand(['api', 'hello'], io)).toBe(0)
     expect(asked[0]).toEqual({ action: 'send', pane: '%4', to: ['api'], text: 'hello', port: 19000 })
-    expect(out.at(-1)).toBe('m1234567 → api: queued')
+    expect(out.at(-1)).toBe(`m1234567 → api: queued\n${SEND_NEXT}`)
     expect(await sendCommand(['api', 'hello', '--json'], io)).toBe(0)
     expect(JSON.parse(out.at(-1)!)).toMatchObject({ id: 'm1234567' })
     expect(await sendCommand(['api', 'fail'], io)).toBe(1)

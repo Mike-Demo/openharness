@@ -1,4 +1,4 @@
-import { productObservation, productUsageIntent, productUsageLaunch, productUsageRequest } from './lib/productUsageSignals.js'
+import { productObservation, productUsageIntent, productUsageLaunch, productUsageRequest, productUsageSource } from './lib/productUsageSignals.js'
 import { isLocalOnly, withoutUpdate } from './lib/cardUpdate.js'
 import type { PurgeAgentService } from './lib/purgeAgentService.js'
 import { MESSAGES_REQUESTS, SHARE_REQUESTS, type Asker, type LocalWindows, type WindowSurface, type BackendNotice, type GatewayEvents, type GatewayPort, type ModelsPort, type RemoteClient, type RemoteRole, type RemoteTransport, type TabFrame } from './core/api.js'
@@ -837,7 +837,7 @@ export class BackendSocket {
     }
     const launchMeasured = productUsageLaunch(type, (frame.payload as { creationId?: unknown } | undefined)?.creationId,
       signal => this.toGateway('usage', gateway => gateway.usageLaunch?.(signal)))
-    const usageSource = local && connId && this.toolClients.has(connId) ? 'tool' : local || role === 'web' ? 'app' : 'unknown'
+    const usageSource = productUsageSource(local, !!connId && this.toolClients.has(connId), role, frame.payload)
     const measured = productUsageRequest(type, (metric) => this.toGateway('usage', (gateway) => gateway.usageCounter?.(metric)), Date.now, usageSource,
       (frame.payload as { userAction?: unknown } | undefined)?.userAction === true)
     productUsageIntent(type, (frame.payload as { usageIntent?: unknown } | undefined)?.usageIntent,

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { settingsCommand, SETTINGS_SIGNED_OUT, SETTINGS_USAGE } from './settings.js'
 
 /** This computer's daemon as `harness settings` meets it: its answers to `/api/agent-settings`, and what was asked. */
-function daemon(answer: (method: string, body: unknown) => { status: number; body: unknown } | Error) {
+function daemon(answer: (method: string, body: unknown) => { status: number; body: unknown } | Error, env: NodeJS.ProcessEnv = {}) {
   const asked: Array<{ url: string; method: string; headers: Record<string, string>; body: unknown }> = []
   const fetch = (async (url: string, init: RequestInit) => {
     const body = init.body ? JSON.parse(String(init.body)) : undefined
@@ -12,7 +12,7 @@ function daemon(answer: (method: string, body: unknown) => { status: number; bod
     return new Response(typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body), { status: reply.status })
   }) as unknown as typeof globalThis.fetch
   const out: string[] = [], err: string[] = []
-  const run = (...argv: string[]) => settingsCommand(argv, { port: 4321, fetch, out: (l) => out.push(l), err: (l) => err.push(l) })
+  const run = (...argv: string[]) => settingsCommand(argv, { port: 4321, fetch, env, out: (l) => out.push(l), err: (l) => err.push(l) })
   return { run, asked, out, err }
 }
 
@@ -63,6 +63,19 @@ describe('harness settings', () => {
     expect(await down.run()).toBe(1)
     expect(down.err).toHaveLength(1)
     expect(down.out).toEqual([])
+  })
+
+  it('lets only the person turn one on: an agent is refused, and may still turn one off or read them', async () => {
+    for (const agent of [{ CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 's' }, { CODEX_THREAD_ID: 't' }, { AI_AGENT: 'cursor' }]) {
+      const d = daemon((method, body) => ({ status: 200, body: { ...OFF, ...(body as object), signedIn: true } }), agent)
+      expect(await d.run('agents-start-agents', 'on')).toBe(5)
+      expect(d.err).toEqual(['Only the person turns this on: it is their consent to what agents may do. Ask them to run '
+        + '`harness settings agents-start-agents on` in their own terminal, or to turn it on in Harness Settings ▸ Experimental.'])
+      // Nothing was asked of the daemon.
+      expect(d.asked).toEqual([])
+      expect(await d.run('agent-messages', 'off')).toBe(0)
+      expect(await d.run()).toBe(0)
+    }
   })
 
   it('refuses what it does not know with the usage, and prints it for --help', async () => {

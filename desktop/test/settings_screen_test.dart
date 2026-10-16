@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:ui' show SemanticsAction, Tristate;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -119,13 +120,17 @@ void main() {
       // What moved out: robots to the Devices tab, devices and profiles to Machines, and what
       // agents may do to Experimental (the account's, owner 2026-10-12).
       expect(
-        find.descendant(of: find.byType(SettingsNav), matching: find.text('Agents')),
+        find.descendant(
+          of: find.byType(SettingsNav),
+          matching: find.text('Agents'),
+        ),
         findsNothing,
       );
       for (final gone in [
         'Customize',
         'Your devices',
         'Profiles',
+        if (!kIsWeb) 'Privacy',
         'Autonomous robots',
       ]) {
         expect(find.text(gone), findsNothing, reason: gone);
@@ -352,9 +357,10 @@ void main() {
         ),
       );
       semantics.dispose();
-      // Search → matching nav row → switch.
+      // Search → matching nav row → usage sharing (Desktop) → creature.
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      if (!kIsWeb) await tester.sendKeyEvent(LogicalKeyboardKey.tab);
       await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.space);
       await tester.pumpAndSettle();

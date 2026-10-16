@@ -40,6 +40,13 @@ it('does not reflect a database error or report contents', async () => {
   expect(response.statusCode).toBe(503)
   expect(response.body).not.toContain('PRIVATE_CANARY')
 })
+it('returns retryable backpressure without admitting another database write', async () => {
+  methods.ingestProductUsage.mockRejectedValue({ code: 'USAGE_BUSY', message: 'PRIVATE_CANARY' })
+  const response = await submit(good)
+  expect(response.statusCode).toBe(429)
+  expect(response.json().error.code).toBe('USAGE_BUSY')
+  expect(response.body).not.toContain('PRIVATE_CANARY')
+})
 it.each([['P2034', 'USAGE_WRITE_CONFLICT'], ['P2002', 'USAGE_WRITE_CONFLICT'],
   ['P2028', 'USAGE_TRANSACTION_FAILED'], ['PRIVATE_CANARY', 'USAGE_UNAVAILABLE']])(
   'returns only the fixed delivery category for storage error %s', async (code, expected) => {
@@ -86,6 +93,26 @@ it('the complete vocabulary fits bounded chunks, including the longest metric ke
   }
 })
 
+it('takes a phone build context: its release and iOS or Android, nothing finer', async () => {
+  for (const platform of ['ios', 'android']) {
+    const response = await submit({ ...good, context: { surface: 'phone', release: '1.0.3', platform, channel: 'production' } })
+    expect(response.statusCode).toBe(200)
+  }
+  const model = await submit({ ...good, context: { surface: 'phone', release: '1.0.3', platform: 'iPhone15,2', channel: 'production' } })
+  expect(model.statusCode).toBe(400)
+})
+
+it('takes how the phone opened Find or Computers, and the phone\'s own requests, and nothing else', async () => {
+  const context = { surface: 'phone', release: '1.0.4', platform: 'ios', channel: 'production' }
+  const counters = { ui_phone_screen_find_swipe: 2, ui_phone_screen_find_button: 1, ui_phone_screen_computers_swipe: 1,
+    ui_phone_screen_computers_button: 1, request_phone_create_started: 1, request_phone_resume_error_other: 1,
+    request_phone_resume_reason_busy: 1 }
+  expect((await submit({ ...good, context, counters })).statusCode).toBe(200)
+  for (const name of ['ui_phone_screen_settings_swipe', 'ui_phone_screen_find_pinch', 'ui_desktop_screen_find_swipe']) {
+    expect((await submit({ ...good, context, counters: { [name]: 1 } })).statusCode).toBe(400)
+  }
+})
+
 it('rejects extra context, custom versions and device fingerprints without echoing them', async () => {
   const context = { surface: 'desktop', release: '1.2.73', platform: 'macos', channel: 'production' }
   for (const c of [{ ...context, path: 'PRIVATE_CANARY' }, { ...context, release: 'PRIVATE_CANARY' },
@@ -98,7 +125,7 @@ it('rejects extra context, custom versions and device fingerprints without echoi
 
 const setup = { schemaVersion: 1, consent: true, id: good.id, day: good.day, counters: { setup_desktop_sign_in_started: 1 } }
 const sendSetup = (payload: unknown = setup, headers = {}) => app.inject({ method: 'POST', url: '/api/product-usage/setup', payload: payload as Record<string, unknown>, headers })
-it('accepts only explicitly enabled setup counts without credentials or account lookup', async () => {
+it('keeps legacy explicit setup opt-in without credentials or account lookup', async () => {
   expect((await sendSetup()).statusCode).toBe(200)
   expect(methods.ingestSetupUsage).toHaveBeenCalledWith(setup)
   expect(methods.productUsageChoice).not.toHaveBeenCalled()
@@ -112,6 +139,31 @@ it('accepts only explicitly enabled setup counts without credentials or account 
     expect(response.body).not.toContain('PRIVATE_CANARY')
   }
   for (const headers of [{ authorization: 'fixture' }, { cookie: 'PRIVATE_CANARY' }]) expect((await sendSetup(setup, headers)).statusCode).toBe(400)
+})
+it('accepts default-on sharing only for Desktop or phone setup, one at a time, without asserting consent', async () => {
+  const { consent: _, ...fields } = setup
+  const report = { ...fields, sharing: 'default' }
+  const phone = { ...report, counters: { setup_phone_sign_in_started: 1, setup_phone_sign_in_google_ok: 1 } }
+  for (const accepted of [report, phone]) {
+    expect((await sendSetup(accepted)).statusCode).toBe(200)
+    expect(methods.ingestSetupUsage).toHaveBeenCalledWith(accepted)
+  }
+  expect(methods.productUsageChoice).not.toHaveBeenCalled()
+  expect(methods.ingestProductUsage).not.toHaveBeenCalled()
+  methods.ingestSetupUsage.mockClear()
+  for (const payload of [fields, { ...report, consent: true }, { ...report, sharing: 'off' },
+    { ...report, counters: { setup_web_sign_in_started: 1 } },
+    { ...report, counters: { ...setup.counters, setup_phone_sign_in_started: 1 } },
+    { ...report, counters: { ui_desktop_sign_in_started: 1 } },
+    { ...report, account: 'PRIVATE_CANARY' }]) {
+    const response = await sendSetup(payload)
+    expect(response.statusCode).toBe(400)
+    expect(response.body).not.toContain('PRIVATE_CANARY')
+  }
+  for (const headers of [{ authorization: 'fixture' }, { cookie: 'PRIVATE_CANARY' }]) {
+    expect((await sendSetup(report, headers)).statusCode).toBe(400)
+  }
+  expect(methods.ingestSetupUsage).not.toHaveBeenCalled()
 })
 it('bounds untrusted setup writes independently of signed-in reports', async () => {
   let finish!: (value: unknown) => void

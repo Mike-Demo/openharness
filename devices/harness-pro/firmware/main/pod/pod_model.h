@@ -65,6 +65,9 @@ typedef struct {
     // event arrives, or Idle again after POD_SENT_WAIT_MS with none.
     bool sent;
     uint32_t sent_ms;
+    // This turn plays the pet's second working scene (POD_SCENE_WORK_ALT, Claude's builder) instead of its first (the
+    // chef): drawn once as the turn starts (pod_model_random), kept until it ends, so every screen shows the same one.
+    bool work_alt;
 } pod_agent_t;
 
 typedef struct { int16_t x1, y1, x2, y2; } pod_rect_t;   // 0..1000
@@ -115,6 +118,9 @@ void pod_copy_str(char *dst, size_t cap, const char *src);
 void pod_utf8_trim(char *s);
 
 void pod_model_reset(pod_model_t *);
+// The random source a new turn draws its working scene from (pod_agent_t.work_alt): esp_random on the device (pro_app);
+// NULL, the default, always the first scene (the host tests and goldens: the chef).
+void pod_model_random(uint32_t (*rnd)(void));
 // Interface addition: call at agents.begin; agents_end then drops every agent not re-sent since.
 void pod_model_agents_begin(pod_model_t *);
 void pod_model_agent(pod_model_t *, const char *id, const char *name, const char *engine, const char *machine);

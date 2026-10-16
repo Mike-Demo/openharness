@@ -248,12 +248,20 @@ class _LinuxMenuBarState extends State<LinuxMenuBar> {
         label: 'Appearance…',
         action: 'customize',
       ),
-      _swarmRow(
-        key: 'menu-bar-settings',
-        icon: AppIcons.settings,
-        label: 'Settings…',
-        action: 'settings',
-      ),
+      if (_state.enabled)
+        _swarmRow(
+          key: 'menu-bar-settings',
+          icon: AppIcons.settings,
+          label: 'Settings…',
+          action: 'settings',
+        )
+      else
+        _appRow(
+          key: 'menu-bar-settings',
+          icon: AppIcons.settings,
+          label: 'Settings…',
+          action: 'settings',
+        ),
       const AppMenuDivider(),
       _appRow(
         key: 'menu-bar-shortcuts',

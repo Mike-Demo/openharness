@@ -53,6 +53,10 @@ function stubGateway() {
     },
     tabKey: new TabSessions(() => alice, () => 'alice-mac'),
     tabRelay: { open: vi.fn(async () => {}), send: vi.fn(async (_tab: string, to: string) => to === 'alice-mac'), close: vi.fn() },
+    sharedTrust: vi.fn(async (desired: { pins?: unknown[]; keys?: unknown[] }) => {
+      if (desired.pins?.length === 0 && desired.keys?.length === 0) throw new Error('stores unwritable')
+      return { pins: desired.pins?.length ?? -1, keys: desired.keys?.length ?? -1 }
+    }),
   } satisfies GatewayOps
   const sessions: Array<{ send: ReturnType<typeof vi.fn>; sendBinary: ReturnType<typeof vi.fn>; detach: ReturnType<typeof vi.fn> }> = []
   const windowRelay = {
@@ -370,6 +374,21 @@ describe('the gateway\'s process, spoken to by the core', () => {
     expect(await vault.open({ other: 1 })).toBeNull()
     await expect(vault.seal('')).rejects.toThrow('nothing to seal')
     expect(await w.options().requests[GATEWAY_CALLS.connectorVault]({ op: 'nothing' }, { local: true, owner: true })).toEqual({ error: 'UNKNOWN_OP' })
+  })
+
+  it('makes the trust stores hold what sharing asks, only the parts it sent, valid peers only', async () => {
+    const w = wire()
+    const trust = w.link.ops.sharedTrust
+    await expect(trust({ pins: [] })).rejects.toThrow(/not started|not running/)
+    w.connect()
+    const peer = { machineId: 'a'.repeat(32), pub: Buffer.alloc(32, 1).toString('base64'), label: 'Studio' }
+    expect(await trust({ pins: [peer, { machineId: '../x', pub: 'bad', label: '' }] })).toEqual({ pins: 1, keys: -1 })
+    expect(w.gateways[0].ops.sharedTrust).toHaveBeenLastCalledWith({ pins: [peer] })
+    expect(await trust({ keys: [peer] })).toEqual({ pins: -1, keys: 1 })
+    expect(w.gateways[0].ops.sharedTrust).toHaveBeenLastCalledWith({ keys: [peer] })
+    await expect(trust({ pins: [], keys: [] })).rejects.toThrow('stores unwritable')
+    w.gateways[0].ops.sharedTrust.mockRejectedValueOnce('odd')
+    await expect(trust({})).rejects.toThrow('odd')
   })
 
   it('opens a window\'s session on another machine, carries it both ways, and fails it as the pool did', async () => {

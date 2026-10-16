@@ -22,6 +22,7 @@ import { answerTabRelay } from '../lib/tabRelayWire.js'
 import { accountLink } from '../services/accountLink.js'
 import { runServiceProcess, type CoreConnection, type ServiceProcess } from '../services/process.js'
 import { startGateway, type StartedGateway } from './start.js'
+import { sharedPeers } from './sharedTrust.js'
 
 type Payload = Record<string, unknown>
 
@@ -264,6 +265,14 @@ export function runGatewayService(options: GatewayServiceOptions): ServiceProces
     // Shared tabs' relay (gateway/tabRelay.ts): `open`, `send` or `close`, and `UNKNOWN_METHOD` for any other name
     // (lib/tabRelayWire.ts).
     [GATEWAY_CALLS.tabRelay]: (p: Payload): Promise<Payload> => answerTabRelay(ops().tabRelay, p),
+    // Machines shared across accounts (gateway/sharedTrust.ts): the stores made to hold what was asked.
+    [GATEWAY_CALLS.sharedTrust]: async (p: Payload): Promise<Payload> => {
+      try {
+        return { ...await ops().sharedTrust({ ...(p.pins !== undefined ? { pins: sharedPeers(p.pins) } : {}), ...(p.keys !== undefined ? { keys: sharedPeers(p.keys) } : {}) }) }
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) }
+      }
+    },
     // The account's connected services (lib/e2ee/connectorVault.ts): an envelope sealed, or one opened.
     [GATEWAY_CALLS.connectorVault]: async (p: Payload): Promise<Payload> => {
       const vault = ops().connectorVault

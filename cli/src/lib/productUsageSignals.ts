@@ -62,6 +62,16 @@ export function productUsageLaunch(type: string, id: unknown, emit: (signal: Pro
   }
 }
 
+/** Who sent a request, as the counters name it: a tool on this computer, an app here, or a remote app
+ * client — the browser, or the phone. Over the relay both are the same E2EE `web` role, so the phone says
+ * which it is in the payload (`usageSurface: 'phone'`, as it says `userAction`); a remote frame with no
+ * such word is the browser's or an older phone's, counted as `app` as before. */
+export function productUsageSource(local: boolean, tool: boolean, role: string | null, payload: unknown): HealthSource {
+  if (local) return tool ? 'tool' : 'app'
+  if (role !== 'web') return 'unknown'
+  return (payload as { usageSurface?: unknown } | undefined)?.usageSurface === 'phone' ? 'phone' : 'app'
+}
+
 /** Reduce an RPC at its existing boundary. Only fixed counter names leave this helper.
  * No request, reply, error message, path, agent name or identifier is handed to the collector.
  * A pending durable launch is an acknowledgement, never a successful launch. Status polling is
@@ -75,7 +85,10 @@ export function productUsageRequest(type: string, emit: (metric: ProductUsageMet
   if (!action) return unmeasured
   const started = now()
   let answered = false
-  const origin = source === 'app' && ['history', 'history_page', 'store_list', 'model_list'].includes(action) ? 'automatic' : source
+  // A fixed poll is `automatic` whichever app makes it, the phone's included: its own source is for what a
+  // person on it asked for.
+  const origin = (source === 'app' || source === 'phone') && ['history', 'history_page', 'store_list', 'model_list'].includes(action)
+    ? 'automatic' : source
   const count = (measure: string) => { if (action && action !== 'message') { try { emit(`${action}_${measure}` as ProductUsageMetric) } catch { /* Optional measurement. */ } } }
   const detail = (measure: string) => { if (!source) return; try { emit(`request_${origin}_${action}_${measure}` as ProductUsageMetric) } catch { /* Optional measurement. */ } }
   count('requests'); detail('started')
@@ -108,7 +121,8 @@ export function productUsageRequest(type: string, emit: (metric: ProductUsageMet
 export function productUsageIntent(type: string, intent: unknown, agent: unknown, source: HealthSource, emit: (signal: ProductUsageLaunchSignal) => void): void {
   if (type !== 'message' || typeof agent !== 'string' || !agent || agent.length > 256) return
   try {
-    if (source === 'app' && intent === 'interactive') emit({ id: agent, phase: 'work_requested', origin: 'interactive' })
+    // A person's composer is interactive work on the phone as in any app.
+    if ((source === 'app' || source === 'phone') && intent === 'interactive') emit({ id: agent, phase: 'work_requested', origin: 'interactive' })
     else if (source === 'tool') emit({ id: agent, phase: 'work_requested', origin: 'tool' })
   } catch { /* Optional observation cannot block a message. */ }
 }

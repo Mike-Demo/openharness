@@ -28,6 +28,30 @@ export const PRODUCT_USAGE_SETUP_FLOWS = ['setup', 'setup_harness', 'setup_tmux'
 /** Phone onboarding after sign-in: waiting for a computer, opening its session, the first message
  * sent there and the notification prompt that follows. Counts and duration buckets only. */
 export const PRODUCT_USAGE_ONBOARDING_FLOWS = ['computer_wait', 'session_open', 'first_message', 'notify_permission'] as const
+/** Onboarding steps that can take hours (setting the computer up, the first message): the flow
+ * buckets stop at over_1m, so these also split that bucket. */
+export const PRODUCT_USAGE_LONG_FLOWS = ['computer_wait', 'first_message'] as const
+export const PRODUCT_USAGE_LONG_MEASURES = ['1m_to_5m', '5m_to_15m', '15m_to_1h', 'over_1h'] as const
+/** What happened on the way through a phone onboarding step, at most once per step per sign-in.
+ * `resumed`: the step started in an app run that did not sign in (reopened mid-step), so it is not a
+ * new person; the rest are the step's own ways out or walls. The sign_in marks are counted with a
+ * sign-in that went through: `retried`, an attempt before it in this app run failed or was
+ * cancelled; `switched`, it used another button than the first one tried. */
+export const PRODUCT_USAGE_ONBOARDING_MARKS = ['ui_phone_sign_in_retried', 'ui_phone_sign_in_switched',
+  'ui_phone_computer_wait_resumed', 'ui_phone_computer_wait_not_you',
+  'ui_phone_computer_wait_link_shared', 'ui_phone_session_open_resumed', 'ui_phone_session_open_blocked_password',
+  'ui_phone_session_open_blocked_offline', 'ui_phone_first_message_resumed'] as const
+export const PRODUCT_USAGE_ONBOARDING_METRICS = [...PRODUCT_USAGE_ONBOARDING_MARKS,
+  ...PRODUCT_USAGE_LONG_FLOWS.flatMap(flow => PRODUCT_USAGE_LONG_MEASURES.map(measure => `ui_phone_${flow}_${measure}` as const)),
+] as const
+/** The phone's two side pages, counted each time one opens and by how: a sideways swipe on the
+ * terminal (Find from the left, Computers from the right), or a button (Computers' row in Settings,
+ * its link on a long wait at home). Find's key and screen-reader actions are not counted. Which page
+ * and which way, nothing else. */
+export const PRODUCT_USAGE_PHONE_SCREENS = ['find', 'computers'] as const
+export const PRODUCT_USAGE_SCREEN_OPENINGS = ['swipe', 'button'] as const
+export const PRODUCT_USAGE_PHONE_SCREEN_METRICS = PRODUCT_USAGE_PHONE_SCREENS.flatMap(screen =>
+  PRODUCT_USAGE_SCREEN_OPENINGS.map(opening => `ui_phone_screen_${screen}_${opening}` as const))
 export const PRODUCT_USAGE_FLOWS = [...PRODUCT_USAGE_SETUP_FLOWS,
   'workspace_connect', 'computer_link', 'remote_connect', 'viewer_open', 'update_check', 'update_stage',
   ...HEALTH_FLOWS, ...PRODUCT_USAGE_ONBOARDING_FLOWS] as const
@@ -69,6 +93,8 @@ export const PRODUCT_USAGE_METRICS = [
   ...PRODUCT_USAGE_USER_OPENED_ACTIONS.flatMap(action => (['requests', ...PRODUCT_USAGE_FEATURE_MEASURES] as const)
     .map(measure => `${action}_user_${measure}` as const)),
   ...PRODUCT_USAGE_UI_METRICS,
+  ...PRODUCT_USAGE_ONBOARDING_METRICS,
+  ...PRODUCT_USAGE_PHONE_SCREEN_METRICS,
 ] as const
 export type ProductUsageMetric = typeof PRODUCT_USAGE_METRICS[number]
 export interface ProductUsageReport {

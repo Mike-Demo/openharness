@@ -199,6 +199,11 @@ class WsConn {
   /// True once this connection has permanently given up (a deliberate [close], or a non-retryable
   /// local failure like NO_PEER_LINK) — [WsPool] must not hand a closed connection back out.
   bool get isClosed => _closing;
+
+  /// Whether [forceReconnect] would dial again: a relay connection nobody has closed. Read it
+  /// before taking this machine's terminals down for a redial — when it is false, the redial is a
+  /// no-op, and the terminals would sit on "Connection lost" waiting for a socket that never comes.
+  bool get canForceReconnect => !_closing && relayCodecs != null;
   String get endpointKey => 'cloud:$wsBaseUrl:$autonomousEnv';
 
   WsConn({
@@ -883,6 +888,34 @@ class WsConn {
   @visibleForTesting
   static bool worthLogging(String type) => !_unlogged.contains(type);
 
+  /// The requests this phone sends that a machine's daemon counts by who sent them — of `actions` and
+  /// `message` in cli/src/lib/productUsageSignals.ts, the ones it sends (never a type it does not:
+  /// every machine request named in `lib/` must be sealed, `encrypted_down_types_test.dart`). Over the
+  /// relay the phone is a remote app client like the browser, so these carry `usageSurface: 'phone'`
+  /// (as a model list a person opened carries `userAction`) and are counted as the phone's. Nothing
+  /// else gets the word: not the E2EE handshake, not the relay's own frames. A daemon from before it
+  /// reads past it.
+  @visibleForTesting
+  static const usageMeasuredRequests = {
+    'agent_create',
+    'agent_resume',
+    'agent_restart',
+    'agent_retarget',
+    'agent_recent',
+    'agent_fork',
+    'agent_delete',
+    'session_search',
+    'session_tail',
+    'dsh_list',
+    'dsh_install',
+    'dsh_update',
+    'dsh_remove',
+    'models_list',
+    'grid_models_list',
+    'browser_open',
+    'message',
+  };
+
   Future<Map<String, dynamic>> request(
     String type, {
     Map<String, dynamic> payload = const {},
@@ -1056,6 +1089,11 @@ class WsConn {
     final type = frame['type'] as String;
     var payload = (frame['payload'] as Map<String, dynamic>?) ?? {};
     if (onOutgoing != null) payload = await onOutgoing!(type, payload);
+    // Every JSON frame goes out through here — a request, a terminal's `message`, one held in the
+    // queue across a redial — so this is the one place the word is added.
+    if (usageMeasuredRequests.contains(type)) {
+      payload = {...payload, 'usageSurface': 'phone'};
+    }
     final channel = _channel;
     if (channel == null) throw StateError('WS is not connected');
     final out = <String, dynamic>{'type': type, 'payload': payload};

@@ -68,4 +68,5 @@ export const GATEWAY_CALLS = {
   tabKey: 'gateway_tab_key',
   tabRelay: 'gateway_tab_relay',
   connectorVault: 'gateway_connector_vault',
+  sharedTrust: 'gateway_shared_trust',
 } as const

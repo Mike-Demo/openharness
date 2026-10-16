@@ -36,6 +36,9 @@ static bool same(const char *a, const char *b) { return a && b && !strcmp(a, b);
 
 void pod_model_reset(pod_model_t *m) { memset(m, 0, sizeof *m); }
 
+static uint32_t (*s_random)(void);
+void pod_model_random(uint32_t (*rnd)(void)) { s_random = rnd; }
+
 // The model's own idea of "now": the newest now_ms any feed or the renderer has shown it. It only moves forward
 // (by signed difference, so it survives the uint32 wrap), and lets every reader apply the same stale rule.
 void pod_model_clock(pod_model_t *m, uint32_t now_ms) {
@@ -448,6 +451,7 @@ static void set_state(pod_agent_t *a, pod_state_t s, uint32_t now_ms) {
     if (s == POD_WORKING && a->state != POD_WORKING && a->state != POD_ASKING) {   // a new turn without a turn.started
         a->failed = false;
         a->step_total = -1;
+        a->work_alt = s_random && (s_random() & 1u);   // chef or builder, for the whole turn
     }
     if (s != POD_WORKING) { a->activity[0] = 0; a->verb[0] = 0; a->step_count = 0; a->turn_started = false; }
     // A task starting or ending is news; idle <-> done <-> offline from a sweep (a machine back, a boot's first look) is not.

@@ -53,6 +53,10 @@ class EmailCodeApi {
   static const _sendPath = '/api/v1/customers/send-login-verification';
   static const _signInPath = '/api/v1/customers/sign-in';
 
+  /// Names this app to the account API on every `sign-in` call — the code grant and the refresh
+  /// alike. The API accepts it and answers exactly as without it.
+  static const _app = 'harness-mobile';
+
   static const _unreachable =
       'Could not reach the sign-in service. Check your connection and try again.';
 
@@ -70,6 +74,7 @@ class EmailCodeApi {
       'email': email,
       'otp': code,
       'grant_type': 'otp',
+      'app': _app,
     });
     return _tokens(data) ??
         (throw const DirectAuthException('Sign-in returned no access token.'));
@@ -85,7 +90,11 @@ class EmailCodeApi {
     try {
       res = await _dio.post(
         _signInPath,
-        data: {'refresh_token': refreshToken, 'grant_type': 'refresh_token'},
+        data: {
+          'refresh_token': refreshToken,
+          'grant_type': 'refresh_token',
+          'app': _app,
+        },
       );
     } on DioException {
       throw const DirectAuthException(_unreachable);

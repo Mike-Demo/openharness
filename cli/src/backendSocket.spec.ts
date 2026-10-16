@@ -3781,6 +3781,35 @@ describe('agent_recent replies', () => {
   })
 })
 
+describe('request sources', () => {
+  // The counter a request starts with, for a remote `web` client: the phone only by its own word.
+  async function startedFor(payload: Record<string, unknown>) {
+    const socket = relaySocket('token')
+    socket.connect()
+    const ws = wsMock.instances.at(-1)!
+    ws.open()
+    const counted: string[] = []
+    vi.spyOn(gatewayOf(socket), 'usageCounter').mockImplementation((metric) => { counted.push(metric) })
+    vi.spyOn(gatewayOf(socket).e2ee, 'unwrapDown').mockReturnValue({
+      type: 'session_search', payload: { requestId: 'search-1', query: 'llama', ...payload },
+    })
+    vi.spyOn(gatewayOf(socket).e2ee, 'hasSession').mockReturnValue(true)
+    vi.spyOn(gatewayOf(socket).e2ee, 'sessionRole').mockReturnValue('web')
+    ws.message({ t: 'down', connId: 'conn-1', frame: { type: 'session_search', payload: { __e2e: { v: 1, k: 's', n: 1, ct: 'ciphertext' } } } })
+    await vi.waitFor(() => expect(counted).toContain('search_requests'))
+    await socket.stop()
+    vi.restoreAllMocks()
+    return counted
+  }
+
+  it('counts a phone\'s request as the phone\'s, and the browser\'s as an app\'s as before', async () => {
+    const phone = await startedFor({ usageSurface: 'phone' })
+    expect(phone).toContain('request_phone_search_started')
+    expect(phone).not.toContain('request_app_search_started')
+    expect(await startedFor({})).toContain('request_app_search_started')
+  })
+})
+
 describe('machines_changed relay', () => {
   // Earlier suites in this file leave their sockets in the mock's list; index 0 must be ours.
   beforeEach(() => { wsMock.instances.length = 0 })

@@ -22,10 +22,14 @@ import { readAgentSettings } from '../lib/agentSettings.js'
 import { MAX_FIRST_PROMPT_CHARS } from '../lib/engineLaunch.js'
 import { NewUsageError, resolveNewMachine, type NewMachine, type NewOrigin } from '../lib/newCommand.js'
 import { engineName } from '../messages/model.js'
+import { machineListCachePath } from '../device/machineList.js'
+import { readAuthSession } from '../lib/authSession.js'
+import { buildContext, formatContext, type Context, type SpawnCount, type SpawnReason } from './context.js'
+import { formatNext, type NextStep } from './next.js'
 import { AgentClientError, openDaemon, whereFor, type Daemon, type Where } from './daemon.js'
 import { Ledger, ledgerPath, type Pending, type Started } from './ledger.js'
 import { messagesRpc, type Rpc } from '../messages/rpc.js'
-import { asSaid, callerOf, clip, isAgent, lastTurn, matching, outsideCaller, rowsOf, stateOf, STOPPED_WITHIN_MS, type Caller, type Frame, type HistoryEvent, type Row, type State } from './model.js'
+import { asSaid, callerOf, clip, forAgent, isAgent, lastTurn, matching, outsideCaller, rowsOf, stateOf, STOPPED_WITHIN_MS, type Caller, type Frame, type HistoryEvent, type Row, type State } from './model.js'
 
 export interface ClientDeps {
   pane?: string | undefined
@@ -67,10 +71,26 @@ ${ON_MACHINE}`
 export const CLOSE_USAGE = `Usage: harness close [--machine <name>] <name> [--now] [--json]
 
 Saves the harness's screen and stops it. Its conversation is kept: the person can resume it.
-It is refused while the harness is working, unless --now. An agent may close only harnesses it started.
+It is refused while the harness is working, unless --now. An agent may close only harnesses it started:
+closing another's exits 5.
 ${ON_MACHINE}`
+export const WHOAMI_USAGE = `Usage: harness whoami [--json]
 
-export const EXIT = { ok: 0, failed: 1, usage: 2, needsInput: 3, stopped: 4, timeout: 124 } as const
+Who you are to Harness: which agent, on which machine, inside Harness or not; whether you may start harnesses now
+and, if not, who can change that; how many of yours are open, and how many starts are left.`
+
+export const EXIT = { ok: 0, failed: 1, usage: 2, needsInput: 3, stopped: 4, refused: 5, timeout: 124 } as const
+
+/** Not a failure: the caller may not do this. It should not retry; it tells the person or does the work itself. */
+export const REFUSED_CODES: ReadonlySet<string> = new Set(['SPAWN_LIMIT', 'TURNED_OFF', 'NOT_YOURS'])
+
+/** What a refused caller may do instead: close one of its own when it is at its limit; otherwise the message says. */
+export function refusalNext(env: NodeJS.ProcessEnv, error: AgentClientError): NextStep[] {
+  return error.reason === 'OPEN_LIMIT' ? [{ run: step(env, 'close', '<name>'), when: 'one you are done with, to free a place' }] : []
+}
+
+/** A state as an agent reads it: one that waits on a question or a permission says who answers it. JSON keeps the word. */
+const stateSaid = (state: string): string => (state === 'needs-input' ? 'needs the person' : state)
 
 /** Set by `harness mcp` (mcp.ts) for the verbs it runs: their next steps are then named as its tools. */
 export const VIA_MCP_ENV = 'HARNESS_VIA_MCP'
@@ -83,7 +103,9 @@ const TOOL_OF = { ps: 'harness_list', show: 'harness_read', wait: 'harness_wait'
  */
 export function step(env: NodeJS.ProcessEnv, verb: keyof typeof TOOL_OF, name = '', option?: { flag: string; arg: string }): string {
   if (env[VIA_MCP_ENV] !== '1') return ['harness', verb, name, option?.flag].filter(Boolean).join(' ')
-  const args = [name && `${verb === 'wait' ? 'names' : 'name'}: "${name}"`, option?.arg].filter(Boolean)
+  // A name quoted for the shell (`"code review"`, addressOf) is quoted once, as the tool's argument.
+  const bare = name.replace(/^"(.*)"$/, '$1')
+  const args = [bare && `${verb === 'wait' ? 'names' : 'name'}: "${bare}"`, option?.arg].filter(Boolean)
   return `${TOOL_OF[verb]}${args.length ? ` (${args.join(', ')})` : ''}`
 }
 
@@ -459,16 +481,19 @@ async function run(usage: string, deps: ClientDeps, json: (argv: readonly string
     }
     const code = error instanceof AgentClientError ? error.code : 'FAILED'
     const message = error instanceof Error ? error.message : String(error)
-    if (json(argv)) s.out(JSON.stringify({ error: code, detail: message }))
-    else s.err(message)
-    return EXIT.failed
+    const refused = error instanceof AgentClientError && REFUSED_CODES.has(code)
+    if (json(argv)) {
+      s.out(JSON.stringify({ error: code, detail: message,
+        ...(refused ? { code, ...(error.reason ? { reason: error.reason } : {}), next: refusalNext(s.env, error) } : {}) }))
+    } else s.err(message)
+    return refused ? EXIT.refused : EXIT.failed
   }
 }
 const wantsJson = (argv: readonly string[]): boolean => argv.includes('--json')
 
 // ── ps ─────────────────────────────────────────────────────────────────────────────────────────────
 
-export function formatRows(rows: Row[], caller: Caller | null, now: number, on = 'this machine'): string {
+export function formatRows(rows: Row[], now: number, on = 'this machine'): string {
   if (!rows.length) return `No harnesses on ${on}.`
   const width = Math.min(32, Math.max(4, ...rows.map((r) => r.name.length)))
   const head = `${'NAME'.padEnd(width)}  ${'AGENT'.padEnd(11)}  ${'STATE'.padEnd(11)}  ${'STARTED BY'.padEnd(12)}  ${'ACTIVE'.padEnd(6)}  FOLDER`
@@ -478,8 +503,7 @@ export function formatRows(rows: Row[], caller: Caller | null, now: number, on =
     const about = r.about ?? (r.asks?.length ? `asked: ${r.asks[0]}` : '')
     return about ? `${line}\n${' '.repeat(2)}${clip(about.replace(/\s+/g, ' '), 200)}` : line
   })
-  const you = !caller ? null : caller.outside ? `You are ${caller.name}, outside Harness.` : `You are "${caller.name}" (${caller.agentId.slice(0, 8)}).`
-  return [you, head, ...lines].filter((l) => l !== null).join('\n')
+  return [head, ...lines].join('\n')
 }
 
 export function psCommand(argv: readonly string[], deps: ClientDeps = {}): Promise<number> {
@@ -514,25 +538,98 @@ export function psCommand(argv: readonly string[], deps: ClientDeps = {}): Promi
         machine: away ? away.label : a.row.creation.machineId === o.where.machineId ? o.machine : a.row.creation.machineId.slice(0, 8), state: a.state,
         folder: null, branch: null, startedBy: 'you', yours: true, self: false, lastActive: new Date(a.row.at).toISOString(), about: askedLine(s.env, a, away),
       })))
-      const note = o.caller ? openNote(s.env, rows) : null
-      s.out(flags.has('--json') ? JSON.stringify({ you: o.caller ? o.caller.name : null, machine: on.machine, harnesses: rows }, null, 1)
-        : [formatRows(rows, o.caller, s.now(), away ? away.label : undefined), note].filter(Boolean).join('\n'))
+      // An agent is told where it is and what it may do before the list, and what to do next after it; a person's ps is
+      // as it was.
+      const agent = !!o.caller || o.orphan
+      const context = contextFor(s, o)
+      const next = o.caller ? psNext(s.env, rows, !!context.canStart?.ok) : []
+      // An agent reads its own first and at most AGENT_ROWS, unless it asked for all; programs and the person get every row.
+      const { shown, more } = agent && !all ? forAgent(rows) : { shown: rows, more: 0 }
+      // `--all` lists the stopped ones too: said, so the agent knows what it asks for.
+      const hiddenYours = more > 0 && shown.filter((r) => r.yours).length < rows.filter((r) => r.yours).length
+      const rest = more ? `and ${more} more${hiddenYours ? '' : ', none of them yours'}: ${step(s.env, 'ps', away ? machineOption(away.word) : '', { flag: '--all', arg: 'all: true' })} (lists every one, and those stopped this week)` : null
+      s.out(flags.has('--json') ? JSON.stringify({ you: o.caller ? o.caller.name : null, machine: on.machine, context, harnesses: rows, next }, null, 1)
+        : [agent ? formatContext(context) : null, formatRows(shown, s.now(), away ? away.label : undefined), rest, formatNext(next)].filter(Boolean).join('\n'))
       return EXIT.ok
     } finally { line?.close(); o.daemon.close() }
   })
 }
 
-/** What `show` ends with for an idle harness of the caller's. */
-export const closeHint = (env: NodeJS.ProcessEnv, frame: Frame, away: Away | null = null): string =>
-  `Close it once you have what you need: ${step(env, 'close', onAway(addressOf({ machineId: '', agentId: frame.id, name: frame.name ?? '', engine: '' }), away))}`
+/** What `show` says to do next, from its state and whose it is: never `close` for a harness the caller did not start.
+ *  Idle and the caller's: a harness left open after its answer is read sits there for nobody (owner, October 12). */
+function showNext(env: NodeJS.ProcessEnv, state: State, yours: boolean, at: string): NextStep[] {
+  if (state === 'needs-input') return [{ tell: 'tell the person; only they answer it (a question or a permission).' }]
+  if (state === 'working' || state === 'unknown' || state === 'starting' || state === 'installing') return [{ run: step(env, 'wait', at), when: 'until it stops working' }]
+  if (state === 'idle' && yours) return [{ run: step(env, 'close', at), when: 'once you have what you need' }]
+  return []
+}
 
-/** What `ps` ends with for an agent with harnesses of its own open: how many, and how many sit idle. */
-export function openNote(env: NodeJS.ProcessEnv, rows: readonly Row[]): string | null {
+/**
+ * What an agent's `ps` ends with: its idle harness to read and then close (one left open after its answer is read sits
+ * there for nobody), its busy ones to wait for, or, with none of its own and leave to start one, a start.
+ */
+export function psNext(env: NodeJS.ProcessEnv, rows: readonly Row[], canStart: boolean): NextStep[] {
+  const at = (r: Row) => addressOf({ machineId: '', agentId: r.id, name: r.name, engine: '' })
   const open = rows.filter((r) => r.yours && r.state !== 'stopped' && r.state !== 'failed')
-  if (!open.length) return null
-  const idle = open.filter((r) => r.state === 'idle').length
-  return `You have ${open.length} harness${open.length === 1 ? '' : 'es'} of your own open${idle ? `, ${idle} idle` : ''}. `
-    + `Close each once you have its answer: ${step(env, 'close', '<name>')}.`
+  const idle = open.filter((r) => r.state === 'idle'), busy = open.filter((r) => r.state !== 'idle')
+  const steps: NextStep[] = []
+  if (idle.length) steps.push({ run: step(env, 'show', at(idle[0])), when: `read its answer, then close it: ${step(env, 'close', at(idle[0]))}` })
+  if (busy.length) steps.push({ run: step(env, 'wait', busy.map(at).join(',')), when: 'until it stops working' })
+  if (!open.length && canStart) {
+    steps.push({ run: env[VIA_MCP_ENV] === '1' ? 'harness_start (name: "<name>", task: "<task>")' : 'harness new <agent> --name <name> <project> -- <task>',
+      when: 'to hand work to another agent; do quick work yourself' })
+  }
+  return steps
+}
+
+/**
+ * The account's machines for the context block, as this computer's daemon keeps them (`<data>/machines.json`,
+ * device/machineList.ts, read again every minute), or none. Never the backend: a request still open after the block
+ * printed held the process 10 to 35 s, and a person's `ps` waited on the network for nothing (review, 2026-10-15).
+ * Only a list kept for the account signed in now, as the daemon serves it (`MachineListCache.lastResponse`).
+ */
+function machinesForContext(where: Where): NewMachine[] {
+  const owner = readAuthSession()?.machineId
+  try {
+    const kept = JSON.parse(readFileSync(machineListCachePath(where.dataDir), 'utf8')) as { machines?: unknown; bodyOwner?: unknown }
+    if (!owner || kept.bodyOwner !== owner || !Array.isArray(kept.machines)) return []
+    return (kept.machines as Array<Record<string, unknown>>).filter((m) => typeof m.machineId === 'string').map((m) => ({
+      machineId: String(m.machineId), label: typeof m.name === 'string' && m.name.trim() ? m.name.trim() : '(unnamed)',
+      // The daemon's `ready` is what `harness machines` calls running.
+      status: m.state === 'ready' ? 'running' : typeof m.state === 'string' ? m.state : 'unknown',
+      current: m.local === true || m.machineId === where.machineId || m.machineId === owner,
+    }))
+  } catch { return [] }
+}
+
+/** Where the caller is and what it may do (context.ts), from what `opened` read: this machine's live harnesses only,
+ *  so it costs no other machine a question; `new` still counts the other machines' exactly. */
+function contextFor(s: Setup, o: Opened): Context {
+  const live = new Set(o.frames.filter((f) => f.status === 'active').map((f) => memberKey(o.where.machineId, f.id)))
+  const waiting = o.asked.filter((a) => a.state !== 'failed').map((a) => a.row)
+  const caller = o.caller
+  return buildContext({
+    caller, orphan: o.orphan, machine: o.machine,
+    signedIn: !!readAuthSession(), switchOn: readAgentSettings(o.where.dataDir).agentsStartAgents,
+    check: caller ? spawnCheck(caller, live, o.ledger, o.where.machineId, s.now(), waiting) : null,
+    count: caller ? spawnCount(caller, live, o.ledger, s.now(), waiting) : null,
+    limits: SPAWN_LIMITS, machines: machinesForContext(o.where), closeStep: step(s.env, 'close', '<name>'),
+  })
+}
+
+// ── whoami ─────────────────────────────────────────────────────────────────────────────────────────
+
+export function whoamiCommand(argv: readonly string[], deps: ClientDeps = {}): Promise<number> {
+  return run(WHOAMI_USAGE, deps, wantsJson, argv, async (s) => {
+    const { names, flags, machine } = words(argv, { '--json': 'flag' })
+    if (names.length || machine !== null) throw new UsageError('harness whoami takes no names and no --machine: it is about you, here.')
+    const o = await opened(s)
+    try {
+      const context = contextFor(s, o)
+      s.out(flags.has('--json') ? JSON.stringify({ context }, null, 1) : formatContext(context))
+      return EXIT.ok
+    } finally { o.daemon.close() }
+  })
 }
 
 // ── show ───────────────────────────────────────────────────────────────────────────────────────────
@@ -555,14 +652,18 @@ export function showCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
       const parent = o.ledger.parentOf({ machineId: t.machineId, agentId: t.frame.id })
       const startedBy = t.yours ? 'you' : parent ? parent.by.name : 'person'
       const answer = turn?.answer ?? ''
+      // A name the verbs take: an unnamed harness is called by its session title, a sentence, so by its id's start.
+      const at = onAway(addressOf({ machineId: '', agentId: t.frame.id, name: t.frame.name ?? '', engine: '' }), away)
+      const next = showNext(s.env, state, t.yours, at)
       const result = {
         name: t.frame.name, id: t.frame.id, agent: engineName(t.frame.engine ?? ''), machine: t.machine, state, startedBy,
         folder: t.frame.project?.cwd ?? null, branch: t.frame.project?.branch ?? null,
-        ask: turn?.ask ?? null, answer: clip(answer, chars), truncated: answer.length > chars, tools: turn?.tools ?? 0,
+        ask: turn?.ask ?? null, answer: clip(answer, chars), truncated: answer.length > chars, tools: turn?.tools ?? 0, next,
+        ...(state === 'needs-input' ? { needsPerson: true } : {}),
       }
       if (flags.has('--json')) s.out(JSON.stringify(result, null, 1))
       else {
-        s.out(`${result.name} · ${result.agent} · ${result.machine} · ${state} · started by ${startedBy}`)
+        s.out(`${result.name} on ${result.machine}: ${stateSaid(state)} · ${result.agent} · started by ${startedBy}`)
         s.out(`folder: ${tilde(result.folder)}${result.branch ? ` (${result.branch})` : ''}`)
         if (!turn) s.out('No turn yet.')
         else {
@@ -571,9 +672,8 @@ export function showCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
           s.out(result.answer || '(no text)')
           if (result.truncated) s.out(`… ${answer.length - chars} more characters: ${step(s.env, 'show', onAway(result.name ?? t.frame.id, away), { flag: `--chars ${answer.length}`, arg: `chars: ${answer.length}` })}`)
         }
-        if (state === 'needs-input') s.out(`It is waiting for the person (a question or a permission). Only the person answers it.`)
-        // Idle and the caller's: a harness left open after its answer is read sits there for nobody (owner, October 12).
-        if (state === 'idle' && t.yours) s.out(closeHint(s.env, t.frame, away))
+        const said = formatNext(next)
+        if (said) s.out(said)
       }
       return EXIT.ok
     } finally { if (t?.remote) t.daemon.close(); o.daemon.close() }
@@ -587,6 +687,18 @@ const CLOCK_SLACK_MS = 60_000
 
 /** `closed`: stopped or gone because the caller closed it (`harness close`, the ledger's `Closed` line). */
 type Settled = 'idle' | 'needs-input' | 'stopped' | 'gone' | 'closed' | 'timeout' | 'failed'
+
+/** What to do once a wait has ended on [state], with the commands that read it, wait again, and list the stopped ones. */
+function waitNext(state: string, run: { read: string; again: string; list: string }): NextStep[] {
+  switch (state) {
+    case 'idle': return [{ run: run.read, when: 'to read its answer' }]
+    case 'needs-input': return [{ tell: 'tell the person; only they answer it (a question or a permission).' }]
+    case 'timeout': case 'installing': case 'starting': return [{ run: run.again, when: 'to keep waiting' }]
+    case 'stopped': return [{ run: run.read, when: 'its answer is kept' }]
+    case 'gone': return [{ run: run.list, when: 'to see whether it was closed' }]
+    default: return []
+  }
+}
 
 export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Promise<number> {
   return run(WAIT_USAGE, deps, wantsJson, argv, async (s) => {
@@ -717,10 +829,18 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
           return { name: askedName(a), id: a.row.creation.creationId, state: given === 'timeout' && a.state !== 'failed' ? a.state : given, detail: a.detail }
         }),
       ]
-      if (flags.has('--json')) s.out(JSON.stringify({ harnesses: results }, null, 1))
+      // A name the verbs take: quoted when it is two words, the id's start when it is a sentence (a session's title).
+      const nextOf = (r: (typeof results)[number]): NextStep[] => {
+        const at = onAway(addressOf({ machineId: '', agentId: r.id, name: r.name, engine: '' }), away)
+        return waitNext(r.state, { read: step(s.env, 'show', at), again: step(s.env, 'wait', at),
+          list: step(s.env, 'ps', away ? machineOption(away.word) : '', { flag: '--all', arg: 'all: true' }) })
+      }
+      if (flags.has('--json')) {
+        s.out(JSON.stringify({ harnesses: results.map((r) => ({ ...r, ...(r.state === 'needs-input' ? { needsPerson: true } : {}), next: nextOf(r) })) }, null, 1))
+      }
       else for (const r of results) {
         if (r.state === 'closed') { s.out(`${r.name}: closed (you closed it)`); continue }
-        const read = step(s.env, 'show', onAway(r.name, away))
+        const read = step(s.env, 'show', onAway(addressOf({ machineId: '', agentId: r.id, name: r.name, engine: '' }), away))
         const next = r.state === 'idle' ? `read it: ${read}`
           : r.state === 'needs-input' ? 'it waits for the person (a question or a permission); only the person answers it'
           : r.state === 'timeout' ? `still working; wait again or read it: ${read}`
@@ -729,7 +849,9 @@ export function waitCommand(argv: readonly string[], deps: ClientDeps = {}): Pro
           // Harness closes one another agent started once it has sat idle half an hour (services/agentCleanup.ts): its
           // answer is still there to read.
           : r.state === 'stopped' ? `it was stopped; its answer is kept: ${read}` : 'it is gone'
-        s.out(`${r.name}: ${r.state} · ${next}`)
+        s.out(`${r.name}: ${stateSaid(r.state)} · ${next}`)
+        // Gone says nothing of why: whether it was closed is in the list of the stopped ones.
+        if (r.state === 'gone') s.out(formatNext(nextOf(r))!)
       }
       const states = results.map((r) => r.state)
       return states.some((x) => x === 'timeout' || x === 'installing' || x === 'starting') ? EXIT.timeout : states.includes('needs-input') ? EXIT.needsInput
@@ -773,7 +895,7 @@ export function closeCommand(argv: readonly string[], deps: ClientDeps = {}): Pr
         return EXIT.ok
       }
       const name = t.frame.name ?? t.frame.id.slice(0, 8)
-      if (o.orphan) throw new AgentClientError('NOT_YOURS', ORPHAN)
+      if (o.orphan) throw new AgentClientError('NOT_YOURS', ORPHAN, 'ORPHAN')
       if (o.caller && o.caller.agentId === t.frame.id && t.machineId === o.where.machineId) {
         throw new AgentClientError('NOT_YOURS', 'That is your own harness. The person closes it.')
       }
@@ -799,8 +921,14 @@ export function closeCommand(argv: readonly string[], deps: ClientDeps = {}): Pr
       }
       // Closed while still starting, before its machine could read its conversation: there is none to keep.
       const kept = reply.withoutConversation !== true
-      s.out(flags.has('--json') ? JSON.stringify({ name, id: t.frame.id, closed: true, ...(kept ? {} : { conversationKept: false }) })
-        : kept ? `Closed ${name}. Its conversation is kept.` : `Closed ${name}. It was still starting, so no conversation was kept.`)
+      const effect = kept ? 'Its conversation is kept; the person can resume it.' : 'It was still starting, so no conversation was kept.'
+      // How many of its own are left, counted as `whoami` counts them, without the one just closed.
+      const closedHere = t.machineId === o.where.machineId, closedId = t.frame.id
+      o.frames = o.frames.filter((f) => !(closedHere && f.id === closedId))
+      const open = o.caller ? contextFor(s, o).quota?.open ?? null : null
+      s.out(flags.has('--json')
+        ? JSON.stringify({ name, id: t.frame.id, closed: true, ...(kept ? {} : { conversationKept: false }), effect, next: [], ...(open === null ? {} : { open }) })
+        : [`${name} on ${t.machine}: closed. ${effect}`, open === null ? null : `Next: nothing; you have ${open} open of ${SPAWN_LIMITS.livePerHarness}.`].filter(Boolean).join('\n'))
       return EXIT.ok
     } finally { if (t?.remote) t.daemon.close(); o.daemon.close() }
   })
@@ -825,29 +953,46 @@ export const DUPLICATE_WITHIN_MS = 10 * 60_000
 const memberKey = (machineId: string, agentId: string): string => `${machineId}/${agentId}`
 
 /**
- * Why [caller] may not start another harness now, or null. [live] holds the live harnesses the limits count: this
- * machine's, and the caller's on the other machines it reached.
+ * What the limits count for [caller]: its live harnesses, and those asked for and not started yet ([waiting]), its
+ * starts in the window, and its depth.
  */
-export function spawnRefusal(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number, waiting: readonly Pending[] = []): string | null {
-  // Its depth by the record, or by the core's row when the record has no line for it: rotated away, a write that failed,
-  // or a start from another machine or from outside Harness, recorded only where the starter ran.
-  if (Math.max(ledger.depthOf(caller), caller.startedByAgent ? 1 : 0) >= SPAWN_LIMITS.depth) return DEPTH_REFUSAL
-  // Harnesses asked for and not started yet ([waiting]) count as running: each starts by itself once its engine is
-  // installed, and an agent asking for more meanwhile would otherwise pass every limit until they all started at once.
+export function spawnCount(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, now: number, waiting: readonly Pending[] = []): SpawnCount {
   const mine = ledger.childrenOf(caller)
   const liveMine = new Set(mine.filter((row) => live.has(memberKey(row.child.machineId, row.child.agentId))).map((row) => memberKey(row.child.machineId, row.child.agentId)))
-  const running = liveMine.size + waiting.length
-  if (running >= SPAWN_LIMITS.livePerHarness) {
-    return `You have ${running} harnesses running${waiting.length ? ' or starting' : ''}. Close one you are done with first (harness close <name>).`
+  const recent = [...mine, ...waiting].map((row) => row.at).filter((at) => now - at < SPAWN_LIMITS.windowMs)
+  // Its depth by the record, or by the core's row when the record has no line for it: rotated away, a write that failed,
+  // or a start from another machine or from outside Harness, recorded only where the starter ran.
+  return {
+    open: liveMine.size + waiting.length, starts: recent.length, depth: Math.max(ledger.depthOf(caller), caller.startedByAgent ? 1 : 0),
+    oldestStartAt: recent.length ? Math.min(...recent) : null,
+  }
+}
+
+/**
+ * Which limit refuses [caller] another harness now, and what it is told, or null. [live] holds the live harnesses the
+ * limits count: this machine's, and the caller's on the other machines it reached.
+ */
+export function spawnCheck(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number, waiting: readonly Pending[] = []): { reason: SpawnReason; message: string } | null {
+  const count = spawnCount(caller, live, ledger, now, waiting)
+  if (count.depth >= SPAWN_LIMITS.depth) return { reason: 'DEPTH', message: DEPTH_REFUSAL }
+  // Harnesses asked for and not started yet ([waiting]) count as running: each starts by itself once its engine is
+  // installed, and an agent asking for more meanwhile would otherwise pass every limit until they all started at once.
+  if (count.open >= SPAWN_LIMITS.livePerHarness) {
+    return { reason: 'OPEN_LIMIT', message: `You have ${count.open} harnesses running${waiting.length ? ' or starting' : ''}. Close one you are done with first (harness close <name>).` }
   }
   const machineWide = new Set(ledger.all().filter((row) => row.child.machineId === localMachineId && live.has(memberKey(localMachineId, row.child.agentId))).map((row) => row.child.agentId))
   if (machineWide.size + waiting.filter((row) => row.creation.machineId === localMachineId).length >= SPAWN_LIMITS.livePerMachine) {
-    return `Agents have ${machineWide.size} harnesses running on this machine, the most allowed. Close some first.`
+    return { reason: 'MACHINE_LIMIT', message: `Agents have ${machineWide.size} harnesses running on this machine, the most allowed. Close some first.` }
   }
-  if (mine.filter((row) => now - row.at < SPAWN_LIMITS.windowMs).length + waiting.filter((row) => now - row.at < SPAWN_LIMITS.windowMs).length >= SPAWN_LIMITS.perWindow) {
-    return `You started ${SPAWN_LIMITS.perWindow} harnesses in 10 minutes. Wait, or work with the ones you have.`
+  if (count.starts >= SPAWN_LIMITS.perWindow) {
+    return { reason: 'START_RATE', message: `You started ${SPAWN_LIMITS.perWindow} harnesses in 10 minutes. Wait, or work with the ones you have.` }
   }
   return null
+}
+
+/** Why [caller] may not start another harness now, or null: `spawnCheck`'s message. */
+export function spawnRefusal(caller: Caller, live: ReadonlySet<string>, ledger: Ledger, localMachineId: string, now: number, waiting: readonly Pending[] = []): string | null {
+  return spawnCheck(caller, live, ledger, localMachineId, now, waiting)?.message ?? null
 }
 
 /** How long a harness started on another machine counts toward the limits when that machine cannot be asked. */
@@ -888,8 +1033,8 @@ export function addressOf(caller: Caller): string {
 }
 
 /** A start refused before anything is asked of the machine. */
-const refusing = (code: string, message: string): NewOrigin => ({
-  check: async () => { throw new AgentClientError(code, message) }, prompt: (text) => text, created: async () => null, next: () => '',
+const refusing = (code: string, message: string, reason?: string): NewOrigin => ({
+  check: async () => { throw new AgentClientError(code, message, reason) }, prompt: (text) => text, created: async () => null, answer: () => ({ effect: '', next: [] }),
 })
 
 /**
@@ -909,19 +1054,19 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
     return s.where().harnessPane || agentOutside ? refusing('UNKNOWN_CALLER', 'Harness could not tell who is starting this. Try again in a moment.') : null
   }
   o.daemon.close()
-  if (o.orphan) return refusing('NOT_YOURS', ORPHAN)
+  if (o.orphan) return refusing('NOT_YOURS', ORPHAN, 'ORPHAN')
   const caller = o.caller
   if (!caller) return null
   // The person's say: the account's experiment, as the machine the agent runs on keeps it (Settings ▸ Experimental,
   // `harness settings`).
-  if (!readAgentSettings(o.where.dataDir).agentsStartAgents) return refusing('TURNED_OFF', AGENTS_START_AGENTS_OFF)
+  if (!readAgentSettings(o.where.dataDir).agentsStartAgents) return refusing('TURNED_OFF', AGENTS_START_AGENTS_OFF, 'SWITCH_OFF')
   return {
     // A harness in a pane here: the new one is opened beside it in the windows. An agent outside Harness has no pane.
     ...(caller.outside ? {} : { parentAgentId: caller.agentId }),
     check: async () => {
-      const refusal = spawnRefusal(caller, await liveFor(s, o, caller), o.ledger, o.where.machineId, s.now(),
+      const refusal = spawnCheck(caller, await liveFor(s, o, caller), o.ledger, o.where.machineId, s.now(),
         o.asked.filter((a) => a.state !== 'failed').map((a) => a.row))
-      if (refusal) throw new AgentClientError('SPAWN_LIMIT', refusal)
+      if (refusal) throw new AgentClientError('SPAWN_LIMIT', refusal.message, refusal.reason)
     },
     existing: async (name, asking) => {
       if (!name?.trim()) return null
@@ -1002,9 +1147,15 @@ export async function agentOrigin(deps: ClientDeps = {}, record: Rpc = messagesR
         return `${name || 'The harness'} runs on a machine whose Harness did not record who started it: there, its limits start from zero.`
       }
     },
-    next: (agent) => {
-      const at = addressOf({ machineId: '', agentId: String(agent.id ?? ''), name: String(agent.name ?? ''), engine: '' })
-      return `Read it: ${step(s.env, 'show', at)} · wait for it: ${step(s.env, 'wait', at)}`
+    answer: (agent, at) => {
+      const name = addressOf({ machineId: '', agentId: String(agent.id ?? ''), name: String(agent.name ?? ''), engine: '' })
+      // Under MCP the tools take no machine: harness_wait finds the caller's own by its record, on any machine.
+      const target = at.local || at.machine === null || s.env[VIA_MCP_ENV] === '1' ? name : `${machineOption(at.machine)} ${name}`
+      return {
+        // The windows open it beside the caller's pane only for a harness in a pane on this computer.
+        effect: caller.outside || !at.local ? 'The person sees it in Harness.' : 'The person sees it in Harness, beside you.',
+        next: [{ run: step(s.env, 'wait', target), when: `until it has answered; then read it: ${step(s.env, 'show', target)}` }],
+      }
     },
   }
 }

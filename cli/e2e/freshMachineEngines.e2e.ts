@@ -275,8 +275,8 @@ it('answers an MCP agent within Codex\'s tool timeout while Codex installs, star
     const started = await server.call('harness_start', task)
     expect(started.isError, started.text).toBe(false)
     expect(started.ms).toBeLessThan(50_000)
-    expect(started.text).toBe('Harness is installing Codex; the harness "cx" starts by itself once it is installed. '
-      + 'Check on it with harness_list or harness_wait (names: "cx"); do not start it again.')
+    expect(started.text).toBe('cx on this computer: installing Codex. It starts by itself once installed; do not start it again.\n'
+      + 'Next: harness_wait (names: "cx")  (until it has started and answered)')
     // It follows it by name, and asking again is answered with it.
     const listed = await server.call('harness_list', {})
     expect(listed.text).toMatch(/\ncx +Codex +installing +you /)

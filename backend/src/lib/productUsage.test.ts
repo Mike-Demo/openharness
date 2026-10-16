@@ -70,6 +70,21 @@ describe('preference', () => {
 })
 
 describe('aggregate ingestion', () => {
+  it('rechecks permission after waiting for another report without caching an enabled choice', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    db.$transaction.mockImplementationOnce(async fn => { await gate; return fn(db) })
+    const first = ingestProductUsage('first-account', report, now)
+    const queued = ingestProductUsage('opted-out-while-queued', { ...report, id: 'another-receipt' }, now)
+    await Promise.resolve()
+    expect(db.$transaction).toHaveBeenCalledOnce()
+    db.productUsagePreference.findUnique.mockResolvedValueOnce({ enabled: true, revision: 0 })
+      .mockResolvedValueOnce({ enabled: false, revision: 1 })
+    release()
+    expect(await first).toEqual({ accepted: true })
+    expect(await queued).toMatchObject({ accepted: false, reason: 'CHOICE_CHANGED' })
+    expect(db.productUsageReceipt.create).toHaveBeenCalledOnce()
+  })
   it('stores only totals and an unlinked receipt, in one transaction', async () => {
     expect(await ingestProductUsage('private-account', report, now)).toEqual({ accepted: true })
     expect(db.$transaction).toHaveBeenCalledOnce()
@@ -230,14 +245,14 @@ it('setup ingestion never reads an account and expires after yesterday', async (
   expect(await ingestSetupUsage({ ...setup, day: '2026-10-12' }, now)).toMatchObject({ accepted: true })
 })
 
-it('keeps anonymous transport and consent unchanged across native apps while Desktop health evolves independently', () => {
+it('keeps anonymous transport and the phone opt-in unchanged while Desktop evolves independently', () => {
   expect(readFileSync(new URL('../../../desktop/lib/measurement/setup_transport.dart', import.meta.url), 'utf8'))
     .toBe(readFileSync(new URL('../../../mobile/lib/measurement/setup_transport.dart', import.meta.url), 'utf8'))
-  // Each app draws the signed-out choice its own way (the phone's is one line with a tooltip); what it asks must not differ.
+  // Desktop keeps its Settings-only default-on preference; the phone defaults on too, with its opt-out
+  // kept on the phone and carried to the account at sign-in — and says so on its signed-out line.
   const choice = (app: string) => readFileSync(new URL(`../../../${app}/lib/measurement/setup_usage_choice.dart`, import.meta.url), 'utf8')
   for (const words of ['Share setup and sign-in counts',
-    'Optional for this app session. Help us find setup problems without sharing account details, prompts, or files.']) {
-    expect(choice('desktop')).toContain(`'${words}'`)
+    'On unless you turn it off; off also turns it off for your account when you sign in. Helps us find setup problems without sharing account details, prompts, or files.']) {
     expect(choice('mobile')).toContain(`'${words}'`)
   }
   const mobile = readFileSync(new URL('../../../mobile/lib/measurement/product_measurement.dart', import.meta.url), 'utf8')

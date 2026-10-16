@@ -1666,6 +1666,9 @@ class _PaneContent extends StatelessWidget {
       final sharedWaiting = machine == null && wantedAgentId != null
           ? notifier.sharedWaitingName(pane.machineId, wantedAgentId)
           : null;
+      final sharingEnded = machine == null
+          ? notifier.sharingEnded(pane.machineId)
+          : null;
       if (sharedWaiting != null) {
         // Another account's harness, restored before this window knows its
         // machine: who it waits for, never "isn't available" (seam 3).
@@ -1673,6 +1676,21 @@ class _PaneContent extends StatelessWidget {
           label: 'Waiting',
           icon: AppIcons.hourglass,
           detail: '$sharedWaiting · waiting',
+        );
+      } else if (sharingEnded != null) {
+        // Its owner stopped sharing the machine: say who, and the one thing left to do here.
+        final tab = notifier.swarms
+            .where((swarm) => swarm.panes.contains(pane))
+            .firstOrNull;
+        notice = terminalNotice(
+          label: 'No longer shared',
+          icon: AppIcons.unlink,
+          detail:
+              '${sharingEnded.owner} stopped sharing ${sharingEnded.name} with you. The harness stays on their machine; what is shown here is read only.',
+          actionLabel: 'Close',
+          onAction: () =>
+              notifier.closePane(pane.id, swarmId: tab?.id).ignore(),
+          banner: true,
         );
       } else if (machine == null) {
         notice = terminalNotice(

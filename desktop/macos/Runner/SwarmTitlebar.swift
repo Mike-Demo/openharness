@@ -26,6 +26,7 @@ enum HarnessControlSymbols {
 final class SwarmTitlebar: NSObject, NSMenuItemValidation, NSMenuDelegate {
   private weak var window: NSWindow?
   private let channel: FlutterMethodChannel
+  private let appMenuChannel: FlutterMethodChannel
   private let accessory = NSTitlebarAccessoryViewController()
   private let strip = SwarmTabStrip(frame: NSRect(x: 0, y: 0, width: 900, height: 40))
   private var statusMenu: HarnessStatusMenu?
@@ -60,6 +61,7 @@ final class SwarmTitlebar: NSObject, NSMenuItemValidation, NSMenuDelegate {
   init(window: NSWindow, messenger: FlutterBinaryMessenger, installStatusItem: Bool = true) {
     self.window = window
     channel = FlutterMethodChannel(name: "harness/swarm_tabs", binaryMessenger: messenger)
+    appMenuChannel = FlutterMethodChannel(name: "harness/app_menu", binaryMessenger: messenger)
     super.init()
     statusMenu = HarnessStatusMenu(installStatusItem: installStatusItem, showWindow: { [weak window] in
       NSApp.activate(ignoringOtherApps: true)
@@ -542,6 +544,8 @@ final class SwarmTitlebar: NSObject, NSMenuItemValidation, NSMenuDelegate {
       return machine.agents.contains(where: { $0.id == target["agentId"] && $0.canOpen })
     }
     let action = menuItem.representedObject as? String ?? ""
+    // Privacy settings must remain reachable before a workspace or account exists.
+    if action == "settings" && menuItem.action == #selector(menuAction(_:)) { return true }
     if ["restartAgent", "shareAgent", "removeFromTab", "toggleViewer", "toggleComposer"].contains(action) {
       return actionsEnabled && paneActions[action] == true
     }
@@ -580,6 +584,10 @@ final class SwarmTitlebar: NSObject, NSMenuItemValidation, NSMenuDelegate {
 
   @objc private func menuAction(_ sender: NSMenuItem) {
     guard validateMenuItem(sender), let action = sender.representedObject as? String else { return }
+    if action == "settings" && !actionsEnabled {
+      appMenuChannel.invokeMethod("settings", arguments: nil)
+      return
+    }
     sendTabAction(action, arguments: nil)
   }
 

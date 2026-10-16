@@ -98,7 +98,8 @@ const LOG_FILE = DAEMON_LOG_FILE
 
 
 function usage(exitCode = 0): never {
-  console.log(`harness v${VERSION} — connect this computer to your machine
+  // An agent is pointed to its own help first (agentClient/help.ts); one that asks gets it before the rest.
+  console.log(helpFor(process.env, `harness v${VERSION} — connect this computer to your machine
 
 Agents — after "harness start", run the vendor CLI directly inside tmux. Harness discovers supported
 top-level processes automatically; it does not launch them or change their permission flags:
@@ -145,6 +146,7 @@ Machine:
                                every harness, live or stopped (--limit=N, --json)
   harness send <name> "text"   from an agent's pane: message a teammate in this tab (Agent Messages,
                                Settings ▸ Experimental); \`harness send\` alone lists who is here
+  harness whoami               who you are to Harness: which agent, which machine, whether you may start harnesses
   harness ps [--all]           the harnesses here: state, who started each, what each is about
   harness show <name>          a harness's state and last turn: what it was asked and what it answered
   harness wait <name>[,<name>] wait until they stop working (--any, --timeout 30m); exit 3 = needs the person
@@ -152,6 +154,7 @@ Machine:
                                new, ps, show, wait and close take --machine <name> for another of your
                                machines: \`harness show --machine office x\`
   harness mcp                  the agent verbs as an MCP server on stdin/stdout, for agents that use MCP
+  harness help agents          the agent commands, states, exit codes and rules on one screen
   harness settings [<name> on|off]  what agents may do (agents-start-agents, pull-request-line, agent-messages): your account's experiments in Settings ▸ Experimental, each off by default
   harness machines delete <id> remove ANOTHER machine (refuses this one; use \`harness logout\`)
   harness remote               from a Harness terminal tile: open a terminal on another of your machines and move this tile to it
@@ -223,7 +226,7 @@ making a new one. Deleting it (or ~/.harness) makes this look like a brand-new c
 no durable home, a container or CI job, pin ADAPTER_COMPUTER_ID instead.
 
 Env: BACKEND_WS_URL (${env.BACKEND_WS_URL}), WEB_URL (${env.WEB_URL}), ADAPTER_DATA_DIR,
-     ADAPTER_COMPUTER_ID, CLAUDE_PROJECTS_DIR, PORT`)
+     ADAPTER_COMPUTER_ID, CLAUDE_PROJECTS_DIR, PORT`))
   process.exit(exitCode)
 }
 
@@ -2497,7 +2500,8 @@ async function logsExportCommand(json: boolean): Promise<void> {
 
 import { orchestratorCommand } from './orchestrator/command.js'
 import { paneOwner, sendCommand } from './messages/command.js'
-import { agentOrigin, closeCommand, psCommand, showCommand, waitCommand } from './agentClient/commands.js'
+import { agentOrigin, closeCommand, psCommand, showCommand, waitCommand, whoamiCommand } from './agentClient/commands.js'
+import { agentsHelp, helpFor } from './agentClient/help.js'
 import { openUrlCommand } from './agentClient/openUrl.js'
 import { harnessRunner, mcpCommand } from './agentClient/mcp.js'
 import { settingsCommand } from './agentClient/settings.js'
@@ -2524,6 +2528,7 @@ function withoutFirst(argv: string[], token: string): string[] {
   return at < 0 ? argv : [...argv.slice(0, at), ...argv.slice(at + 1)]
 }
 
+if (cmd === 'help' && args[0] === 'agents') { console.log(agentsHelp()); process.exit(0) }
 if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') usage()
 if (cmd === 'version' || cmd === '--version' || cmd === '-v') { console.log(VERSION); process.exit(0) }
 
@@ -2538,6 +2543,9 @@ switch (cmd) {
   // A pane's BROWSER script asking whether a phone takes the page (agentClient/openUrl.ts). Not for people.
   case 'open-url':
     openUrlCommand(rest).then(code => { process.exitCode = code }).catch(() => { process.exitCode = 1 })
+    break
+  case 'whoami':
+    whoamiCommand(rest, { machines: ownedMachines }).then(code => { process.exitCode = code }).catch(onError)
     break
   case 'ps':
     psCommand(rest, { machines: ownedMachines }).then(code => { process.exitCode = code }).catch(onError)

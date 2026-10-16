@@ -1,5 +1,5 @@
 // Paints Pod's scenes onto the glass: damage between two scenes, then the damaged rectangles rasterised in strips
-// into two DMA buffers and pushed through pro_panel_submit(). Upright coordinates; the panel turn is pro_turn.h's.
+// into two DMA buffers and pushed through pro_panel_submit(). Glass coordinates.
 #pragma once
 
 #include <stdbool.h>

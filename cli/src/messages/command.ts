@@ -132,7 +132,9 @@ export function formatSent(reply: Record<string, unknown>): string {
     const via = r.via === 'hook' ? ' (at its tool call)' : r.via === 'prompt' ? ' (as a prompt)' : r.via === 'read' ? ' (it read it)' : ''
     return `${id} → ${String(r.name)}: ${String(r.state)}${via}${r.reason ? ` · ${String(r.reason)}` : ''}`
   })
-  return [...lines, ...(typeof reply.advice === 'string' ? [reply.advice] : [])].join('\n')
+  // A reply comes as a message to the sender; `harness send` alone shows any that came (agentClient/next.ts's format).
+  const next = lines.length ? ['Next: harness send  (alone: who is here, and any reply to you)'] : []
+  return [...lines, ...(typeof reply.advice === 'string' ? [reply.advice] : []), ...next].join('\n')
 }
 
 export async function sendCommand(argv: readonly string[], deps: {

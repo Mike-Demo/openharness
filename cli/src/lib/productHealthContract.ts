@@ -1,5 +1,7 @@
 /** Fixed health vocabulary. Keep the CLI/backend copies identical. No arbitrary labels. */
-export const HEALTH_SOURCES = ['app', 'tool', 'automatic', 'unknown'] as const
+// `phone`: the phone app's requests, which it marks itself (`usageSurface`) — over the relay it is a
+// remote app client like the browser, and only it can say which one it is.
+export const HEALTH_SOURCES = ['app', 'tool', 'automatic', 'unknown', 'phone'] as const
 export const HEALTH_ACTIONS = ['create', 'resume', 'restart', 'model_change', 'history', 'fork', 'close', 'delete',
   'search', 'history_page', 'store_list', 'store_install', 'store_update', 'store_remove',
   'model_list', 'model_download', 'model_start', 'model_stop', 'browser_open', 'message'] as const
@@ -34,9 +36,12 @@ export const RESUME_REASONS = ['runtime_unavailable', 'saved_state_missing', 'pr
 export type ResumeReason = typeof RESUME_REASONS[number]
 export const PRODUCT_HEALTH_METRICS = [
   ...CLI_REPORT_FAILURES.map(reason => `health_cli_report_failure_${reason}` as const),
+  ...CLI_REPORT_FAILURES.map(reason => `health_desktop_report_failure_${reason}` as const),
   ...HEALTH_SOURCES.flatMap(source => RESUME_REASONS.map(reason => `request_${source}_resume_reason_${reason}` as const)),
   // hn's (`tui`) come through its daemon's queue, under that daemon's context, never one of their own.
   ...(['cli', 'desktop', 'tui'] as const).flatMap(surface => HEALTH_MEASURES.map(m => `health_${surface}_${m}` as const)),
+  // The phone reports only its coverage (the threshold its breakdowns need) and late deliveries.
+  'health_phone_collector_days', 'health_phone_report_late',
   ...HEALTH_SOURCES.flatMap(source => HEALTH_ACTIONS.flatMap(action => [
     ...HEALTH_RESULTS.map(result => `request_${source}_${action}_${result}` as const),
     ...HEALTH_FAILURES.map(failure => `request_${source}_${action}_error_${failure}` as const),
@@ -45,9 +50,9 @@ export const PRODUCT_HEALTH_METRICS = [
 export type ProductHealthMetric = typeof PRODUCT_HEALTH_METRICS[number]
 export type HealthSource = typeof HEALTH_SOURCES[number]
 export interface ProductUsageContext {
-  surface: 'cli' | 'desktop'
+  surface: 'cli' | 'desktop' | 'phone'
   release: string
-  platform: 'macos' | 'linux' | 'windows' | 'other'
+  platform: 'macos' | 'linux' | 'windows' | 'ios' | 'android' | 'other'
   channel: 'production' | 'development'
 }
 /** Public numeric release only. Custom build names, hashes and suffixes cannot become labels. */
@@ -57,7 +62,7 @@ export function releaseBucket(value: unknown): string {
 export function cleanUsageContext(value: unknown): ProductUsageContext | undefined {
   if (!value || typeof value !== 'object') return
   const c = value as ProductUsageContext
-  if (!['cli', 'desktop'].includes(c.surface) || !['macos', 'linux', 'windows', 'other'].includes(c.platform)
+  if (!['cli', 'desktop', 'phone'].includes(c.surface) || !['macos', 'linux', 'windows', 'ios', 'android', 'other'].includes(c.platform)
       || !['production', 'development'].includes(c.channel)) return
   return { surface: c.surface, release: releaseBucket(c.release), platform: c.platform, channel: c.channel }
 }

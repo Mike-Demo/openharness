@@ -4,10 +4,10 @@
 Ported from the round firmware's test_pod_touch_ui.py (every test keeps its name). The production glue, the app layer
 and the finger task's contact rules are compiled here as they are, with Pod's views, the Pro canvas and the generated
 fonts. Below pro_app the host plays the device: a fake clock, the cable and the recorder as recorders (every send
-checks that pro_app's mutex is NOT held), and the GT911 whose contacts pro_display.c turns upright. The effects Pod
+checks that pro_app's mutex is NOT held), and the GT911, whose contacts reach pro_app as they are. The effects Pod
 returns are performed by pro_app and read back from those recorders.
-Also built with -DPOD_PANEL_TURN=180: a contact at (700, 700) on the controller's axes hits what (19, 19) hits upright,
-and the turn is applied exactly once (see test_turn_is_applied_once). No USB, hardware writes or microphone.
+The panel is not turned: a contact on the controller's axes is that point on the glass (see test_no_turn).
+No USB, hardware writes or microphone.
 """
 from pathlib import Path
 import os
@@ -36,7 +36,6 @@ code = r'''
 #include "app/pro_app.h"
 #include "app/pro_touch.h"
 #include "app/pro_voice.h"
-#include "app/pod_turn.h"
 #include "cable/pro_cable.h"
 #include "pro_app_api.h"
 #include "pro_canvas.h"
@@ -68,8 +67,8 @@ static const pod_hit_t *hit(pod_action_t a, int arg) {
     return NULL;
 }
 // ---- the host plays the parts the device has below pro_app ------------------------------------------------------
-// The clock is `now`. The GT911 reports a contact on its own axes; pro_display.c's pro_touch_poll() turns it upright
-// (once), which is what pod_turn_coord() states, and pro_touch_feed() hands it to pro_app_touch(). The cable and the
+// The clock is `now`. The GT911 reports a contact on its own axes; pro_display.c's pro_touch_poll() hands it on as
+// is, and pro_touch_feed() hands it to pro_app_touch(). The cable and the
 // recorder are recorders, and every send checks that pro_app's mutex is NOT held (nothing leaves under the lock).
 static int LOCK_DEPTH;
 struct host_mutex { int unused; };
@@ -164,7 +163,7 @@ static pod_out_t contact(bool down, int x, int y, bool *changed) {
     (void)pod_ui_take_changed(&U);
     (void)pro_app_test_take_dirty();
     memset(&R, 0, sizeof R);
-    const int ux = pod_turn_coord(x), uy = pod_turn_coord(y);
+    const int ux = x, uy = y;
     // The controller reports no position on a lift, so the task hands Pod the last held point. SRC's replays name a
     // lift point of their own (to test the tap's hit and slop), so those go to pro_app_touch directly.
     if (!down && TCH.prev && (ux != TCH.last_x || uy != TCH.last_y)) {
@@ -180,16 +179,12 @@ static pod_out_t contact(bool down, int x, int y, bool *changed) {
     CHECK(LOCK_DEPTH == 0);
     return effect_of();
 }
-// The same, for a point on the upright glass: the panel reports it turned when POD_PANEL_TURN=180.
-static pod_out_t ucontact(bool down, int x, int y, bool *changed) {
-    return contact(down, pod_turn_coord(x), pod_turn_coord(y), changed);
-}
 // A tap on the rendered hit: DOWN and UP at its centre, as the GT911 reports it, then the redraw a change causes.
 static pod_out_t tap_at(int x, int y) {
     bool c1 = false, c2 = false;
-    pod_out_t d = ucontact(true, x, y, &c1);
+    pod_out_t d = contact(true, x, y, &c1);
     CHECK(d.fx == POD_FX_NONE);
-    pod_out_t u = ucontact(false, x, y, &c2);
+    pod_out_t u = contact(false, x, y, &c2);
     render();
     return u;
 }
@@ -202,25 +197,20 @@ static pod_out_t tap_by_nav(pod_action_t a, int arg) {
     render();
     return effect_of();
 }
-// No screen draws a Talk button: a still press on an agent or its recap starts the recording and the lift keeps it (hands free).
-static pod_out_t hold_talk(void) {
+// No screen draws a Talk button: a tap on an agent or its recap starts the recording (hands free; the next tap sends).
+static pod_out_t tap_talk(void) {
     bool c = false;
-    CHECK(ucontact(true, 360, 400, &c).fx == POD_FX_NONE);
-    now += 450;
-    pod_out_t begin = ucontact(true, 360, 400, &c);   // the still sample that finds the deadline
-    unsigned char at_begin[sizeof R];
-    memcpy(at_begin, &R, sizeof R);
-    pod_out_t lift = ucontact(false, 360, 400, &c);
+    CHECK(contact(true, 360, 400, &c).fx == POD_FX_NONE);
+    pod_out_t o = contact(false, 360, 400, &c);
     render();
-    if (begin.fx != POD_FX_NONE) { memcpy(&R, at_begin, sizeof R); return begin; }   // what the begin made the app do, not the lift's nothing
-    return lift;
+    return o;
 }
 static pod_out_t nav_act(pod_action_t a);
 static pod_out_t tap(pod_action_t a, int arg) {
     const pod_hit_t *h = hit(a, arg);
     if (!h && (a == POD_A_BACK || a == POD_A_TABS || a == POD_A_PANES || a == POD_A_PREV || a == POD_A_NEXT)) return nav_act(a);   // the side button's path
     if (!h && (a == POD_A_OPEN_TAB || a == POD_A_OPEN_AGENT)) return tap_by_nav(a, arg);
-    if (!h && a == POD_A_TALK && (top() == POD_V_AGENT || top() == POD_V_RECAP)) return hold_talk();
+    if (!h && a == POD_A_TALK && (top() == POD_V_AGENT || top() == POD_V_RECAP)) return tap_talk();
     CHECK(h);
     CHECK(h->w >= 1 && h->h >= 1);
     return tap_at(h->x + h->w / 2, h->y + h->h / 2);
@@ -234,9 +224,9 @@ static pod_out_t nav_act(pod_action_t a) {
 // A drag from (x0,y0) to (x1,y1) in n MOVEs of 16 ms each, then the lift. Returns the effect of the lift.
 static pod_out_t drag(int x0, int y0, int x1, int y1, int n) {
     bool c = false;
-    ucontact(true, x0, y0, &c);
-    for (int i = 1; i <= n; i++) ucontact(true, x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n, &c);
-    pod_out_t o = ucontact(false, x1, y1, &c);
+    contact(true, x0, y0, &c);
+    for (int i = 1; i <= n; i++) contact(true, x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n, &c);
+    pod_out_t o = contact(false, x1, y1, &c);
     render();
     return o;
 }
@@ -478,7 +468,7 @@ static void tap_resolves_by_id(void) {
     CHECK(h && !strcmp(h->id, "s0"));
     int cx = h->x + h->w / 2, cy = h->y + h->h / 2;
     bool c;
-    ucontact(true, cx, cy, &c);
+    contact(true, cx, cy, &c);
     static cable_swarm_t sw[2];                             // the tabs swap places before the finger lifts
     memset(sw, 0, sizeof sw);
     snprintf(sw[0].id, sizeof sw[0].id, "s1"); snprintf(sw[0].name, sizeof sw[0].name, "Frontend"); sw[0].panes = sw[0].agents = 1;
@@ -488,7 +478,7 @@ static void tap_resolves_by_id(void) {
     mem.count[0] = 1; snprintf(mem.id[0][0], ID_MAX, "a3");
     mem.count[1] = 2; snprintf(mem.id[1][0], ID_MAX, "a1"); snprintf(mem.id[1][1], ID_MAX, "a2");
     pod_ui_swarms(&U, sw, 2, &mem, "s0", NULL, 0);
-    pod_out_t o = ucontact(false, cx, cy, &c);
+    pod_out_t o = contact(false, cx, cy, &c);
     expect(o, POD_FX_AGENT_OPEN, "a1");                     // Backend's first agent: the card is found by its id, not its old place
     // and a tab that is gone opens nothing
     setup();
@@ -496,7 +486,7 @@ static void tap_resolves_by_id(void) {
     h = hit(POD_A_ENTER_TAB, 0);
     CHECK(h && !strcmp(h->id, "s0"));
     cx = h->x + h->w / 2; cy = h->y + h->h / 2;
-    ucontact(true, cx, cy, &c);
+    contact(true, cx, cy, &c);
     static cable_swarm_t only[1];
     memset(only, 0, sizeof only);
     snprintf(only[0].id, sizeof only[0].id, "s1"); snprintf(only[0].name, sizeof only[0].name, "Frontend"); only[0].panes = only[0].agents = 1;
@@ -504,7 +494,7 @@ static void tap_resolves_by_id(void) {
     memset(&mem1, 0, sizeof mem1);
     mem1.count[0] = 1; snprintf(mem1.id[0][0], ID_MAX, "a3");
     pod_ui_swarms(&U, only, 1, &mem1, "s1", NULL, 0);       // Backend closes
-    o = ucontact(false, cx, cy, &c);
+    o = contact(false, cx, cy, &c);
     CHECK(o.fx == POD_FX_NONE && top() == POD_V_TABS && U.nav.depth == 1);
     render();
     h = hit(POD_A_ENTER_TAB, 0);
@@ -564,67 +554,28 @@ static void release_off_the_hit_cancels(void) {
     bool c;
     const pod_hit_t *h = hit(POD_A_ENTER_TAB, 0);
     CHECK(h);
-    ucontact(true, h->x + 5, h->y + h->h - 5, &c);
-    pod_out_t o = ucontact(false, h->x + 5, h->y + h->h + 3, &c);   // inside the slop, outside the hit
+    contact(true, h->x + 5, h->y + h->h - 5, &c);
+    pod_out_t o = contact(false, h->x + 5, h->y + h->h + 3, &c);   // inside the slop, outside the hit
     CHECK(o.fx == POD_FX_NONE && top() == POD_V_TABS);
     pro_app_touch_cancel();
-    ucontact(true, h->x + 5, h->y + 5, &c);
+    contact(true, h->x + 5, h->y + 5, &c);
     pro_app_touch_cancel();
-    o = ucontact(false, h->x + 5, h->y + 5, &c);
+    o = contact(false, h->x + 5, h->y + 5, &c);
     CHECK(o.fx == POD_FX_NONE && top() == POD_V_TABS);        // a cancelled contact never taps
 }
 
 static void panel_turn(void) {
     setup();
-    const pod_hit_t *h = hit(POD_A_ENTER_TAB, 0);   // Home's tab card, (90, 56) 540 x 560 upright
+    const pod_hit_t *h = hit(POD_A_ENTER_TAB, 0);   // Home's tab card, (90, 56) 540 x 560 
     CHECK(h && h->x == 90 && h->y == 56 && h->y + h->h == 616);
-    // The raw contact (100, 70) is inside the card upright; turned 180 it is (619, 649) on the glass: below the card.
+    // No turn: the raw contact (619, 649) is below the card on the glass and misses it; the raw (100, 70) is inside.
     bool c;
+    contact(true, 619, 649, &c);
+    contact(false, 619, 649, &c);
+    CHECK(top() == POD_V_TABS);
     contact(true, 100, 70, &c);
     contact(false, 100, 70, &c);
-#ifdef POD_PANEL_TURN
-    CHECK(top() == POD_V_TABS);                         // the turned contact missed the card
-    CHECK(pod_turn_coord(700) == 19 && pod_turn_coord(19) == 700);
-    contact(true, 619, 649, &c);                        // while the raw (619, 649) is (100, 70) on the glass: inside the card
-    contact(false, 619, 649, &c);
     CHECK(top() != POD_V_TABS);
-#else
-    CHECK(top() != POD_V_TABS);                         // upright, it enters the tab
-    CHECK(pod_turn_coord(700) == 700);
-#endif
-}
-
-// The runtime screen turn: the default is the build's; a request switches nothing until the render task's next frame, then
-// the picture and the contact axes turn, the whole glass is repainted and a contact in progress is cancelled.
-static void screen_turn_switch(void) {
-    const bool def = pro_turn_build_default();
-#ifdef POD_PANEL_TURN
-    CHECK(def);
-#else
-    CHECK(!def);
-#endif
-    CHECK(pro_turn_get() == def);                       // before NVS is read: the build flag
-    setup();
-    tap(POD_A_OPEN_TAB, 0);
-    CHECK(top() == POD_V_TAB);
-    (void)pro_app_test_take_force_frame();
-    CHECK(!pro_app_apply_turn());                       // nothing asked, nothing done
-    pro_app_request_turn(def);                          // asking for what already is: no switch, no repaint
-    CHECK(!pro_app_apply_turn() && !pro_app_test_take_force_frame());
-    CHECK(pro_app_touch(true, 19, 19));                 // a finger on BACK ...
-    pro_app_request_turn(!def);
-    CHECK(pro_turn_get() == def && !pro_app_test_take_force_frame());   // ... the switch waits for the frame
-    CHECK(pro_app_apply_turn());
-    CHECK(pro_turn_get() == !def && pod_turn_coord(700) == (def ? 700 : 19));   // picture and contact axes turned
-    CHECK(pro_app_test_take_force_frame());             // every pixel moved: the whole glass is repainted
-    CHECK(!pro_app_touch(true, 700, 700));              // the held finger, now on the new axes: swallowed, so
-    CHECK(top() == POD_V_TAB);                          // the contact in progress was cancelled, not a tap at the mirror
-    CHECK(pro_app_touch(true, 360, 360) && pro_app_touch(false, 360, 360));   // the next contact is a contact again
-    CHECK(!pro_app_apply_turn());                       // the request was consumed
-    pro_app_request_turn(def);                          // and back, with no finger down: nothing is swallowed
-    CHECK(pro_app_apply_turn() && pro_turn_get() == def && pro_app_test_take_force_frame());
-    CHECK(pro_app_touch(true, 360, 360));
-    pro_app_touch_cancel();
 }
 
 // Pets start: after the link comes up and the first roster and swarms arrive, the app enters tab 0 on its first agent. It is
@@ -1117,7 +1068,7 @@ static void follow_waits_out_the_users_touch(void) {
     // A finger that is still down is driving too.
     bool c;
     now += 10000;
-    ucontact(true, 360, 360, &c);
+    contact(true, 360, 360, &c);
     now += 5000;
     pod_ui_focus(&U, "a1", now);
     CHECK(!strcmp(frame_at(2)->agent, "a2"));
@@ -1190,7 +1141,7 @@ static void follow_waits_for_a_finger_on_tabs(void) {
     setup();
     now += 5000;
     bool c;
-    ucontact(true, 360, 360, &c);
+    contact(true, 360, 360, &c);
     pod_ui_focus(&U, "a2", now + 100);
     CHECK(U.nav.depth == 1);
     pro_app_touch_cancel();
@@ -1258,11 +1209,11 @@ static void open_recap_for_scroll(bool reversed) {
 static void recap_drag_scrolls_the_host(void) {
     open_recap_for_scroll(false);
     bool c;
-    ucontact(true, 360, 300, &c);
+    contact(true, 360, 300, &c);
     CHECK(SC.n == 0);                      // a finger that only landed is not yet a scroll
-    for (int y = 300; y >= 120; y -= 20) { now += 16; ucontact(true, 360, y, &c); }   // up the glass
+    for (int y = 300; y >= 120; y -= 20) { now += 16; contact(true, 360, y, &c); }   // up the glass
     now += 16;
-    ucontact(false, 360, 120, &c);
+    contact(false, 360, 120, &c);
     CHECK(SC.n >= 4 && SC.phase[0] == HT_SCROLL_DOWN && SC.phase[SC.n - 1] == HT_SCROLL_UP);
     int total = 0;
     for (int i = 0; i < SC.n; i++) {
@@ -1273,18 +1224,19 @@ static void recap_drag_scrolls_the_host(void) {
     CHECK(SC.v[SC.n - 1] < -100);                           // the fling carries the speed, signed with the finger
     // Down the glass is positive (the Pro has no reversed setting).
     open_recap_for_scroll(false);
-    ucontact(true, 360, 150, &c);
-    for (int y = 150; y <= 330; y += 20) { now += 16; ucontact(true, 360, y, &c); }
-    now += 16; ucontact(false, 360, 330, &c);
+    contact(true, 360, 150, &c);
+    for (int y = 150; y <= 330; y += 20) { now += 16; contact(true, 360, y, &c); }
+    now += 16; contact(false, 360, 330, &c);
     total = 0;
     for (int i = 0; i < SC.n; i++) if (SC.phase[i] != HT_SCROLL_DOWN) total += SC.dy[i];
     CHECK(total == 180 && SC.v[SC.n - 1] > 100);
-    // A tap, or a cancelled contact, closes cleanly: nothing for a tap; a cancelled drag ends with a zero UP.
+    // A tap, or a cancelled contact, closes cleanly: nothing for a tap (it talks); a cancelled drag ends with a zero UP.
     open_recap_for_scroll(false);
-    ucontact(true, 360, 300, &c); now += 40; ucontact(false, 360, 300, &c);
-    CHECK(SC.n == 0);
-    ucontact(true, 360, 300, &c);
-    for (int y = 300; y >= 220; y -= 20) { now += 16; ucontact(true, 360, y, &c); }
+    contact(true, 360, 300, &c); now += 40; contact(false, 360, 300, &c);
+    CHECK(SC.n == 0 && pod_ui_talking(&U));
+    open_recap_for_scroll(false);
+    contact(true, 360, 300, &c);
+    for (int y = 300; y >= 220; y -= 20) { now += 16; contact(true, 360, y, &c); }
     pro_app_touch_cancel();
     CHECK(SC.n >= 3 && SC.phase[SC.n - 1] == HT_SCROLL_UP && SC.dy[SC.n - 1] == 0 && SC.v[SC.n - 1] == 0);
 }
@@ -1304,11 +1256,11 @@ static void pets_recap_and_agent_drag_scrolls_the_host(void) {
         CHECK(pod_scroll_pitch(&U.nav) == 0 && pod_scroll_max(&U.nav, &U.model) == 0);
         SC.n = 0;
         bool c;
-        ucontact(true, 360, 520, &c);
+        contact(true, 360, 520, &c);
         CHECK(SC.n == 0);
-        for (int y = 520; y >= 240; y -= 20) { now += 16; ucontact(true, 360, y, &c); }
+        for (int y = 520; y >= 240; y -= 20) { now += 16; contact(true, 360, y, &c); }
         now += 16;
-        ucontact(false, 360, 240, &c);
+        contact(false, 360, 240, &c);
         CHECK(SC.n >= 4 && SC.phase[0] == HT_SCROLL_DOWN && SC.phase[SC.n - 1] == HT_SCROLL_UP);
         int total = 0;
         for (int i = 0; i < SC.n; i++) if (SC.phase[i] != HT_SCROLL_DOWN) total += SC.dy[i];
@@ -1316,17 +1268,17 @@ static void pets_recap_and_agent_drag_scrolls_the_host(void) {
         CHECK(top() == want && U.nav.depth == depth && U.nav.stack[U.nav.depth - 1].scroll == 0);
         // and the drag down
         SC.n = 0;
-        ucontact(true, 360, 240, &c);
-        for (int y = 240; y <= 500; y += 20) { now += 16; ucontact(true, 360, y, &c); }
+        contact(true, 360, 240, &c);
+        for (int y = 240; y <= 500; y += 20) { now += 16; contact(true, 360, y, &c); }
         now += 16;
-        ucontact(false, 360, 500, &c);
+        contact(false, 360, 500, &c);
         CHECK(SC.n >= 4 && SC.phase[SC.n - 1] == HT_SCROLL_UP && top() == want && U.nav.depth == depth);
         // a swipe up from the bottom zone: Home, nothing sent
         SC.n = 0;
-        ucontact(true, 360, 690, &c);
-        for (int y = 690; y >= 500; y -= 20) { now += 16; ucontact(true, 360, y, &c); }
+        contact(true, 360, 690, &c);
+        for (int y = 690; y >= 500; y -= 20) { now += 16; contact(true, 360, y, &c); }
         now += 16;
-        ucontact(false, 360, 500, &c);
+        contact(false, 360, 500, &c);
         CHECK(SC.n == 0 && U.nav.depth == 1 && top() == POD_V_TABS);
     }
 }
@@ -1335,17 +1287,17 @@ static void pets_recap_and_agent_drag_scrolls_the_host(void) {
 static void swipe_sends_no_host_scroll(void) {
     open_recap_for_scroll(false);
     bool c;
-    ucontact(true, 520, 300, &c);
-    for (int x = 520; x >= 300; x -= 20) { now += 16; ucontact(true, x, 300 + (520 - x) / 10, &c); }
+    contact(true, 520, 300, &c);
+    for (int x = 520; x >= 300; x -= 20) { now += 16; contact(true, x, 300 + (520 - x) / 10, &c); }
     now += 16;
-    pod_out_t o = ucontact(false, 300, 322, &c);
+    pod_out_t o = contact(false, 300, 322, &c);
     CHECK(SC.n == 0);
     CHECK(o.fx == POD_FX_AGENT_OPEN);
     open_recap_for_scroll(false);
-    ucontact(true, 360, 300, &c);
-    for (int y = 300; y >= 120; y -= 20) { now += 16; ucontact(true, 360, y, &c); }
+    contact(true, 360, 300, &c);
+    for (int y = 300; y >= 120; y -= 20) { now += 16; contact(true, 360, y, &c); }
     now += 16;
-    o = ucontact(false, 360, 120, &c);
+    o = contact(false, 360, 120, &c);
     CHECK(SC.n >= 4 && SC.phase[SC.n - 1] == HT_SCROLL_UP && o.fx == POD_FX_NONE);   // A_SCROLL path intact
 }
 // Only Recap reports: a drag on the Tab list moves that list, not the host.
@@ -1355,9 +1307,9 @@ static void tab_drag_does_not_scroll_the_host(void) {
     memset(&SC, 0, sizeof SC);
     tap(POD_A_OPEN_TAB, 0);
     bool c;
-    ucontact(true, 360, 400, &c);
-    for (int y = 400; y >= 200; y -= 20) { now += 16; ucontact(true, 360, y, &c); }
-    ucontact(false, 360, 200, &c);
+    contact(true, 360, 400, &c);
+    for (int y = 400; y >= 200; y -= 20) { now += 16; contact(true, 360, y, &c); }
+    contact(false, 360, 200, &c);
     CHECK(SC.n == 0);
 }
 
@@ -1789,19 +1741,16 @@ static void side_button_console(void) {
     CHECK(top() == POD_V_TABS && U.nav.depth == 1 && LOCK_DEPTH == 0 && U.started);
 }
 
-// Pets hands free: the hold opens the recording, the lift keeps it, a cancel keeps it, the side button discards it.
+// Pets hands free: a tap opens the recording, a cancel keeps it, the side button discards it.
 static void side_button_discards_hands_free(void) {
     setup();
     render();
     tap(POD_A_ENTER_TAB, 0);   // Pets Home: a tap on the tab walks straight to its first agent
     bool c;
-    ucontact(true, 360, 400, &c);
-    now += 450;
-    expect(ucontact(true, 360, 400, &c), POD_FX_VOICE_BEGIN, "a1");
-    CHECK(top() == POD_V_TALK);
-    expect(ucontact(false, 360, 400, &c), POD_FX_NONE, NULL);   // the lift does nothing
+    contact(true, 360, 400, &c);
+    expect(contact(false, 360, 400, &c), POD_FX_VOICE_BEGIN, "a1");   // the lift talks
     CHECK(top() == POD_V_TALK && R.end_abort == 0 && R.end_send == 0);
-    ucontact(true, 360, 400, &c);                                // a second contact, cancelled: still recording
+    contact(true, 360, 400, &c);                                // a second contact, cancelled: still recording
     pro_app_touch_cancel();
     CHECK(top() == POD_V_TALK);
     memset(&R, 0, sizeof R);
@@ -1922,9 +1871,9 @@ static void notify_tap_opens_and_swipe_dismisses(void) {
     CHECK(b);
     cx = b->x + b->w / 2; cy = b->y + b->h / 2;
     bool c;
-    CHECK(ucontact(true, cx, cy, &c).fx == POD_FX_NONE);
-    ucontact(true, cx, cy - 30, &c); ucontact(true, cx, cy - 60, &c);
-    pod_out_t up = ucontact(false, cx, cy - 60, &c);
+    CHECK(contact(true, cx, cy, &c).fx == POD_FX_NONE);
+    contact(true, cx, cy - 30, &c); contact(true, cx, cy - 60, &c);
+    pod_out_t up = contact(false, cx, cy - 60, &c);
     render();
     CHECK(up.fx == POD_FX_NONE && banner() == NULL && U.model.unread_count == 1 && top() == POD_V_AGENT);
     // A drag down or sideways on the toast is neither a tap nor a dismissal.
@@ -1933,8 +1882,8 @@ static void notify_tap_opens_and_swipe_dismisses(void) {
     render();
     b = banner();
     cx = b->x + b->w / 2; cy = b->y + b->h / 2;
-    ucontact(true, cx, cy, &c); ucontact(true, cx, cy + 60, &c);
-    up = ucontact(false, cx, cy + 60, &c);
+    contact(true, cx, cy, &c); contact(true, cx, cy + 60, &c);
+    up = contact(false, cx, cy + 60, &c);
     render();
     CHECK(up.fx == POD_FX_NONE && banner() != NULL && top() == POD_V_AGENT);
 }
@@ -2035,12 +1984,12 @@ static void ota_screen_and_touch(void) {
     bool changed = false;
     static const int pts[][2] = {{360, 640}, {360, 360}, {30, 27}};
     for (unsigned i = 0; i < 3; i++) {
-        pod_out_t d = ucontact(true, pts[i][0], pts[i][1], &changed);
+        pod_out_t d = contact(true, pts[i][0], pts[i][1], &changed);
         CHECK(d.fx == POD_FX_NONE && !changed);
-        pod_out_t u = ucontact(false, pts[i][0], pts[i][1], &changed);
+        pod_out_t u = contact(false, pts[i][0], pts[i][1], &changed);
         CHECK(u.fx == POD_FX_NONE && !changed);
     }
-    ucontact(true, 600, 360, &changed); ucontact(true, 100, 365, &changed); ucontact(false, 100, 365, &changed);
+    contact(true, 600, 360, &changed); contact(true, 100, 365, &changed); contact(false, 100, 365, &changed);
     CHECK(R.opens == 0 && R.begins == 0 && R.end_abort == 0 && top() == POD_V_AGENT && U.nav.depth == depth && !changed);
     // Progress redraws the same screen (the bar's fill moves; the run count does not shrink) and the button does not go home.
     fw_update_ui_pct(42);
@@ -2066,10 +2015,10 @@ static void voice_refused_while_updating(void) {
     const int tx = 360, ty = 400;
     fw_update_ui_begin("0.1.2", "0.1.3");
     CHECK(!strcmp(pro_app_voice_block_reason("a1"), "Updating"));
-    // A still press where the hold records, and the side button: no recording starts and none is left open.
+    // A tap where it would record, and the side button: no recording starts and none is left open.
     memset(&R, 0, sizeof R);
     bool changed;
-    ucontact(true, tx, ty, &changed); ucontact(false, tx, ty, &changed);
+    contact(true, tx, ty, &changed); contact(false, tx, ty, &changed);
     pro_app_button_press();
     CHECK(R.begins == 0 && !V.open && !pod_ui_talking(&U) && top() == POD_V_AGENT);
     // A start that was already on its way (Pod returned the effect before the update began) is refused at the gate.
@@ -2101,7 +2050,7 @@ static void update_gate(void) {
     // The race: the gate lands inside a start that already passed its own check. The start is cancelled, not recorded.
     memset(&R, 0, sizeof R);
     GATE_IN_BEGIN = true;
-    (void)hold_talk();
+    (void)tap_talk();
     GATE_IN_BEGIN = false;
     CHECK(R.begins == 1 && R.end_abort == 1 && !V.open && !pod_ui_talking(&U));
     fw_update_ui_failed();                                         // an accepted transfer that failed also lets go
@@ -2194,67 +2143,52 @@ static void updated_notice(void) {
     WAS_UPDATED = false;
 }
 
-// H1/H2/L11: the Pets hold runs on the touch path. The still finger's samples find the deadline (no render, no tick), so
-// the begin and the end or abort share the touch task; a contact cancelled after the hold ends the recording with it.
-static void console_agent_for_hold(void) {
+// The Pets tap to talk runs on the touch path: the lift begins the recording (no render, no tick), so the begin and
+// the end or abort share the touch task; a later contact's cancel leaves the recording open.
+static void console_agent_for_talk(void) {
     setup();
     render();
     tap(POD_A_ENTER_TAB, 0);
     CHECK(top() == POD_V_AGENT && !pod_ui_talking(&U));
 }
-// DOWN, then still samples 16 ms apart until the recorder is asked; returns the sample's index (the DOWN is 0), or -1.
-static int hold_until_begin(void) {
+static void console_tap_talks_on_the_touch_path(void) {
+    console_agent_for_talk();
     bool c;
-    ucontact(true, 360, 400, &c);
-    for (int i = 1; i <= 60; i++) {
-        ucontact(true, 360, 400, &c);
-        if (R.begins) return i;
-    }
-    return -1;
-}
-static void console_hold_fires_on_the_touch_path(void) {
-    console_agent_for_hold();
-    const int at = hold_until_begin();
-    CHECK(at == 25);   // 25 * 16 ms = 400 ms: the first sample at the deadline, with no pro_app_tick and no render between
-    CHECK(V.open && !strcmp(V.agent, "a1") && pod_ui_talking(&U) && LOCK_DEPTH == 0);
-    bool c;
-    expect(ucontact(false, 360, 400, &c), POD_FX_NONE, NULL);   // v2: the lift does nothing, the recording stays open
-    CHECK(V.open && R.end_send == 0 && pod_ui_talking(&U));
+    contact(true, 360, 400, &c);
+    for (int i = 0; i < 60; i++) contact(true, 360, 400, &c);   // a long still press: nothing until the lift
+    CHECK(R.begins == 0 && !V.open && top() == POD_V_AGENT);
+    contact(false, 360, 400, &c);                                // the lift talks, with no pro_app_tick and no render between
+    CHECK(R.begins == 1 && V.open && !strcmp(V.agent, "a1") && pod_ui_talking(&U) && LOCK_DEPTH == 0);
     render();                                                    // the Talk frame, whose full-screen hit is topmost
-    ucontact(true, 20, 20, &c);                                  // a new tap anywhere (here over the bar) sends
-    ucontact(false, 20, 20, &c);
+    contact(true, 20, 20, &c);                                  // a new tap anywhere (here over the bar) sends
+    contact(false, 20, 20, &c);
     CHECK(R.end_send == 1 && V.waiting);
-    // A tick while the finger is still down never starts it: a tap-length contact does not talk.
-    console_agent_for_hold();
-    ucontact(true, 360, 400, &c);
-    now += 1000;
+    // A drag is not a tap: it never starts it.
+    console_agent_for_talk();
+    contact(true, 360, 400, &c);
+    contact(true, 360, 480, &c);
+    contact(false, 360, 480, &c);
     pro_app_tick();
     CHECK(R.begins == 0 && !V.open && top() == POD_V_AGENT);
 }
-// v2: a contact cancel no longer ends a hands-free recording (it was: abort); the side button / tap end it.
-static void console_hold_cancel_keeps_the_recording(void) {
-    console_agent_for_hold();
-    CHECK(hold_until_begin() == 25 && V.open);
+// A contact cancel never ends a hands-free recording; the side button / tap end it.
+static void console_cancel_keeps_the_recording(void) {
+    console_agent_for_talk();
+    CHECK(tap_talk().fx == POD_FX_VOICE_BEGIN && V.open);
     memset(&R, 0, sizeof R);
-    pro_app_touch_cancel();   // a second finger, an untrusted sample, the glass turning or sleep
-    CHECK(R.end_abort == 0 && V.open && pod_ui_talking(&U) && LOCK_DEPTH == 0);
     bool c;
-    ucontact(false, 360, 400, &c);
-    CHECK(R.end_send == 0 && V.open);
-    // The finger task's own rule: an untrusted sample mid-hold.
-    console_agent_for_hold();
-    CHECK(hold_until_begin() == 25 && V.open);
+    contact(true, 360, 400, &c);
+    pro_app_touch_cancel();   // a second finger, an untrusted sample, the glass turning or sleep
+    CHECK(R.end_abort == 0 && R.end_send == 0 && V.open && pod_ui_talking(&U) && LOCK_DEPTH == 0);
+    // The finger task's own rule: an untrusted sample mid-contact.
+    console_agent_for_talk();
+    CHECK(tap_talk().fx == POD_FX_VOICE_BEGIN && V.open);
     memset(&R, 0, sizeof R);
+    contact(true, 360, 400, &c);
     pro_touch_feed(&TCH, PRO_TOUCH_BAD, 360, 400);
     CHECK(R.end_abort == 0 && V.open && pod_ui_talking(&U));
-    // A slide down 200 px while the hold is still down does nothing either.
-    console_agent_for_hold();
-    CHECK(hold_until_begin() == 25 && V.open);
-    memset(&R, 0, sizeof R);
-    ucontact(true, 360, 600, &c);
-    CHECK(R.end_abort == 0 && V.open && pod_ui_talking(&U));
 }
-// The hold to talk is the agent screens' own: a long still press on Home never asks the recorder, and its lift
+// Tap to talk is the agent screens' own: a long still press on Home never asks the recorder, and its lift
 // walks into the tab as a tap does.
 static void console_tile_long_press_is_a_tap(void) {
     setup();
@@ -2264,10 +2198,10 @@ static void console_tile_long_press_is_a_tap(void) {
     CHECK(tile);
     const int x = tile->x + tile->w / 2, y = tile->y + tile->h / 2;
     bool c;
-    ucontact(true, x, y, &c);
-    for (int i = 0; i < 60; i++) ucontact(true, x, y, &c);
+    contact(true, x, y, &c);
+    for (int i = 0; i < 60; i++) contact(true, x, y, &c);
     CHECK(R.begins == 0 && !V.open && top() == POD_V_TABS && !pod_ui_talking(&U) && !U.notice_on);
-    ucontact(false, x, y, &c);
+    contact(false, x, y, &c);
     CHECK(top() == POD_V_AGENT && R.begins == 0 && !pod_ui_talking(&U));
 }
 
@@ -2287,7 +2221,7 @@ int main(int argc, char **argv) {
         
         
         {"release_off_the_hit_cancels", release_off_the_hit_cancels},
-        {"panel_turn", panel_turn}, {"screen_turn_switch", screen_turn_switch}, {"pets_start_on_link", pets_start_on_link}, {"pet_clock", pet_clock}, {"pet_wakes_at_next_step", pet_wakes_at_next_step}, 
+        {"panel_turn", panel_turn}, {"pets_start_on_link", pets_start_on_link}, {"pet_clock", pet_clock}, {"pet_wakes_at_next_step", pet_wakes_at_next_step}, 
         {"roster_after_swarms_rebuilds_tabs", roster_after_swarms_rebuilds_tabs},
         {"moved_agent_reaches_the_model", moved_agent_reaches_the_model},
         {"recap_flips_to_agent_when_work_starts", recap_flips_to_agent_when_work_starts},
@@ -2316,7 +2250,7 @@ int main(int argc, char **argv) {
         {"ota_screen_and_touch", ota_screen_and_touch}, {"voice_refused_while_updating", voice_refused_while_updating},
         {"update_gate", update_gate}, {"ota_failed_returns", ota_failed_returns}, {"ota_keeps_awake", ota_keeps_awake},
         {"ota_notifications_quiet", ota_notifications_quiet}, {"updated_notice", updated_notice},
-        {"console_hold_fires_on_the_touch_path", console_hold_fires_on_the_touch_path}, {"console_hold_cancel_keeps_the_recording", console_hold_cancel_keeps_the_recording},
+        {"console_tap_talks_on_the_touch_path", console_tap_talks_on_the_touch_path}, {"console_cancel_keeps_the_recording", console_cancel_keeps_the_recording},
         {"console_tile_long_press_is_a_tap", console_tile_long_press_is_a_tap},
     };
     if (argc > 1 && !strcmp(argv[1], "--each")) {   // every replay in its own process: which ones fail, not just the first
@@ -2339,31 +2273,14 @@ int main(int argc, char **argv) {
 '''
 
 
-def test_turn_is_applied_once():
-    """The 180 turn lives in pro_turn.h/.c (rules, flag) and pro_display.c (applied once to picture and touch). Nothing in main/app turns a contact again."""
-    display = (DISP / "pro_display.c").read_text()
-    turn = (DISP / "pro_turn.h").read_text()
-    frame = (DISP / "pro_frame.c").read_text()
-    assert display.count("pro_turn_point(&tx, &ty)") == 1 and "pro_turn_coord(" not in display, \
-        "pro_display.c must turn the contact once, both axes from one read of the flag"
-    assert display.count("pro_turn_pixels(") == 1 and display.count("pro_turn_rect(") == 1, \
-        "pro_display.c must turn the picture once (pixels in place, rectangle mapped)"
-    flag = (DISP / "pro_turn.c").read_text()
-    assert "PRO_TURN_PX - 1 - v" in turn and "pro_turn_get()" in turn, "pro_turn.h holds the turn rules, reading the runtime flag"
-    assert "POD_PANEL_TURN == 180" in turn and "POD_PANEL_TURN == 180" in flag, \
-        "the build flag is only the default: pro_turn.h (pro_turn_build_default) and pro_turn.c (initial value)"
-    assert "POD_PANEL_TURN" not in display, "pro_display.c asks pro_turn.h, never the build flag"
-    assert "POD_PANEL_TURN" not in frame and "pro_turn" not in frame, \
-        "the turn rules live in pro_turn.h/.c only; pro_frame.c paints upright"
-    for source in list(APP.glob("*.c")) + list(APP.glob("*.h")):
-        if source.name == "pod_turn.h":
-            continue
+def test_no_turn():
+    """The panel is not turned: nothing under main/ turns the picture or a contact."""
+    for source in (FW / "main").rglob("*.[ch]"):
         text = source.read_text()
-        assert "pod_turn_coord" not in text and "POD_PANEL_TURN" not in text and "pro_turn_coord" not in text, \
-            f"{source.name} must not turn the glass: pro_display.c does, once"
+        assert "pro_turn" not in text and "pod_turn_coord" not in text and "POD_PANEL_TURN" not in text, f"{source.name} turns the glass"
 
 
-test_turn_is_applied_once()
+test_no_turn()
 
 cc = os.environ.get("CC", "cc")
 sanitize = "-fsanitize=" + os.environ.get("SANITIZERS", "undefined,bounds")
@@ -2381,8 +2298,8 @@ with tempfile.TemporaryDirectory(prefix="harness-pro-app-") as directory:
     source = directory / "pro_app_test.c"
     source.write_text(code)
     modules = sorted(POD.glob("*.c")) + sorted(POD.glob("*/*.c")) + [APP / "pod_glue.c", APP / "pro_app.c", APP / "pro_touch.c", DISP / "scroll.c",
-                                         DISP / "pro_canvas.c", DISP / "terminal.c", DISP / "pro_turn.c", fonts]
-    for label, extra in (("upright", []), ("turned 180", ["-DPOD_PANEL_TURN=180"])):
+                                         DISP / "pro_canvas.c", DISP / "terminal.c", fonts]
+    for label, extra in (("upright", []),):
         # The callbacks run on the cable_link task's 6 KB stack, the touch task's contact path on 10 KB: no frame of
         # pro_app.c, pro_touch.c or the glue may pass 1 KB.
         for guarded in (APP / "pod_glue.c", APP / "pro_app.c", APP / "pro_touch.c"):
@@ -2400,4 +2317,4 @@ with tempfile.TemporaryDirectory(prefix="harness-pro-app-") as directory:
             failures.append(label)
             print(f"FAIL {label}: {result.stderr.strip()}")
 assert not failures, f"pro_app regressions: {', '.join(failures)}"
-print("pro_app: production-glue replays passed (upright and POD_PANEL_TURN=180)")
+print("pro_app: production-glue replays passed (panel not turned)")

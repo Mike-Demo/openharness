@@ -59,6 +59,9 @@ typedef struct {
     // working scene shows, the pet's alert bubble rings from then and stays, the count in it, until they are read.
     uint32_t notice_ms;
     uint16_t notices;
+    // Focus only: the working face plays the pet's second working scene (ht_pet_t.working_alt, Claude's builder) when
+    // it has one. Drawn by ht_focus_pick_working as the scene starts showing, and kept while it shows.
+    bool working_alt;
     uint16_t ink, foreground, dim;
 } ht_character_face_t;
 
