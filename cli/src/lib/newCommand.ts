@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { readdir, readFile, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { addressOf, atMachineRefusal, machineOption, step, VIA_MCP_ENV } from '../agentClient/commands.js'
+import { addressOf, atMachineRefusal, EXIT, machineOption, refusalNext, REFUSED_CODES, step, VIA_MCP_ENV } from '../agentClient/commands.js'
+import { AgentClientError } from '../agentClient/daemon.js'
+import { formatNext, type NextStep } from '../agentClient/next.js'
 import { folderTrust } from '../engines/launchPrep.js'
 import { ENGINES, type AgentEngine } from '../engines/types.js'
 import { engineName } from '../messages/model.js'
@@ -69,6 +71,8 @@ export const NEW_USAGE = [
   '                   harness new codex -- fix the flaky login test',
   '  --name <n>     the harness\'s name until the agent titles its session',
   '  --json         print the result as one JSON line',
+  '',
+  'An agent refused (its limits, or the person has not let agents start agents) exits 5: do not retry.',
 ].join('\n')
 
 const MODES = new Set(['auto', 'ask', 'plan', 'full'])
@@ -273,8 +277,8 @@ export interface NewOrigin {
   existing?(name: string | null, asking: { machineId: string; engine: string }): Promise<ExistingHarness | null>
   /** Records a harness asked for that has not started yet, so the caller follows it by name once this has answered. */
   pending?(machineId: string, creation: { creationId: string; name: string; engine: string }): void
-  /** How to read, wait for and message what was started. */
-  next(agent: Record<string, unknown>): string
+  /** What the start changed, and what to run next: wait for it, then read it. */
+  answer(agent: Record<string, unknown>, at: { local: boolean; machine: string | null }): { effect: string; next: NextStep[] }
   /** The caller's own harness, by agent id, when it is one on this computer: a harness started here records it, and the
    *  windows open it beside the caller's pane. Absent for an agent outside Harness. */
   parentAgentId?: string
@@ -509,7 +513,7 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
         // With content it may be just what the work needs, so it starts; the agent is told it will wait for the person.
         if (asks === 'content') {
           trustNote = `${engineName(engine)} will ask the person to trust ${cwd} before it starts, so it waits for them until `
-            + `they answer (${env[VIA_MCP_ENV] === '1' ? 'harness_wait says needs-input' : 'harness wait exits 3'}). `
+            + `they answer (${env[VIA_MCP_ENV] === '1' ? 'harness_wait says it needs the person' : 'harness wait exits 3'}). `
             + `For new work, a project name avoids this: ${instead}`
         }
       }
@@ -557,9 +561,13 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       // cancelled, the install would be wasted and the agent would only ask again.
       if (origin && result.state === 'pending' && installing(result)) {
         const name = args.name?.trim() ?? ''
-        const note = `Harness is installing ${engineName(String(payload.engine))}; the harness ${name ? `"${name}" ` : ''}starts by itself once it is installed. `
-          + `Check on it with ${name ? `${step(env, 'ps')} or ${step(env, 'wait', name)}` : step(env, 'ps')}; do not start it again.`
-        deps.output(args.json ? JSON.stringify({ ok: true, pending: true, machineId, creationId, name, note }) : note)
+        // Under MCP the tools take no machine: harness_wait finds the caller's own by its record.
+        // One name as the shell takes it: quoted when it has a space (the MCP tool call quotes it once, `step`).
+        const word = /^[\w.:-]+$/.test(name) ? name : `"${name.replace(/(["\\$`])/g, '\\$1')}"`
+        const at = local || args.machine === null || env[VIA_MCP_ENV] === '1' ? word : `${machineOption(args.machine)} ${word}`
+        const next: NextStep[] = name ? [{ run: step(env, 'wait', at), when: 'until it has started and answered' }] : [{ run: step(env, 'ps'), when: 'to follow it' }]
+        const note = `${name || 'The harness'} on ${machineLabel}: installing ${engineName(String(payload.engine))}. It starts by itself once installed; do not start it again.`
+        deps.output(args.json ? JSON.stringify({ ok: true, pending: true, machineId, creationId, name, note, next }) : `${note}\n${formatNext(next)}`)
         return 0
       }
       if (result.state === 'pending') {
@@ -593,14 +601,25 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
       const agent = (result.agent ?? {}) as Record<string, unknown>
       const warning = await origin?.created(machineId, agent, creationId)
       if (warning) deps.error(warning)
-      if (args.json) deps.output(JSON.stringify({ ok: true, machineId, agent, ...(trustNote ? { note: trustNote } : {}) }))
-      else {
+      // An agent is told it is starting (never that its task is done), what changed, and what to run next.
+      const told = origin?.answer(agent, { local, machine: args.machine })
+      if (args.json) deps.output(JSON.stringify({ ok: true, machineId, agent, ...(trustNote ? { note: trustNote } : {}), ...(told ? { effect: told.effect, next: told.next } : {}) }))
+      else if (origin && told) {
+        const project = (agent.project ?? {}) as Record<string, unknown>
+        const folder = typeof project.cwd === 'string' ? project.cwd : cwd
+        const name = String(agent.name ?? agent.id ?? 'The harness')
+        deps.output(`${name} on ${machineLabel}: starting. ${engineName(String(agent.engine ?? payload.engine ?? ''))}${folder ? `, in ${folder}` : ''}.`)
+        if (told.effect) deps.output(told.effect)
+        if (trustNote) deps.output(trustNote)
+        const next = formatNext(told.next)
+        if (next) deps.output(next)
+      } else {
         const project = (agent.project ?? {}) as Record<string, unknown>
         const where = typeof project.cwd === 'string' ? ` in ${project.cwd}` : cwd ? ` in ${cwd}` : ''
         const name = String(agent.name ?? agent.id ?? 'a harness')
         deps.output(`Created ${name} on ${machineLabel}${where}.`)
         if (trustNote) deps.output(trustNote)
-        deps.output(origin ? origin.next(agent) : 'Open it in Harness with ⌘O.')
+        deps.output('Open it in Harness with ⌘O.')
         // Started on another machine by a person or a program, it is read and waited for through that machine, named as
         // it was here. The lamp (lamp-4ace, 2026-10-14 21:36), a program outside Harness, started `lamp-first-task` on
         // office this way and was told only ⌘O, which it has not got.
@@ -613,8 +632,12 @@ export async function newCommand(deps: NewCommandDeps): Promise<number> {
     } finally { session.close() }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    if (args.json) deps.output(JSON.stringify({ ok: false, error: message }))
-    else deps.error(message)
-    return error instanceof NewUsageError ? 2 : 1
+    // Refused (a limit, the person's setting, a pane whose harness is gone): not a failure to retry.
+    const refused = error instanceof AgentClientError && REFUSED_CODES.has(error.code) ? error : null
+    if (args.json) {
+      deps.output(JSON.stringify({ ok: false, error: message,
+        ...(refused ? { code: refused.code, ...(refused.reason ? { reason: refused.reason } : {}), next: refusalNext(env, refused) } : {}) }))
+    } else deps.error(message)
+    return refused ? EXIT.refused : error instanceof NewUsageError ? 2 : 1
   }
 }

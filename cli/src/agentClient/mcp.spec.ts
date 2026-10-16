@@ -170,7 +170,10 @@ describe('harness mcp', () => {
     expect(result('harness_close', { code: 1, out: '', err: 'You did not start x, so you may not close it.\n' }))
       .toEqual({ content: [{ type: 'text', text: 'You did not start x, so you may not close it.' }], isError: true })
     expect(result('harness_read', { code: 2, out: '', err: '' })).toEqual({ content: [{ type: 'text', text: 'harness exited 2' }], isError: true })
-    expect(result('harness_wait', { code: 3, out: 'a: needs-input\n', err: '' })).toEqual({ content: [{ type: 'text', text: 'a: needs-input' }] })
+    expect(result('harness_wait', { code: 3, out: 'a: needs the person\n', err: '' })).toEqual({ content: [{ type: 'text', text: 'a: needs the person' }] })
+    // A refusal is an answer: the agent should not retry it as it would a failure.
+    expect(result('harness_close', { code: 5, out: '', err: 'You did not start x, so you may not close it. Only the person can.\n' }))
+      .toEqual({ content: [{ type: 'text', text: 'You did not start x, so you may not close it. Only the person can.' }] })
     expect(result('harness_wait', { code: 4, out: 'a: stopped\n', err: '' }).isError).toBeUndefined()
     expect(result('harness_wait', { code: 124, out: 'a: working\n', err: '' })).toEqual({ content: [{ type: 'text', text: 'a: working\nStill working. Call harness_wait again to keep waiting.' }] })
     expect(result('harness_wait', { code: 124, out: '', err: '' }).content[0].text).toBe('Still working. Call harness_wait again to keep waiting.')

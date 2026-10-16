@@ -120,6 +120,23 @@ Yours: <open> open of <max> · <starts> of <max starts> starts in the last <minu
 
 Run by the person, it prints the first line only: `You: the person, on <machine>.`
 
+Every agent verb ends with what to run next, in one shape (`--json` gives the same as `next`, and `new` and `close`
+add `effect`, what changed):
+
+```
+<name> on <machine>: starting. <agent>, in <folder>.
+The person sees it in Harness, beside you.
+Next: harness wait <name>  (until it has answered; then read it: harness show <name>)
+```
+
+`show` names `close` for an idle harness of the agent's own, `wait` for a working one, and the person for one that
+needs the person; `close` says how many of the agent's own are still open; an agent's `ps` ends with its idle one to
+read, its busy ones to wait for, or a start, and shows its own first and at most 15 rows (`--all` shows every one).
+A harness waiting on a question or a permission is shown as `needs the person` (JSON keeps `needs-input` and adds
+`needsPerson: true`). A refusal (`SPAWN_LIMIT`, `TURNED_OFF`, `NOT_YOURS`) exits 5, with `code`, `reason` and
+`next` in its JSON. `harness help agents` prints the commands, states, exit codes and rules on one screen, and
+`harness --help` starts with it when an agent runs it.
+
 ## Your devices
 
 Signing in is what makes a device trusted: every computer and app signed in to the account adds its

@@ -92,9 +92,13 @@ harness close <name> [--now]                        # when you are done with one
 - Read the result with `show` instead of asking for a summary.
 - `close` what you started once you have its answer. It keeps the conversation; the person can resume it.
   It refuses while the harness is working, unless `--now`. One closed while still starting may have no
-  conversation to keep yet, and `close` says so. `show` reminds you when one of yours sits idle, and `ps`
-  says how many of yours are open.
-- Add `--json` to any verb for JSON. Every error says what to run next.
+  conversation to keep yet, and `close` says so, with how many of yours are still open.
+- Every verb ends with `Next:`, the command to run next: follow it. `--json` gives it as `next`. Every error
+  says what to run next.
+- A harness waiting on a question or a permission is shown as `needs the person`: tell the person.
+- Exit 5 means refused (your limits, the person's setting, or a harness you did not start): do not retry it;
+  tell the person, or do the work yourself.
+- `harness help agents` prints the commands, states, exit codes and rules on one screen.
 
 ## Inside a harness, or outside
 

@@ -27,7 +27,9 @@ Every harness spends the person's tokens. Start one (harness_start) only for wor
 
 Call harness_whoami first: it says whether you may start harnesses now. Then list (harness_list). Put everything in the task: starting a harness does not let you message it. A follow-up goes by harness_send only to a teammate in your tab, while Agent Messages are on; otherwise start a new harness with the fuller task. Never give work to, or close, a harness you did not start: those are the person's.
 
-Name every harness. Then wait for it (harness_wait), read its answer (harness_read), and close it once you have its answer (harness_close). At most 4 of yours at once, and a harness another agent started may not start harnesses itself. Never ask a harness to publish, deploy, delete or push.`
+Name every harness. Then wait for it (harness_wait), read its answer (harness_read), and close it once you have its answer (harness_close). At most 4 of yours at once, and a harness another agent started may not start harnesses itself. Never ask a harness to publish, deploy, delete or push.
+
+Each answer ends with Next: the call to make next. A refusal is final: do not retry it; tell the person, or do the work yourself.`
 
 /** How long `harness_wait` waits when not told: within what MCP clients allow a call. Codex ends one at 60 s unless its
  *  config says otherwise (`tool_timeout_sec`, developers.openai.com/codex/mcp), so 120 s ended every long wait as an
@@ -57,7 +59,7 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'harness_list',
-    description: 'The harnesses on this machine: name, agent, state (working, idle, needs-input), who started each ("you" for yours), when it was last active, its folder, and what it is about.',
+    description: 'The harnesses on this machine: name, agent, state (working, idle, needs the person), who started each ("you" for yours), when it was last active, its folder, and what it is about.',
     inputSchema: schema({ all: { type: 'boolean', description: 'Also the ones stopped in the last week.' } }),
     annotations: { readOnlyHint: true },
     argv: (a) => ['ps', ...(a.all === true ? ['--all'] : [])],
@@ -234,7 +236,8 @@ export function result(tool: string, ran: Ran): { content: Array<{ type: 'text';
   if (tool === 'harness_wait' && ran.code === EXIT.timeout) {
     return { content: [{ type: 'text', text: `${text ? `${text}\n` : ''}Still working. Call harness_wait again to keep waiting.` }] }
   }
-  const answered = ran.code === EXIT.ok || (tool === 'harness_wait' && (ran.code === EXIT.needsInput || ran.code === EXIT.stopped))
+  // A refusal is an answer too: an error invites a retry, and a refusal is not retried.
+  const answered = ran.code === EXIT.ok || ran.code === EXIT.refused || (tool === 'harness_wait' && (ran.code === EXIT.needsInput || ran.code === EXIT.stopped))
   return answered ? { content: [{ type: 'text', text: text || 'Done.' }] } : { content: [{ type: 'text', text: text || `harness exited ${ran.code}` }], isError: true }
 }
 
