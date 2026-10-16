@@ -282,14 +282,25 @@ describe('community navigation', () => {
     expect(screen.getByText('Make an orbit.')).toBeInTheDocument();
     fetcher.mockRestore();
   });
-  it('copies the harness link', async () => {
+  it('shares from a menu: the link copied, or a network’s own share page', async () => {
     request.mockResolvedValue({ harness: null, social: emptySocial });
     const writeText = vi.fn(async () => {});
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
     render(<Detail id={sample.id} initial={sample} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Copy link to this harness' }));
+    const share = screen.getByRole('button', { name: 'Share' });
+    fireEvent.click(share);
+    expect(share).toHaveAttribute('aria-expanded', 'true');
+    const link = encodeURIComponent(`${window.location.origin}/hub/starter-orbit`);
+    expect(screen.getByRole('menuitem', { name: 'Share on X' })).toHaveAttribute('href', `https://x.com/intent/tweet?text=Orbit&url=${link}`);
+    expect(screen.getByRole('menuitem', { name: 'Share on Facebook' })).toHaveAttribute('href', `https://www.facebook.com/sharer/sharer.php?u=${link}`);
+    expect(screen.getByRole('menuitem', { name: 'Share on LinkedIn' })).toHaveAttribute('target', '_blank');
+    // No share sheet in this browser: nothing offers one.
+    expect(screen.queryByRole('menuitem', { name: 'More options…' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy link' }));
     await screen.findByText('Link copied');
     expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/hub/starter-orbit`);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
   it('draws the page the server read at once, then reads it again with the reader’s sign-in', async () => {
     let answer: (page: unknown) => void = () => {};
@@ -419,17 +430,18 @@ describe('community navigation', () => {
     expect(screen.getByRole('link', { name: /Di commented on Lamp/ })).toHaveAttribute('href', '/hub/lamp-h2?comments=1');
     await waitFor(() => expect(request).toHaveBeenCalledWith('notifications/read', { method: 'POST' }));
   });
-  it('opens a touch screen’s share sheet instead of copying', async () => {
+  it('offers the device’s own share sheet in the menu where there is one, and closes on a click outside', async () => {
     request.mockResolvedValue({ harness: null, social: emptySocial });
-    const share = vi.fn(async () => {}), writeText = vi.fn(async () => {});
+    const share = vi.fn(async () => {});
     Object.defineProperty(navigator, 'share', { value: share, configurable: true });
-    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-    Object.defineProperty(window, 'matchMedia', { configurable: true, value: (query: string) => ({ matches: query === '(pointer: coarse)', addEventListener: vi.fn(), removeEventListener: vi.fn() }) });
     render(<Detail id={sample.id} initial={sample} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Share this harness' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Share' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'More options…' }));
     await waitFor(() => expect(share).toHaveBeenCalledWith({ title: 'Orbit', url: `${window.location.origin}/hub/starter-orbit` }));
-    expect(writeText).not.toHaveBeenCalled();
-    Object.defineProperty(window, 'matchMedia', { configurable: true, value: undefined });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Share' }));
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     Object.defineProperty(navigator, 'share', { value: undefined, configurable: true });
   });
 });

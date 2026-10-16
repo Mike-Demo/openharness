@@ -55,10 +55,10 @@
 .follow{text-decoration:underline;text-underline-offset:3px}
 /* The reader's actions: one row of quiet 36px buttons that tint on hover and stay tinted while their panel is open, ending in Fork. */
 .actions{display:flex;align-items:center;gap:4px;margin-left:auto;flex-shrink:0}
-.actions>button,.actions>a{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 11px;border-radius:8px;white-space:nowrap;font-size:13px;color:#555;transition:background-color .15s,color .15s}
-.actions>button:hover:not(:disabled),.actions>a:hover{background:#f4f4f2;color:#242424}
-.actions>button[aria-pressed=true]{background:#efefec;color:#242424}
-.actions>button:focus-visible,.actions>a:focus-visible,.actions .primary:focus-visible{outline:2px solid #242424;outline-offset:2px}
+.actions>button,.actions>a,.actions .actionButton{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 11px;border-radius:8px;white-space:nowrap;font-size:13px;color:#555;transition:background-color .15s,color .15s}
+.actions>button:hover:not(:disabled),.actions>a:hover,.actions .actionButton:hover{background:#f4f4f2;color:#242424}
+.actions>button[aria-pressed=true],.actions .actionButton[aria-pressed=true]{background:#efefec;color:#242424}
+.actions>button:focus-visible,.actions>a:focus-visible,.actions .actionButton:focus-visible,.actions .primary:focus-visible{outline:2px solid #242424;outline-offset:2px}
 .actions svg{width:16px;height:16px}
 .actions .handoff{margin-left:8px}
 .page .actions .primary{height:36px;padding:0 18px;border-radius:8px;transition:background-color .15s}
@@ -205,7 +205,7 @@
 /* Phones: the chips run to the screen's left edge (the gutter is 4vw), and the order shrinks to fit beside them. */
 @media(max-width:760px){.filters{gap:10px;margin:0 0 24px}.chipsWrap{margin-left:-4vw}.chips{padding-left:4vw;scroll-padding-left:4vw}.chipArrowLeft{left:2vw}.sort span{padding:4px 10px;font-size:12px}.forks{margin-top:50px}}
 /* Small phones: Files and Share keep their icon; their names stay for screen readers. */
-@media(max-width:480px){.actions>button,.actions>a{padding:0 9px}.actionLabel{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}}
+@media(max-width:480px){.actions>button,.actions>a,.actions .actionButton{padding:0 9px}.actionLabel{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}}
 .byline a,.byline button{display:inline-flex;align-items:center}
 @media(max-width:760px){.chat{scroll-margin-top:104px}}
 .authorLink:hover{text-decoration:underline}
