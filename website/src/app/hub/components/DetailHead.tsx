@@ -29,11 +29,11 @@ export function DetailHead({ harness, social, ready, busy, panel, onFollow, onLi
       <button className={social.liked ? styles.liked : ''} disabled={busy} aria-label={social.liked ? 'Unlike harness' : 'Like harness'} aria-pressed={social.liked} onClick={onLike}><Heart /><span>{ready ? social.likes : 'Like'}</span></button>
       <button aria-label="Comments" aria-pressed={panel === 'comments'} onClick={() => onPanel('comments')}><MessageCircle /><span>{ready ? commentTotal(social) : 'Comments'}</span></button>
       <button aria-label="Source files" aria-pressed={panel === 'files'} onClick={() => onPanel('files')}><FileCode2 /><span className={styles.actionLabel}>Files</span></button>
-      <ShareButton id={harness.id} title={harness.title} />
+      <ShareButton harness={harness} />
       {social.mine && <Link href={`/hub/publish?edit=${harness.id}`}><Pencil /><span>Edit</span></Link>}
       {/* Not your own, and not a starter: those are the Hub's. */}
       {!social.mine && !harness.example && <button aria-label="Report harness" onClick={onReport}><Flag /><span className={styles.actionLabel}>Report</span></button>}
-      <ForkButton id={harness.id}><GitFork /> Fork</ForkButton>
+      <ForkButton harness={harness}><GitFork /> Fork</ForkButton>
     </div>
   </header>;
 }

@@ -17,6 +17,7 @@ import { PublishChecks } from './components/PublishChecks';
 import { PublishTarget } from './components/PublishTarget';
 import { UnpublishAction } from './components/UnpublishAction';
 import { originalOutput, readCover, readProjectFolder } from './projectFiles';
+import { harnessPath } from '@/lib/community/slug';
 import { submitPublication, unpublishPublication } from './publication';
 import { usePublishDraft, type PublishDraft } from './usePublishDraft';
 import { useEnglishDraft } from './useEnglishDraft';
@@ -66,7 +67,7 @@ export default function PublishPage() {
     event.preventDefault();
     if (!ready || busy) return;
     setBusy(true); setError('');
-    void publishOnce(async clientId => { router.push(`/hub/${await submitPublication(draft, clientId)}`); })
+    void publishOnce(async clientId => { router.push(harnessPath({ id: await submitPublication(draft, clientId), title: draft.title })); })
       .catch(e => setError(e instanceof Error ? e.message : 'Publication failed. Your draft is still here.')).finally(() => setBusy(false));
   }
   function unpublish() {

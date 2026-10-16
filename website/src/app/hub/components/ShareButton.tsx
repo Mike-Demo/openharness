@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Check, Link2 } from 'lucide-react';
+import { harnessPath } from '@/lib/community/slug';
 import styles from '../community.module.css';
 
 type Copy = 'idle' | 'copied' | 'failed';
@@ -21,7 +22,7 @@ function useShareSheet() {
 }
 
 /** Shares the harness's address: the phone's sheet, or a copied link that says so for two seconds. */
-export function ShareButton({ id, title }: { id: string; title: string }) {
+export function ShareButton({ harness }: { harness: { id: string; title: string } }) {
   const [copy, setCopy] = useState<Copy>('idle'), sheet = useShareSheet();
   useEffect(() => {
     if (copy === 'idle') return;
@@ -29,7 +30,7 @@ export function ShareButton({ id, title }: { id: string; title: string }) {
     return () => clearTimeout(timer);
   }, [copy]);
   async function share() {
-    const url = `${window.location.origin}/hub/${id}`;
+    const url = `${window.location.origin}${harnessPath(harness)}`, title = harness.title;
     if (sheet) {
       // A sheet closed without choosing anything is not a failure to report.
       await navigator.share({ title, url }).catch(() => undefined);

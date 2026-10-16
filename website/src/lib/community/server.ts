@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { starterHarnesses, starterConversation, starterSlug } from './starters';
 import { feedPath, type FeedPage, type FeedView } from './feed';
+import { namesPublication } from './slug';
 import type { Creator, OpenHarness } from './types';
 
 export function communityApiOrigin(): string {
@@ -39,7 +40,7 @@ export async function getStarter(id: string, { viewerOnly = false }: HarnessRead
 export async function getPublicHarness(id: string, read: HarnessRead = {}): Promise<OpenHarness | null> {
   const starter = await getStarter(id, read);
   if (starter) return starter;
-  if (!/^[a-f0-9-]{36}$/.test(id)) return null;
+  if (!namesPublication(id)) return null;
   const query = read.viewerOnly ? '?files=viewer' : '';
   const response = await fetch(`${communityApiOrigin()}/api/community/harnesses/${id}${query}`, { cache: 'no-store', signal: AbortSignal.timeout(read.timeoutMs ?? 8000) });
   if (response.status === 404) return null;

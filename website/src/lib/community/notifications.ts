@@ -1,4 +1,5 @@
 import { communityRequest } from './client';
+import { harnessPath } from './slug';
 
 /** Something that happened to the reader's work: who did it and where, never what they wrote. */
 export type HubNotification = {
@@ -14,5 +15,5 @@ export const markNotificationsRead = () => communityRequest('notifications/read'
 export function describeNotification({ kind, actorName, harnessTitle, harnessId, targetId }: HubNotification): { text: string; href: string } {
   if (kind === 'fork') return { text: `${actorName} forked ${harnessTitle}`, href: `/hub/${targetId}` };
   const text = kind === 'reply' ? `${actorName} replied to your comment on ${harnessTitle}` : `${actorName} commented on ${harnessTitle}`;
-  return { text, href: `/hub/${harnessId}?comments=1` };
+  return { text, href: `${harnessPath({ id: harnessId, title: harnessTitle })}?comments=1` };
 }

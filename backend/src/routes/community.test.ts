@@ -11,6 +11,7 @@ const db = vi.hoisted(() => {
       if (key === 'AND') return (value as Record<string, unknown>[]).every(branch => matches(row, branch))
       if (value && typeof value === 'object' && !(value instanceof Date)) {
         const filter = value as Record<string, unknown>
+        if ('startsWith' in filter) return typeof row[key] === 'string' && (row[key] as string).startsWith(filter.startsWith as string)
         if ('contains' in filter) return typeof row[key] === 'string' && (row[key] as string).toLowerCase().includes((filter.contains as string).toLowerCase())
         if ('in' in filter) return (filter.in as unknown[]).includes(row[key])
         if ('notIn' in filter) return !(filter.notIn as unknown[]).includes(row[key])
@@ -149,6 +150,17 @@ describe('publications and access', () => {
     expect((await send(Buffer.from('not gzip'))).statusCode).toBe(400)
     // Bounded: a small body that would inflate past the snapshot is refused, not unpacked.
     expect((await send(gzipSync(Buffer.alloc(7_000_000, 32)))).statusCode).toBe(400)
+  })
+  it('finds a publication by its web address, the title and its id’s first characters, even after a retitle', async () => {
+    const id = await publish('alice', { ...sample, title: 'PAC-MAN: Neon Maze Chase' })
+    const short = id.slice(0, 8)
+    const read = await call('GET', `harnesses/pac-man-neon-maze-chase-${short}?files=viewer`)
+    expect(read.statusCode).toBe(200)
+    expect(read.json().data.harness.id).toBe(id)
+    expect((await call('GET', `harnesses/an-older-title-${short}`)).json().data.harness.id).toBe(id)
+    expect((await call('GET', `harnesses/${short}`)).json().data.harness.id).toBe(id)
+    expect((await call('GET', `harnesses/pac-man-neon-maze-chase-${short}`, undefined, undefined, 'stag')).statusCode).toBe(404)
+    expect((await call('GET', 'harnesses/pac-man-neon-maze-chase-00000000')).statusCode).toBe(404)
   })
   it('lets the author edit a publication in place, keeping its address, likes, origin and cover', async () => {
     const cover = 'data:image/png;base64,' + Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).toString('base64')

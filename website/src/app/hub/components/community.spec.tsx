@@ -126,6 +126,19 @@ describe('community navigation', () => {
     await screen.findByTitle('Orbit output');
     expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
   });
+  it('reads a page opened at its slug, then names the publication by its id and shows its own address', async () => {
+    const id = '0f8fad5b-d9cb-469f-a165-70867728950e', slug = 'an-older-title-0f8fad5b';
+    window.history.replaceState(null, '', `/hub/${slug}?comments=1`);
+    request.mockResolvedValueOnce({ harness: { ...sample, id, example: false }, social: { ...emptySocial, signedIn: true } });
+    render(<Detail id={slug} initial={null} />);
+    await screen.findByTitle('Orbit output');
+    expect(request).toHaveBeenCalledWith(`harnesses/${slug}?files=viewer`);
+    expect(window.location.pathname + window.location.search).toBe('/hub/orbit-0f8fad5b?comments=1');
+    request.mockResolvedValueOnce({ liked: true, likes: 1 });
+    fireEvent.click(screen.getByRole('button', { name: 'Like harness' }));
+    await waitFor(() => expect(request).toHaveBeenLastCalledWith(`harnesses/${id}/like`, expect.anything()));
+    window.history.replaceState(null, '', '/');
+  });
   it('says so when a drawn page cannot load its likes and actions, and retries', async () => {
     const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
     request.mockRejectedValueOnce(new CommunityError('Service unavailable', 503));
@@ -208,7 +221,7 @@ describe('community navigation', () => {
     await screen.findByRole('link', { name: 'Open Published' });
     // Only what the server ranked, where it ranked it: no starter is appended after the publications.
     expect(screen.getAllByRole('link', { name: /^Open / }).map(link => link.getAttribute('href')))
-      .toEqual(['/hub/starter-blue-hour', '/hub/post', '/hub/starter-orbit']);
+      .toEqual(['/hub/starter-blue-hour', '/hub/published-post', '/hub/starter-orbit']);
     window.history.replaceState(null, '', '/');
   });
   it('holds a feed like until the server answers, and shows the forks a card has', async () => {
@@ -402,8 +415,8 @@ describe('community navigation', () => {
     ] }).mockResolvedValueOnce({ read: 2 });
     render(<NotificationsPage />);
     expect(await screen.findByRole('link', { name: /Bob forked Orbit/ })).toHaveAttribute('href', '/hub/f1');
-    expect(screen.getByRole('link', { name: /Cy replied to your comment on Orbit/ })).toHaveAttribute('href', '/hub/h1?comments=1');
-    expect(screen.getByRole('link', { name: /Di commented on Lamp/ })).toHaveAttribute('href', '/hub/h2?comments=1');
+    expect(screen.getByRole('link', { name: /Cy replied to your comment on Orbit/ })).toHaveAttribute('href', '/hub/orbit-h1?comments=1');
+    expect(screen.getByRole('link', { name: /Di commented on Lamp/ })).toHaveAttribute('href', '/hub/lamp-h2?comments=1');
     await waitFor(() => expect(request).toHaveBeenCalledWith('notifications/read', { method: 'POST' }));
   });
   it('opens a touch screen’s share sheet instead of copying', async () => {

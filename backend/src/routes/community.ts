@@ -5,6 +5,7 @@ import { parseAutonomousEnvironment } from '../lib/autonomousEnvironment.js'
 import { communityStarterAuthor, communityStarters } from '../lib/communityAccess.js'
 import { feedPage, feedSorts, feedStats } from '../lib/communityFeed.js'
 import { saveLike } from '../lib/communityLikes.js'
+import { resolvePublicationId } from '../lib/communitySlug.js'
 import { notify } from '../lib/communityNotifications.js'
 import { hiddenFrom, isHiddenFrom } from '../lib/communityReports.js'
 import { communityCategories, communityEngines, communityHarnessIds, communityHarnessMarkers, communityLimits, communityPathPattern, communityReservedName } from '../lib/communityContract.js'
@@ -205,10 +206,11 @@ export async function communityRoutes(app: FastifyInstance): Promise<void> {
     sendSuccess(reply, { harnesses: page.map(row => withCoverPath({ ...row, cover: withCover.has(row.id) ? 'set' : null })), ...(order ? { order } : {}), stats, signedIn: !!req.user, nextCursor, following: [...followed] })
   })
 
-  // `files=viewer` sends only the output page: a harness page draws nothing else.
+  // `files=viewer` sends only the output page: a harness page draws nothing else. The website's
+  // address for it (its slug) finds it too; every other route takes the id this one answers with.
   const harnessQuery = z.object({ files: z.enum(['viewer']).optional() })
   app.get<{ Params: z.infer<typeof params>; Querystring: z.infer<typeof harnessQuery> }>('/api/community/harnesses/:id', { preHandler: [validateParams(params), validateQuery(harnessQuery)] }, async (req, reply) => {
-    const autonomousEnv = environment(req), harnessId = req.params.id
+    const autonomousEnv = environment(req), harnessId = await resolvePublicationId(req.params.id, autonomousEnv)
     const post = await visiblePublication(harnessId, autonomousEnv, req.user?.sub)
     if (!post) return sendError(reply, 'This harness is unavailable.', 'NOT_FOUND', 404)
     const stored = 'title' in post ? post : null
