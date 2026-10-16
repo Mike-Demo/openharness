@@ -70,7 +70,7 @@ import { describeMasterStatus, readStatusFile } from './harnessd/master.js'
 import { namedNode } from './harnessd/processName.js'
 import { probeThisMaster, startMaster, startMasterInForeground } from './masterProcess.js'
 import { startServiceProcess } from './serviceProcess.js'
-import { askDataFolderServer, isLocalSocketName, localSocketPath, refuseServedDataFolder } from './lib/localSocket.js'
+import { askDataFolderServer, isLocalSocketName, localSocketPath, refuseServedDataFolder, servedFolderDeps } from './lib/localSocket.js'
 import { legacyDaemonStatus, localDaemonStatus } from './lib/daemonEndpoint.js'
 import { runAutonomousDeviceCommand } from './lib/autonomous-device/command.js'
 import { E2eeStore, identitySpent, peekIdentityPub } from './lib/e2ee/store.js'
@@ -1413,7 +1413,7 @@ async function launch(foreground: boolean, repair: boolean = false): Promise<voi
   if (foreground && process.env.HARNESS_NO_MASTER !== '1') {
     // Beside a daemon that serves this data folder, leave at once and say so, as its core would have:
     // the master would start its services and a core only to see the core refused, and end with 0.
-    await refuseServedDataFolder(localSocketPath(env.ADAPTER_DATA_DIR, env.PORT))
+    await refuseServedDataFolder(localSocketPath(env.ADAPTER_DATA_DIR, env.PORT), 1_000, servedFolderDeps(env.ADAPTER_DATA_DIR))
     startMasterInForeground(SCRIPT_PATH)
     return
   }

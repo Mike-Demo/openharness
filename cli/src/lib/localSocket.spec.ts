@@ -1,4 +1,5 @@
-import { request } from 'node:http'
+import { randomBytes } from 'node:crypto'
+import { createServer, request } from 'node:http'
 import { connect } from 'node:net'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -6,10 +7,10 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   askDataFolderServer, isLocalSocketName, isTrustedLocal, listenLocalSocket, localSocketListenPath, localSocketName, localSocketPath, ORPHAN_STILL_SERVING,
-  ORPHAN_WAIT_MS, refuseServedDataFolder, unixSocketPath, type DataFolderServer, type LocalSocketServer, type ServedFolderDeps,
+  ORPHAN_WAIT_MS, refuseServedDataFolder, servedFolderDeps, unixSocketPath, type DataFolderServer, type LocalSocketServer, type ServedFolderDeps,
 } from './localSocket.js'
 import { writeDaemonRecord } from './daemonRecord.js'
-import { newPipePath } from './windows/pipeAuth.js'
+import { ensureDaemonToken, newPipePath } from './windows/pipeAuth.js'
 
 const LOCAL_SOCKET_NAME = localSocketName(18473)
 
@@ -312,5 +313,54 @@ describe('refuseServedDataFolder', () => {
     const lingering = await run([{ pid: 7, corePid: 8 }])
     expect(lingering).toMatchObject({ outcome: ORPHAN_STILL_SERVING, waited: ORPHAN_WAIT_MS })
     expect(lingering.lines).toHaveLength(1)
+  })
+})
+
+/** A data folder for the token: /tmp's short path where sockets need one, the temp folder on Windows. */
+function pipeDir(): string {
+  if (process.platform !== 'win32') return shortDir()
+  const dir = mkdtempSync(join(tmpdir(), 'hpipe-'))
+  dirs.push(dir)
+  return dir
+}
+
+describe('who serves a data folder, over the Windows pipe', () => {
+  it('asks with the token, and takes only an answer that proves it', async () => {
+    // On Windows these are real pipes (\\.\pipe\harness-<id>); elsewhere sockets named alike.
+    const dir = pipeDir()
+    const pipeName = (): string => (process.platform === 'win32' ? newPipePath() : join(dir, `harness-${randomBytes(16).toString('hex')}`))
+    const token = ensureDaemonToken(dir)
+    const path = pipeName()
+    const status = { pid: 4242, corePid: 4243 }
+    opened.push(await listenLocalSocket((_req, res) => res.end(JSON.stringify(status)), path, { token }))
+    expect(await askDataFolderServer(path, 1_000, token)).toEqual(status)
+    // Another token: a 401 without the proof, which is not this data folder's daemon.
+    expect(await askDataFolderServer(path, 1_000, randomBytes(32))).toBe('none')
+    // Whatever took a dead daemon's name: no proof, so nothing serves, and start-up goes on.
+    const squatted = pipeName()
+    const squatter = createServer((_req, res) => res.end(JSON.stringify(status)))
+    await new Promise<void>((resolve) => squatter.listen(squatted, resolve))
+    try {
+      expect(await askDataFolderServer(squatted, 1_000, token)).toBe('none')
+    } finally {
+      squatter.close()
+    }
+    // A stale record: nothing listens there. A listener that never answers: a timeout. Both serve nothing.
+    expect(await askDataFolderServer(pipeName(), 1_000, token)).toBe('none')
+    const silent = pipeName()
+    const mute = createServer(() => { /* never answers */ })
+    await new Promise<void>((resolve) => mute.listen(silent, resolve))
+    try {
+      expect(await askDataFolderServer(silent, 200, token)).toBe('none')
+    } finally {
+      mute.closeAllConnections()
+      mute.close()
+    }
+    // A name that is no Harness pipe is never dialled.
+    expect(await askDataFolderServer(join(dir, 'other.sock'), 1_000, token)).toBe('none')
+    expect(servedFolderDeps(dir, 'darwin').who).toBe(askDataFolderServer)
+    expect(await servedFolderDeps(dir, 'win32').who(path, 1_000)).toEqual(status)
+    // No token in that folder: no daemon has started there.
+    expect(await servedFolderDeps(pipeDir(), 'win32').who(path, 1_000)).toBe('none')
   })
 })

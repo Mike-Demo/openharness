@@ -197,7 +197,7 @@ import { KNOWN_SERVICES, masterRunsEngineRuntime, masterRunsLiveEngines, service
 import { askForMessages, createMessagesLink } from './messagesLink.js'
 import { createDevicesLink } from './devicesLink.js'
 import { CORE_EXIT_STOP, CORE_EXIT_UPDATE, PROBE_COMMAND } from '../harnessd/protocol.js'
-import { localSocketPath, refuseServedDataFolder, unixSocketPath, type LocalSocketServer } from '../lib/localSocket.js'
+import { localSocketPath, refuseServedDataFolder, servedFolderDeps, unixSocketPath, type LocalSocketServer } from '../lib/localSocket.js'
 import { saveDaemonPort } from '../lib/daemonEndpoint.js'
 import { publishHookRoute } from '../lib/hookRoutes.js'
 import { BackendSocket, isLocalClientId } from '../backendSocket.js'
@@ -493,7 +493,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // Another daemon serves this data folder: leave before reading or writing anything of its — its
   // registry, its viewers, its panes. Just after the update is listened for, never before it
   // (startupOrder.spec.ts).
-  await refuseServedDataFolder(localSocketPath(env.ADAPTER_DATA_DIR, env.PORT))
+  await refuseServedDataFolder(localSocketPath(env.ADAPTER_DATA_DIR, env.PORT), 1_000, servedFolderDeps(env.ADAPTER_DATA_DIR))
 
   // harnessd's master saw this core crash again and again: start nothing that could do it again. The
   // master's updater runs on, and a published fix still lands (`enterSafeMode`).

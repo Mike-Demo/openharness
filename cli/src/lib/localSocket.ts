@@ -20,7 +20,8 @@ import type { Duplex } from 'node:stream'
 import { chmodSync, linkSync, lstatSync, renameSync, unlinkSync, type Stats } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { readDaemonRecord } from './daemonRecord.js'
-import { checkPipeAuth, newPipePath, NonceWindow, PIPE_AUTH_HEADER, PIPE_PROOF_HEADER, pipeIdOf, pipeProofValue } from './windows/pipeAuth.js'
+import { checkPipeAuth, newPipePath, NonceWindow, PIPE_AUTH_HEADER, PIPE_PROOF_HEADER, pipeIdOf, pipeProofValue, readDaemonToken } from './windows/pipeAuth.js'
+import { pipeAbsent, pipeRequest, PipeUnproven } from './windows/pipeClient.js'
 
 /**
  * One socket per configured port in this OS user's data directory: `daemon-<port>.sock`. Its name
@@ -262,10 +263,24 @@ export interface ServedFolderDeps {
 export const ORPHAN_WAIT_MS = 20_000
 const ORPHAN_POLL_MS = 250
 
+/** What a status answer says: a daemon and its master, or `unknown` when it does not say both pids. */
+function folderServerOf(body: string): DataFolderServer {
+  try {
+    const status = JSON.parse(body) as { pid?: unknown; corePid?: unknown }
+    const pid = Number(status.pid)
+    // A daemon from before harnessd says no core of its own: it is its own master.
+    const corePid = status.corePid === undefined ? pid : Number(status.corePid)
+    return Number.isSafeInteger(pid) && pid > 0 && Number.isSafeInteger(corePid) && corePid > 0 ? { pid, corePid } : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
 /** Ask the daemon on a data folder's socket who it is. A socket that takes no connection serves nothing
  *  (no socket, a stale one, one that cannot be reached: start-up goes on, and the bind decides); one that
- *  takes it and does not say is `unknown`. */
-export function askDataFolderServer(path: string, timeoutMs: number): Promise<DataFolderServer> {
+ *  takes it and does not say is `unknown`. With [token] the socket is the Windows pipe: see [askPipeServer]. */
+export function askDataFolderServer(path: string, timeoutMs: number, token: Buffer | null = null): Promise<DataFolderServer> {
+  if (token) return askPipeServer(path, timeoutMs, token)
   return new Promise((resolve) => {
     let connected = false
     // A connection of its own, never one kept alive from an earlier ask: that one may be to a daemon gone.
@@ -273,15 +288,7 @@ export function askDataFolderServer(path: string, timeoutMs: number): Promise<Da
       let body = ''
       response.setEncoding('utf8')
       response.on('data', (chunk: string) => { if (body.length < 65_536) body += chunk })
-      response.on('end', () => {
-        try {
-          const status = JSON.parse(body) as { pid?: unknown; corePid?: unknown }
-          const pid = Number(status.pid)
-          // A daemon from before harnessd says no core of its own: it is its own master.
-          const corePid = status.corePid === undefined ? pid : Number(status.corePid)
-          resolve(Number.isSafeInteger(pid) && pid > 0 && Number.isSafeInteger(corePid) && corePid > 0 ? { pid, corePid } : 'unknown')
-        } catch { resolve('unknown') }
-      })
+      response.on('end', () => resolve(folderServerOf(body)))
       response.on('error', () => resolve('unknown'))
     })
     request.on('socket', (socket: Socket) => socket.once('connect', () => { connected = true }))
@@ -291,12 +298,46 @@ export function askDataFolderServer(path: string, timeoutMs: number): Promise<Da
   })
 }
 
+/**
+ * The Windows pipe: the ask proves the token and takes only an answer with the daemon's proof (pipeClient.ts).
+ * An answer without it serves nothing: whatever took a dead daemon's name must not keep this one down. So does a
+ * name that is no Harness pipe, nothing listening there, or no answer in time (a record of a daemon gone, or a
+ * squatter that never answers, must not refuse a start). An answer that proves the daemon but is unusable (too
+ * large) is `unknown`, as on a Unix socket.
+ */
+async function askPipeServer(pipe: string, timeoutMs: number, token: Buffer): Promise<DataFolderServer> {
+  if (!pipeIdOf(pipe)) return 'none'
+  try {
+    const reply = await pipeRequest({ pipe, token }, { method: 'GET', path: '/api/status', timeoutMs, maxBytes: 65_536 })
+    return folderServerOf(reply.body)
+  } catch (error) {
+    const name = (error as Error | null)?.name
+    return error instanceof PipeUnproven || pipeAbsent(error) || name === 'TimeoutError' || name === 'AbortError' ? 'none' : 'unknown'
+  }
+}
+
 const SERVED_FOLDER_DEFAULTS: ServedFolderDeps = {
   who: askDataFolderServer,
   alive: (pid) => { try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM' } },
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now: () => performance.now(),
   log: (line) => console.log(line),
+}
+
+/**
+ * What `refuseServedDataFolder` asks with for the daemon of [dataDir]. On Windows it asks with that folder's token,
+ * and with no token there, nothing serves it (the core makes the token before it listens). Elsewhere it asks as it
+ * always has.
+ */
+export function servedFolderDeps(dataDir: string, platform: NodeJS.Platform = process.platform): ServedFolderDeps {
+  if (platform !== 'win32') return SERVED_FOLDER_DEFAULTS
+  return {
+    ...SERVED_FOLDER_DEFAULTS,
+    who: (path, timeoutMs) => {
+      const token = readDaemonToken(dataDir)
+      return token ? askDataFolderServer(path, timeoutMs, token) : Promise.resolve('none')
+    },
+  }
 }
 
 /**
