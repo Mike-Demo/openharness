@@ -345,13 +345,13 @@ describe('who serves a data folder, over the Windows pipe', () => {
     } finally {
       squatter.close()
     }
-    // A stale record: nothing listens there. A listener that never answers: a timeout. Both serve nothing.
+    // A stale record: nothing listens there, so nothing serves. A listener that never answers may be a slow daemon: unknown, and start-up refuses.
     expect(await askDataFolderServer(pipeName(), 1_000, token)).toBe('none')
     const silent = pipeName()
     const mute = createServer(() => { /* never answers */ })
     await new Promise<void>((resolve) => mute.listen(silent, resolve))
     try {
-      expect(await askDataFolderServer(silent, 200, token)).toBe('none')
+      expect(await askDataFolderServer(silent, 200, token)).toBe('unknown')
     } finally {
       mute.closeAllConnections()
       mute.close()

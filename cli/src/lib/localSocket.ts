@@ -301,9 +301,10 @@ export function askDataFolderServer(path: string, timeoutMs: number, token: Buff
 /**
  * The Windows pipe: the ask proves the token and takes only an answer with the daemon's proof (pipeClient.ts).
  * An answer without it serves nothing: whatever took a dead daemon's name must not keep this one down. So does a
- * name that is no Harness pipe, nothing listening there, or no answer in time (a record of a daemon gone, or a
- * squatter that never answers, must not refuse a start). An answer that proves the daemon but is unusable (too
- * large) is `unknown`, as on a Unix socket.
+ * name that is no Harness pipe, or nothing listening there (a stale record). Silence is not that: a listener that
+ * does not answer in time (a real daemon that is only slow) is `unknown`, and start-up refuses, since each Windows
+ * start listens on a fresh pipe and this ask is the only guard against a second daemon on the folder. An answer that
+ * proves the daemon but is unusable (too large) is `unknown` too, as on a Unix socket.
  */
 async function askPipeServer(pipe: string, timeoutMs: number, token: Buffer): Promise<DataFolderServer> {
   if (!pipeIdOf(pipe)) return 'none'
@@ -311,8 +312,7 @@ async function askPipeServer(pipe: string, timeoutMs: number, token: Buffer): Pr
     const reply = await pipeRequest({ pipe, token }, { method: 'GET', path: '/api/status', timeoutMs, maxBytes: 65_536 })
     return folderServerOf(reply.body)
   } catch (error) {
-    const name = (error as Error | null)?.name
-    return error instanceof PipeUnproven || pipeAbsent(error) || name === 'TimeoutError' || name === 'AbortError' ? 'none' : 'unknown'
+    return error instanceof PipeUnproven || pipeAbsent(error) ? 'none' : 'unknown'
   }
 }
 
