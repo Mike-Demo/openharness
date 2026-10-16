@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { request, type Server } from 'node:http'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -9,6 +10,7 @@ import { env } from './config/env.js'
 import { readHookCredential } from './lib/hookAuth.js'
 import { ENGINES } from './engines/types.js'
 import { engineHooks } from './engines/hooks.js'
+import { pipeRequest } from './lib/windows/pipeClient.js'
 
 let server: Server | null = null
 
@@ -744,6 +746,25 @@ describe('the daemon socket', () => {
       const port = (started.server.address() as { port: number }).port
       const tcp = await fetch(`http://127.0.0.1:${port}/api/auth/handoff`, { method: 'POST', headers: local })
       expect(tcp.status).toBe(403)
+      expect(onAuthHandoff).toHaveBeenCalledTimes(1)
+    } finally {
+      await started.localSocket?.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('over the Windows pipe, serves only requests that prove the token, and trusts those', async () => {
+    const dir = mkdtempSync('/tmp/hsock-')
+    const socketPath = join(dir, `harness-${randomBytes(16).toString('hex')}`)
+    const token = randomBytes(32)
+    const onAuthHandoff = vi.fn(async () => ({ status: 200, body: { success: true, data: { code: 'hnh_x', expiresIn: 90 } } }))
+    const started = await startHookServer(0, { onRegistered: vi.fn(), onSessionEnd: vi.fn(), onAuthHandoff }, { socketPath, pipeToken: token })
+    server = started.server
+    try {
+      const local = { 'x-adapter-local': '1' }
+      // The route a Unix socket's file mode guards: here the token is what lets it through.
+      expect((await pipeRequest({ pipe: socketPath, token }, { method: 'POST', path: '/api/auth/handoff', headers: local })).status).toBe(200)
+      expect(await viaSocket(socketPath, 'POST', '/api/auth/handoff', local)).toBe(401)
       expect(onAuthHandoff).toHaveBeenCalledTimes(1)
     } finally {
       await started.localSocket?.close()

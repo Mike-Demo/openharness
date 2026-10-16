@@ -197,7 +197,8 @@ import { KNOWN_SERVICES, masterRunsEngineRuntime, masterRunsLiveEngines, service
 import { askForMessages, createMessagesLink } from './messagesLink.js'
 import { createDevicesLink } from './devicesLink.js'
 import { CORE_EXIT_STOP, CORE_EXIT_UPDATE, PROBE_COMMAND } from '../harnessd/protocol.js'
-import { localSocketPath, refuseServedDataFolder, servedFolderDeps, unixSocketPath, type LocalSocketServer } from '../lib/localSocket.js'
+import { localSocketListenPath, localSocketPath, refuseServedDataFolder, servedFolderDeps, type LocalSocketServer } from '../lib/localSocket.js'
+import { ensureDaemonToken } from '../lib/windows/pipeAuth.js'
 import { saveDaemonPort } from '../lib/daemonEndpoint.js'
 import { publishHookRoute } from '../lib/hookRoutes.js'
 import { BackendSocket, isLocalClientId } from '../backendSocket.js'
@@ -1845,6 +1846,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // Agent Messages is told when its switch changes, wherever it runs: off, it reads it again only when told or its
     // file changes (messages/service.ts).
     onNotice: (listener) => experimentHooks.onNotice(listener), messagesChanged: () => ports.messages?.settingsChanged() })
+  // Windows: the daemon's pipe takes only requests that prove this token (lib/windows/pipeAuth.ts). It is made on
+  // the first start and kept in the data folder, in the profile.
+  const pipeToken = process.platform === 'win32' ? ensureDaemonToken(env.ADAPTER_DATA_DIR) : null
   const { server: hookServer, port: hookPort, localSocket } = await startHookServer(daemonPort(), {
     onAutonomousDeviceRequest: async (method, target, body) => {
       // Until the pieces below are built; after, a piece that could not be is refused by the requests
@@ -1932,8 +1936,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     onProductUsageRead: () => proxyBackend('GET', '/api/product-usage/settings'),
     onProductUsageWrite: (body) => proxyBackend('POST', '/api/product-usage/settings', body),
     onStore: (method, path, body) => proxyBackend(method, path, body),
-  }, { socketPath: unixSocketPath(env.ADAPTER_DATA_DIR, env.PORT), allowPortFallback: true })
-  try { saveDaemonPort(env.ADAPTER_DATA_DIR, env.PORT, hookPort) } catch (error) {
+  }, { socketPath: localSocketListenPath(env.ADAPTER_DATA_DIR, env.PORT), pipeToken, allowPortFallback: true })
+  // On Windows the record also names the pipe and this core's pid: both are new on each start, so clients read them here.
+  try { saveDaemonPort(env.ADAPTER_DATA_DIR, env.PORT, hookPort, pipeToken && localSocket ? { pipe: localSocket.path, pid: process.pid } : undefined) } catch (error) {
     await localSocket?.close()
     hookServer.close()
     throw error

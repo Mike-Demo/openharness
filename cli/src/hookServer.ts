@@ -372,6 +372,8 @@ async function inspectHermesKind(sessionId: string, knownHome?: string): Promise
 export interface HookServerOptions {
   /** Also serve on this Unix socket (see lib/localSocket.ts). Null or absent: TCP only. */
   socketPath?: string | null
+  /** Windows: the daemon's token. When given, `socketPath` is a pipe whose every request proves it (lib/localSocket.ts). */
+  pipeToken?: Buffer | null
   /** A private socket identifies this user's daemon even when another OS user holds the TCP port. */
   allowPortFallback?: boolean
   /** Completed acknowledgements are retained for a live process, never evicted to admit another hook. */
@@ -413,8 +415,9 @@ export function startHookServer(
         res.writeHead(code, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify(body))
       }
-      // Over the daemon's own socket the filesystem already said who this is, and no browser can get
-      // there; everything else must prove it was addressed to this loopback server.
+      // Over the daemon's own socket the filesystem already said who this is, and over its Windows pipe the request
+      // proved the daemon's token; no browser can get to either. Everything else must prove it was addressed to
+      // this loopback server.
       const trustedLocal = isTrustedLocal(req)
       // Before any route, reads included. See lib/loopbackRequest.ts.
       if (!trustedLocal && !isLoopbackRequest(req, hosts)) {
@@ -1197,7 +1200,7 @@ export function startHookServer(
       if (!socketPath) { resolve({ server, port: actual, localSocket: null }); return }
       // The private socket is mandatory when opting into multi-user startup. A duplicate daemon
       // must not survive on a random port while another one owns this user's socket.
-      listenLocalSocket(handle, socketPath).then(
+      listenLocalSocket(handle, socketPath, { token: options.pipeToken ?? undefined }).then(
         (localSocket) => {
           console.log(`[hooks] listening on ${socketPath}`)
           resolve({ server, port: actual, localSocket })
