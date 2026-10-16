@@ -20,7 +20,7 @@ import { dropAgentSessionEnv } from './lib/agentSessionEnv.js'
 import { ensureUtf8Locale } from './lib/childLocale.js'
 import { DAEMON_LOG_FILE, HARNESSD_STATUS_FILE, PID_FILE } from './lib/daemonState.js'
 import { isInstalledCopy } from './lib/installedCopy.js'
-import { localSocketPath } from './lib/localSocket.js'
+import { unixSocketPath } from './lib/localSocket.js'
 import { leanFingerprint, readLeanBundle, releaseLeanClaim, writeLeanBundle, type LeanBundle } from './harnessd/leanBundle.js'
 import { ts } from './lib/log.js'
 import { confirm as confirmUpdate, restore as restoreUpdate, unjudgedUpdate } from './lib/selfUpdate.js'
@@ -76,7 +76,7 @@ export function startMaster(start: MasterStart, exit: (code: number) => void = (
   dropAgentSessionEnv()
   const { serviceScriptPath } = start
   return runMaster({
-    env: masterEnv(process.env, localSocketPath(env.ADAPTER_DATA_DIR, env.PORT)),
+    env: masterEnv(process.env, unixSocketPath(env.ADAPTER_DATA_DIR, env.PORT)),
     nodePath: baseNode(process.execPath),
     execArgv: process.execArgv,
     runtimeDir: env.ADAPTER_RUNTIME_DIR,

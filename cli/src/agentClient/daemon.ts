@@ -11,7 +11,7 @@ import { WebSocket } from 'ws'
 import { env } from '../config/env.js'
 import { readAuthSession } from '../lib/authSession.js'
 import { computerId, daemonUnreachableText } from '../lib/daemonState.js'
-import { localSocketPath } from '../lib/localSocket.js'
+import { unixSocketPath } from '../lib/localSocket.js'
 import { paneOwner } from '../messages/command.js'
 
 export class AgentClientError extends Error {
@@ -57,7 +57,7 @@ export function whereFor(pane: string | undefined, owner: typeof paneOwner = pan
 
 /** The Unix socket when the daemon has one (file permissions are its lock), else loopback TCP. */
 export const connectSocket: Connect = (where) => {
-  const path = localSocketPath(where.dataDir, where.port)
+  const path = unixSocketPath(where.dataDir, where.port)
   return path && existsSync(path) ? new WebSocket(`ws+unix://${path}:/api/local-ws`) : new WebSocket(`ws://127.0.0.1:${where.port}/api/local-ws`)
 }
 

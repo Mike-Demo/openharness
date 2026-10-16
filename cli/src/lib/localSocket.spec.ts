@@ -4,9 +4,11 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writ
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  askDataFolderServer, isLocalSocketName, isTrustedLocal, listenLocalSocket, localSocketName, localSocketPath, ORPHAN_STILL_SERVING, ORPHAN_WAIT_MS,
-  refuseServedDataFolder, type DataFolderServer, type LocalSocketServer, type ServedFolderDeps,
+  askDataFolderServer, isLocalSocketName, isTrustedLocal, listenLocalSocket, localSocketListenPath, localSocketName, localSocketPath, ORPHAN_STILL_SERVING,
+  ORPHAN_WAIT_MS, refuseServedDataFolder, unixSocketPath, type DataFolderServer, type LocalSocketServer, type ServedFolderDeps,
 } from './localSocket.js'
+import { writeDaemonRecord } from './daemonRecord.js'
+import { newPipePath } from './windows/pipeAuth.js'
 
 const LOCAL_SOCKET_NAME = localSocketName(18473)
 
@@ -62,6 +64,23 @@ describe('localSocketPath', () => {
     expect(isLocalSocketName('daemon-18473.sock')).toBe(true)
     expect(isLocalSocketName('daemon.sock')).toBe(false)
     expect(isLocalSocketName('daemon-18473.sock.bak')).toBe(false)
+  })
+
+  it('on Windows, names the pipe the running daemon recorded, and a new pipe for each start', () => {
+    const dir = shortDir()
+    expect(localSocketPath(dir, 18473, 'win32')).toBeNull()
+    const pipe = newPipePath()
+    writeDaemonRecord(dir, 18473, 24567, { pipe, pid: 4242 })
+    expect(localSocketPath(dir, 18473, 'win32')).toBe(pipe)
+    expect(localSocketPath(dir, 18474, 'win32')).toBeNull()
+    // The filesystem socket the services and ws+unix clients use: none on Windows, the same everywhere else.
+    expect(unixSocketPath(dir, 18473, 'win32')).toBeNull()
+    expect(unixSocketPath(dir, 18473, 'darwin')).toBe(join(dir, LOCAL_SOCKET_NAME))
+    expect(localSocketPath(dir, 18473, 'darwin')).toBe(join(dir, LOCAL_SOCKET_NAME))
+    const first = localSocketListenPath(dir, 18473, 'win32')
+    expect(first).toMatch(/^\\\\\.\\pipe\\harness-[0-9a-f]{32}$/)
+    expect(localSocketListenPath(dir, 18473, 'win32')).not.toBe(first)
+    expect(localSocketListenPath(dir, 18473, 'linux')).toBe(join(dir, LOCAL_SOCKET_NAME))
   })
 })
 

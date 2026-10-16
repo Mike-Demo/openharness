@@ -197,7 +197,7 @@ import { KNOWN_SERVICES, masterRunsEngineRuntime, masterRunsLiveEngines, service
 import { askForMessages, createMessagesLink } from './messagesLink.js'
 import { createDevicesLink } from './devicesLink.js'
 import { CORE_EXIT_STOP, CORE_EXIT_UPDATE, PROBE_COMMAND } from '../harnessd/protocol.js'
-import { localSocketPath, refuseServedDataFolder, type LocalSocketServer } from '../lib/localSocket.js'
+import { localSocketPath, refuseServedDataFolder, unixSocketPath, type LocalSocketServer } from '../lib/localSocket.js'
 import { saveDaemonPort } from '../lib/daemonEndpoint.js'
 import { publishHookRoute } from '../lib/hookRoutes.js'
 import { BackendSocket, isLocalClientId } from '../backendSocket.js'
@@ -1932,7 +1932,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     onProductUsageRead: () => proxyBackend('GET', '/api/product-usage/settings'),
     onProductUsageWrite: (body) => proxyBackend('POST', '/api/product-usage/settings', body),
     onStore: (method, path, body) => proxyBackend(method, path, body),
-  }, { socketPath: localSocketPath(env.ADAPTER_DATA_DIR, env.PORT), allowPortFallback: true })
+  }, { socketPath: unixSocketPath(env.ADAPTER_DATA_DIR, env.PORT), allowPortFallback: true })
   try { saveDaemonPort(env.ADAPTER_DATA_DIR, env.PORT, hookPort) } catch (error) {
     await localSocket?.close()
     hookServer.close()

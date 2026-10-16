@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { legacyDaemonStatus, localDaemonStatus, saveDaemonPort, savedDaemonPort } from './daemonEndpoint.js'
+import { readDaemonRecord } from './daemonRecord.js'
 import { listenLocalSocket, localSocketPath } from './localSocket.js'
 
 const cleanup: Array<() => void | Promise<void>> = []
@@ -67,6 +68,20 @@ describe('per-user daemon discovery', () => {
       writeFileSync(file, body)
       expect(savedDaemonPort(a, 18473)).toBe(18473)
     }
+  })
+
+  it('records the Windows pipe and the core\'s pid beside the port, and reads only a pipe name back', () => {
+    const dir = directory()
+    const pipe = `\\\\.\\pipe\\harness-${'a'.repeat(32)}`
+    saveDaemonPort(dir, 18473, 24567, { pipe, pid: 4242 })
+    expect(JSON.parse(readFileSync(join(dir, 'daemon-18473.json'), 'utf8'))).toEqual({ port: 24567, pipe, pid: 4242 })
+    expect(readDaemonRecord(dir, 18473)).toEqual({ port: 24567, pipe, pid: 4242 })
+    expect(savedDaemonPort(dir, 18473)).toBe(24567)
+    writeFileSync(join(dir, 'daemon-18473.json'), JSON.stringify({ port: 24567, pipe: 'C:\\evil', pid: -1 }))
+    expect(readDaemonRecord(dir, 18473)).toEqual({ port: 24567, pipe: null, pid: null })
+    saveDaemonPort(dir, 18473, 24568)
+    expect(readDaemonRecord(dir, 18473)).toEqual({ port: 24568, pipe: null, pid: null })
+    expect(readDaemonRecord(dir, 18474)).toBeNull()
   })
 
   it('accepts legacy CLI status only when both the saved PID and computer identity match', async () => {

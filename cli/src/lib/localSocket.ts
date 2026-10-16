@@ -19,7 +19,8 @@ import type { Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
 import { chmodSync, linkSync, lstatSync, renameSync, unlinkSync, type Stats } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { checkPipeAuth, NonceWindow, PIPE_AUTH_HEADER, PIPE_PROOF_HEADER, pipeIdOf, pipeProofValue } from './windows/pipeAuth.js'
+import { readDaemonRecord } from './daemonRecord.js'
+import { checkPipeAuth, newPipePath, NonceWindow, PIPE_AUTH_HEADER, PIPE_PROOF_HEADER, pipeIdOf, pipeProofValue } from './windows/pipeAuth.js'
 
 /**
  * One socket per configured port in this OS user's data directory: `daemon-<port>.sock`. Its name
@@ -46,11 +47,26 @@ const trustedSockets = new WeakSet<Socket>()
 /** Requests over the daemon's pipe whose auth checked out, and the proof each answer to them carries. */
 const pipeProofs = new WeakMap<IncomingMessage, string>()
 
-/** Where the socket for the daemon on `port` lives in this data directory, or null where there is none. */
-export function localSocketPath(dataDir: string, port: number, platform: NodeJS.Platform = process.platform): string | null {
+/** The daemon's Unix socket for `port` in this data directory, or null where there is none: Windows, or a path too long. */
+export function unixSocketPath(dataDir: string, port: number, platform: NodeJS.Platform = process.platform): string | null {
   if (platform === 'win32') return null
   const path = join(dataDir, localSocketName(port))
   return Buffer.byteLength(path) <= MAX_SOCKET_PATH_BYTES ? path : null
+}
+
+/**
+ * Where a client reaches the daemon on `port` of this data directory, or null where there is nothing to reach. That
+ * is its Unix socket; on Windows, the pipe the running daemon recorded in `daemon-<port>.json`, a new name on each
+ * start. Reaching that pipe is no trust: every request there proves the daemon's token (lib/windows/pipeAuth.ts).
+ * A caller that needs a filesystem socket (`ws+unix://`, the services) uses unixSocketPath.
+ */
+export function localSocketPath(dataDir: string, port: number, platform: NodeJS.Platform = process.platform): string | null {
+  return platform === 'win32' ? readDaemonRecord(dataDir, port)?.pipe ?? null : unixSocketPath(dataDir, port, platform)
+}
+
+/** Where a daemon starting on `port` listens: its Unix socket, or on Windows a pipe of a new random name. */
+export function localSocketListenPath(dataDir: string, port: number, platform: NodeJS.Platform = process.platform): string | null {
+  return platform === 'win32' ? newPipePath() : unixSocketPath(dataDir, port, platform)
 }
 
 /** Whether this request (or raw socket) came in over the daemon's own Unix socket, or over its pipe with valid auth. */

@@ -6,7 +6,7 @@
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { WebSocket } from 'ws'
-import { localSocketPath } from '../lib/localSocket.js'
+import { unixSocketPath } from '../lib/localSocket.js'
 import { NOT_RUNNING, pidIn, unreachableText } from '../lib/unreachable.js'
 import { MessageError } from './model.js'
 
@@ -14,7 +14,7 @@ export interface RpcTarget { port: number; machineId: string; dataDir?: string; 
 export type Rpc = (target: RpcTarget, payload: Record<string, unknown>, timeoutMs?: number) => Promise<Record<string, unknown>>
 
 export const messagesRpc: Rpc = (target, payload, timeoutMs = 20_000) => new Promise((resolve, reject) => {
-  const socketPath = target.dataDir ? localSocketPath(target.dataDir, target.port) : null
+  const socketPath = target.dataDir ? unixSocketPath(target.dataDir, target.port) : null
   const ws = socketPath && existsSync(socketPath)
     ? new WebSocket(`ws+unix://${socketPath}:/api/local-ws`)
     : new WebSocket(`ws://127.0.0.1:${target.port}/api/local-ws`)

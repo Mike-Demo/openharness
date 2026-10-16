@@ -1,32 +1,17 @@
 import { request } from 'node:http'
-import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { lstatSync } from 'node:fs'
 import { localSocketPath } from './localSocket.js'
+import { readDaemonRecord, writeDaemonRecord, type DaemonPipeRecord } from './daemonRecord.js'
 
 // The configured port names the private socket. TCP may use another port when a different OS
-// user's daemon already holds that number; remember it in THIS user's data directory.
-function portFile(dataDir: string, configuredPort: number): string {
-  return join(dataDir, `daemon-${configuredPort}.json`)
-}
-
+// user's daemon already holds that number; remember it in THIS user's data directory (lib/daemonRecord.ts).
 export function savedDaemonPort(dataDir: string, configuredPort: number): number {
-  try {
-    const { port } = JSON.parse(readFileSync(portFile(dataDir, configuredPort), 'utf8'))
-    if (Number.isInteger(port) && port > 0 && port <= 65535) return port
-  } catch { /* a first start, or an unreadable old record */ }
-  return configuredPort
+  return readDaemonRecord(dataDir, configuredPort)?.port ?? configuredPort
 }
 
-export function saveDaemonPort(dataDir: string, configuredPort: number, port: number): void {
-  mkdirSync(dataDir, { recursive: true, mode: 0o700 })
-  const target = portFile(dataDir, configuredPort)
-  const temporary = `${target}.${process.pid}.tmp`
-  try {
-    writeFileSync(temporary, JSON.stringify({ port }) + '\n', { mode: 0o600 })
-    renameSync(temporary, target)
-  } finally {
-    rmSync(temporary, { force: true })
-  }
+/** [pipe]: on Windows, the daemon's pipe and the core's pid, which a client cannot derive. */
+export function saveDaemonPort(dataDir: string, configuredPort: number, port: number, pipe?: DaemonPipeRecord): void {
+  writeDaemonRecord(dataDir, configuredPort, port, pipe)
 }
 
 /** A native client must reach this OS user's socket, never whoever happens to hold a TCP port. */
