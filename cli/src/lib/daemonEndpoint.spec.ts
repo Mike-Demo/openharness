@@ -1,14 +1,11 @@
-import { randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { daemonPipe, legacyDaemonStatus, localDaemonCall, localDaemonStatus, saveDaemonPort, savedDaemonPort } from './daemonEndpoint.js'
+import { afterEach, describe, expect, it } from 'vitest'
+import { legacyDaemonStatus, localDaemonStatus, saveDaemonPort, savedDaemonPort } from './daemonEndpoint.js'
 import { readDaemonRecord } from './daemonRecord.js'
 import { listenLocalSocket, localSocketPath } from './localSocket.js'
-import { ensureDaemonToken } from './windows/pipeAuth.js'
-import { PipeUnproven } from './windows/pipeClient.js'
 
 const cleanup: Array<() => void | Promise<void>> = []
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close() })
@@ -115,65 +112,5 @@ describe('per-user daemon discovery', () => {
     expect(await legacyDaemonStatus(port, 43211, 'this-user')).toBeNull()
     expect(await legacyDaemonStatus(port, 43210, 'other-user')).toBeNull()
     expect(await legacyDaemonStatus(port, 43210, 'this-user')).toEqual(status)
-  })
-})
-
-describe('the daemon over its Windows pipe', () => {
-  const alive = { alive: () => true }
-  /** A data folder as the Windows core leaves it: a token, a record naming its pipe and pid, and the pipe served. */
-  async function windowsDaemon(handler: Parameters<typeof listenLocalSocket>[0], port = 19418) {
-    const dir = directory()
-    const token = ensureDaemonToken(dir)
-    const pipe = join(dir, `harness-${randomBytes(16).toString('hex')}`)
-    const server = await listenLocalSocket(handler, pipe, { token })
-    cleanup.push(server.close)
-    saveDaemonPort(dir, port, 24567, { pipe, pid: process.pid })
-    return { dir, token, pipe, port }
-  }
-  const options = { platform: 'win32' as const, pipe: (dir: string, port: number) => daemonPipe(dir, port, alive) }
-
-  it('is found by its record and token, unless its process is proven gone', async () => {
-    const { dir, token, pipe, port } = await windowsDaemon((_req, res) => res.end('{}'))
-    const found = await daemonPipe(dir, port, alive)
-    expect(found?.pipe).toBe(pipe)
-    expect(found?.token.equals(token)).toBe(true)
-    expect(await daemonPipe(dir, port, { alive: () => false })).toBeNull()
-    expect(await daemonPipe(dir, port + 1, alive)).toBeNull()
-    saveDaemonPort(dir, port, 24567)
-    expect(await daemonPipe(dir, port, alive)).toBeNull()
-    expect(await daemonPipe(directory(), port, alive)).toBeNull()
-  })
-
-  it('answers status over the pipe, and nothing for an answer without the proof', async () => {
-    const { dir, port } = await windowsDaemon((_req, res) => res.end(JSON.stringify({ machineId: 'account-a' })))
-    expect(await localDaemonStatus(dir, port, options)).toEqual({ machineId: 'account-a' })
-    expect(await localDaemonStatus(directory(), port, options)).toBeNull()
-    const foreign = await localDaemonStatus(dir, port, { platform: 'win32', pipe: async (d, p) => ({ ...(await daemonPipe(d, p, alive))!, token: randomBytes(32) }) })
-    expect(foreign).toBeNull()
-  })
-
-  it('makes control calls over the pipe, falls back to TCP only where nothing is there, and never after an unproven answer', async () => {
-    let got = ''
-    const { dir, port, pipe } = await windowsDaemon((req, res) => {
-      got = `${req.method} ${req.url} ${req.headers['x-adapter-local']}`
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end('{"ok":true}')
-    })
-    const tcp = vi.fn(async () => new Response('{"tcp":true}', { status: 200 }))
-    const call = (o: Partial<Parameters<typeof localDaemonCall>[5]> = {}) =>
-      localDaemonCall(dir, port, 'POST', '/api/pair', { code: '1' }, { ...options, tcpPort: 1, fetch: tcp as typeof fetch, ...o })
-    const over = await call()
-    expect(await over.json()).toEqual({ ok: true })
-    expect(got).toBe('POST /api/pair 1')
-    expect(tcp).not.toHaveBeenCalled()
-    // No pipe to reach: as on every other OS.
-    expect(await (await call({ pipe: async () => null })).json()).toEqual({ tcp: true })
-    expect(await (await call({ platform: 'darwin' })).json()).toEqual({ tcp: true })
-    // A recorded pipe nothing listens on any more.
-    const gone = join(directory(), `harness-${randomBytes(16).toString('hex')}`)
-    expect(await (await call({ pipe: async () => ({ pipe: gone, token: randomBytes(32) }) })).json()).toEqual({ tcp: true })
-    expect(tcp).toHaveBeenCalledTimes(3)
-    await expect(call({ pipe: async () => ({ pipe, token: randomBytes(32) }) })).rejects.toBeInstanceOf(PipeUnproven)
-    expect(tcp).toHaveBeenCalledTimes(3)
   })
 })

@@ -5,8 +5,6 @@ import { readDaemonRecord, writeDaemonRecord, type DaemonPipeRecord } from './da
 import { daemonPipe, type LocalDaemonOptions } from './windows/daemonPipe.js'
 import { pipeAbsent, pipeRequest } from './windows/pipeClient.js'
 
-export { daemonPipe, type LocalDaemonOptions } from './windows/daemonPipe.js'
-
 // The configured port names the private socket. TCP may use another port when a different OS
 // user's daemon already holds that number; remember it in THIS user's data directory (lib/daemonRecord.ts).
 export function savedDaemonPort(dataDir: string, configuredPort: number): number {
