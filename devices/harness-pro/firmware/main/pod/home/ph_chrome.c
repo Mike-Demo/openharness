@@ -44,10 +44,15 @@ bool ph_has_recap(const pod_agent_t *a)
     return false;
 }
 
+pod_scene_t ph_work_scene(const pod_agent_t *a)
+{
+    const ht_pet_t *p = pod_pet_for(a->engine);
+    return a->work_alt && p && p->working_alt ? POD_SCENE_WORK_ALT : POD_SCENE_WORK;
+}
 pod_scene_t ph_room_scene(const pod_model_t *m, const pod_agent_t *a)
 {
     pod_state_t st = pod_model_eff(m, a);
-    if (st == POD_WORKING) return POD_SCENE_WORK;
+    if (st == POD_WORKING) return ph_work_scene(a);
     if (st == POD_ASKING) return POD_SCENE_ASK;
     if (st == POD_OFFLINE) return POD_SCENE_REST;
     const pod_unread_t *u = pod_model_unread_find(m, a->id);

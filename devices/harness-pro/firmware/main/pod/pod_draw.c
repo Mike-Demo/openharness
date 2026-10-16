@@ -41,13 +41,13 @@ static const uint8_t *cell_row(const uint8_t *cells, const uint16_t *row_at, int
 }
 uint8_t ht_cell_at(const ht_cell_frame_t *f, int col, int row)
 {
-    uint8_t buf[256];
-    if (!f || col < 0 || row < 0 || col >= f->cols || row >= f->rows) return 0;
+    uint8_t buf[HT_CELL_COLS_MAX];
+    if (!f || f->cols > HT_CELL_COLS_MAX || col < 0 || row < 0 || col >= f->cols || row >= f->rows) return 0;
     return cell_row(f->cells, f->row_at, f->cols, row, buf)[col];
 }
 bool pod_cell(ht_scene_t *s, int x, int y, const ht_cell_frame_t *f, unsigned zoom8)
 {
-    if (!f || !f->cols || !f->rows || !f->cell || !f->cells || !f->palette || !zoom8) return false;
+    if (!f || !f->cols || f->cols > HT_CELL_COLS_MAX || !f->rows || !f->cell || !f->cells || !f->palette || !zoom8) return false;
     if (zoom8 > 8 && zoom8 != 16) zoom8 = 8;   // 16 is an exact 2x; 9..15 and above 16 are 1x
     int sw = f->cols * f->cell, sh = f->rows * f->cell;
     ht_run_t *r = new_run(s, POD_CELL, x, y, (int)((sw * zoom8 + 7) / 8), (int)((sh * zoom8 + 7) / 8));
@@ -70,7 +70,7 @@ static uint16_t swapped(uint16_t v) { return __builtin_bswap16(v); }
 
 // A few frame rows kept unpacked, by row index (a packed row is unpacked on a miss), so a pixel can look at the
 // cells around its own.
-typedef struct { int row[8]; uint8_t buf[8][256]; unsigned next; } row_cache_t;
+typedef struct { int row[8]; uint8_t buf[8][HT_CELL_COLS_MAX]; unsigned next; } row_cache_t;
 static const uint8_t *cache_row(const ht_cell_frame_t *f, row_cache_t *rc, int row)
 {
     for (int i = 0; i < 8; i++) if (rc->row[i] == row) return rc->buf[i];
@@ -124,11 +124,11 @@ static void cell_raster_core(const ht_run_t *r, ht_rect_t clip, uint16_t *out)
     int cols = f->cols, z = r->radius, cell = f->cell, sw = cols * cell, sh = f->rows * cell;
     // Render-task only (not reentrant): the row cache and edge rows live in statics so they stay off the 4 KB stack cap.
     static row_cache_t rc;
-    static uint8_t E[3][256];
+    static uint8_t E[3][HT_CELL_COLS_MAX];
     memset(rc.row, 0xff, sizeof rc.row);
     rc.next = 0;
     if (z > 8 && z < 16 && cell == 1 && r->text[1] == 1) {   // pod_cell_smooth at an in-between zoom: bilinear between pixel centres
-        static uint16_t brow[2][256];
+        static uint16_t brow[2][HT_CELL_COLS_MAX];
         int rows = f->rows, at[2] = {-2, -2};
         for (int y = top; y < bottom; y++) {
             int sv = ((y - r->y)  * 16 + 8) * 128 / z - 128;   // the glass pixel's centre, (y + 0.5) * 8 / z source pixels, x 256, from the source pixels' centres
@@ -165,7 +165,7 @@ static void cell_raster_core(const ht_run_t *r, ht_rect_t clip, uint16_t *out)
         // the edge runs straight instead of in 2 px blocks. Elsewhere it is bilinear at a quarter-pixel offset: 9/16 C, 3/16 H and V,
         // 1/16 D. A transparent pixel lends what is under it, so the outline fades into the ground; an outline colour lightens (soften).
         // Each source row's colours are looked up once (crow, by row) and shared by the four glass pixels of every source pixel.
-        static uint16_t crow[3][256];
+        static uint16_t crow[3][HT_CELL_COLS_MAX];
         static int crow_at[3];
         crow_at[0] = crow_at[1] = crow_at[2] = -2;
         int rows = f->rows;
@@ -304,7 +304,7 @@ static void cell_raster_core(const ht_run_t *r, ht_rect_t clip, uint16_t *out)
     // already in the output (the ground), so an edge fades into the scene, not into black.
     if (cell == 1 && z >= 4) {   // the pet's frames: each source row and its edge flags fetched once per output row
                                  // (z >= 4: a glass pixel spans at most 3 source rows, all R[] holds)
-    static const uint8_t none[256];
+    static const uint8_t none[HT_CELL_COLS_MAX];
     for (int y = top; y < bottom; y++) {
         int v0 = (y - r->y) * 8, v1 = v0 + 8;
         int sy0 = v0 / z, sy1 = imin(sh - 1, (v1 - 1) / z);
@@ -378,7 +378,7 @@ static void cell_raster_core(const ht_run_t *r, ht_rect_t clip, uint16_t *out)
 // arena is full the frame is simply resampled each time as before. Render task only.
 // 360 K pixels (720 KB of PSRAM): every frame the Notices faces and the recap's RELAX and REST scenes can show for all four pets at once come to 353 K.
 enum { BAKE_SLOTS = 64, BAKE_ARENA_PX = 360 * 1024 };
-typedef struct { const ht_cell_frame_t *f; const uint8_t *cells; const uint16_t *palette; uint16_t ground, w, h; uint8_t z, cols, rows; uint32_t off; } bake_t;
+typedef struct { const ht_cell_frame_t *f; const uint8_t *cells; const uint16_t *palette; uint16_t ground, w, h, cols; uint8_t z, rows; uint32_t off; } bake_t;
 static bake_t s_bake[BAKE_SLOTS];
 static unsigned s_nbake;
 static uint32_t s_arena_used;
@@ -413,7 +413,7 @@ static const bake_t *bake_of(const ht_run_t *r)
     for (size_t i = 0; i < px; i++) dst[i] = r->fg;
     cell_raster_core(&plain, (ht_rect_t){0, 0, r->w, r->pro_height}, dst);
     bake_t *b = &s_bake[s_nbake++];
-    *b = (bake_t){f, f->cells, f->palette, r->fg, (uint16_t)r->w, (uint16_t)r->pro_height, r->radius, (uint8_t)f->cols, (uint8_t)f->rows, s_arena_used};
+    *b = (bake_t){f, f->cells, f->palette, r->fg, (uint16_t)r->w, (uint16_t)r->pro_height, f->cols, r->radius, (uint8_t)f->rows, s_arena_used};
     s_arena_used += (uint32_t)px;
     s_bakes_made++;
     return b;

@@ -14,6 +14,7 @@
 #include "ptt_pro.h"
 #include "board_i2c.h"
 #include "cable/pro_cable.h"
+#include "pod/pod_model.h"
 #include "app/pro_voice.h"
 #include "audio/audio_capture.h"
 #include "config_store.h"
@@ -24,6 +25,7 @@
 #include "sys/fw_update.h"
 
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -49,6 +51,7 @@ void app_main(void)
     pro_display_init();
     pro_voice_init();    // the PSRAM ring and the microphone, while the heap is unfragmented
     audio_beep_init();   // the ES8311 speaker for the notification beep
+    pod_model_random(esp_random);   // each turn draws the chef or the builder (pod_agent_t.work_alt)
     pro_app_start();     // the render task; Pod shows "Connecting" until the daemon says hello
     pro_touch_start();
     // The side button, after the microphone and the app are up (as the round firmware started its button after the

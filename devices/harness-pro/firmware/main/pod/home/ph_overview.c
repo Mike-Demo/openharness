@@ -31,7 +31,7 @@ enum {
 pod_scene_t ph_card_scene(const pod_model_t *m, const pod_agent_t *a)
 {
     pod_state_t st = pod_model_eff(m, a);
-    return st == POD_WORKING ? POD_SCENE_WORK : st == POD_ASKING ? POD_SCENE_ASK : POD_SCENE_REST;
+    return st == POD_WORKING ? ph_work_scene(a) : st == POD_ASKING ? POD_SCENE_ASK : POD_SCENE_REST;
 }
 
 

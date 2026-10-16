@@ -128,6 +128,9 @@ void ph_bell(ht_scene_t *, int x, int y, int count);
 // ---- The room (ph_chrome.c, ph_agent.c): one pet at a time on its floor, thinking or speaking in a bubble ---------------------
 // The scene the room plays for the agent: WORK while working, ASK while asking, RELAX when it has a recap (or an unread FINISHED entry) and did not fail, else REST (failed, offline, nothing to say).
 pod_scene_t ph_room_scene(const pod_model_t *, const pod_agent_t *);
+// A working agent's scene, for the room and the Home card alike: the builder (WORK_ALT) when its turn drew it and its pet
+// has one (pod_agent_t.work_alt, Claude's), else WORK.
+pod_scene_t ph_work_scene(const pod_agent_t *);
 // The agent's pet in `scene`, 2x, its feet on `foot`, centred on cx (an engine with no pet: its 72 px logo or the ">_" outline). Returns the top of what is drawn.
 int ph_room_pet(ht_scene_t *, const pod_model_t *, const pod_agent_t *, pod_scene_t scene, int cx, int foot, uint32_t now_ms, uint32_t started_ms);
 int ph_room_pet_z(ht_scene_t *, const pod_model_t *, const pod_agent_t *, pod_scene_t scene, int cx, int foot, uint32_t now_ms, uint32_t started_ms,

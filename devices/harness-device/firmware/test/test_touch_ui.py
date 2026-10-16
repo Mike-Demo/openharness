@@ -66,6 +66,7 @@ static struct {
     uint8_t status_phase;
     unsigned bell_unread;
     uint32_t notice_ms;
+    ht_focus_working_pick_t working_pick;
     uint32_t pet_next_ms;
     uint32_t timer_at;
     cable_swarm_t tabs[SWARMS_MAX];
@@ -187,7 +188,8 @@ static bool carry_emit(const ht_carry_command_t *c, void *ctx) {
 }
 static uint32_t fake_ms;
 static uint32_t ms(void) { return fake_ms ? fake_ms : gesture.began+75; }
-static uint32_t esp_random(void) { return 123; }
+static uint32_t fake_random;   // even: the chef, odd: the builder (focus.c ht_focus_pick_working)
+static uint32_t esp_random(void) { return fake_random; }
 static bool queue(action_t a) {
     if (congestion) return false;
     if (a.kind==A_ANSWER) question_sends++;
@@ -299,7 +301,7 @@ static void scene_take(void) {
     if (present_scene) habitat_scene_presented(habitat_scene_receipt());
 }
 static void reset(void) {
-    host_features=31; fake_ms=0; fake_asleep=false; present_scene=true;
+    host_features=31; fake_ms=0; fake_asleep=false; present_scene=true; fake_random=122;
     memset(&visit,0,sizeof visit); visit_sends=visit_wire=returns=0; question_pending=false;
     memset(&tab_carousel,0,sizeof tab_carousel); memset(&pane_carousel,0,sizeof pane_carousel); memset(&inbox_carousel,0,sizeof inbox_carousel);
     memset(&workspace,0,sizeof workspace); tab_switches=0; tab_target[0]=0;
@@ -2057,6 +2059,19 @@ int main(int argc, char **argv) {
         fake_ms = 1200; scene_take(); assert(!s.pet_next_ms);
         for (int k = 0; k < 2; k++) { changes = 0; surface_tick(k ? due : due - 1); seen[0][k] = changes; }
         assert(seen[1][0] == seen[0][0] && seen[1][1] == seen[0][1] + 1);
+        // THE BUILDER (owner, 2026-10-16): an odd draw as the scene starts showing plays it instead, for as long as the
+        // scene shows — later draws do not move it — and the next showing (after the turn) draws again.
+        const ht_pet_scene_t *bs = ht_pets[0].working_alt;
+        assert(bs && bs->w != ws->w);
+        #define SCENE_W(w_) ({ bool v_ = false; for (int i_ = 0; i_ < scene.count; i_++) v_ |= scene.runs[i_].sprite.cells && scene.runs[i_].sprite.width == (w_); v_; })
+        reset(); ht_character_select(&character, HT_CHARACTER_FOCUS); strcpy(s.agents[0].engine, "claude");
+        s.agents[0].busy = true; strcpy(s.agents[0].tool, "Running firmware checks");
+        fake_random = 123; fake_ms = 1200; scene_take(); assert(SCENE_W(bs->w) && !SCENE_W(ws->w));
+        fake_random = 122;
+        for (int k = 1; k <= 40; k++) { fake_ms = 1200 + 55u * k; scene_take(); assert(SCENE_W(bs->w) && !SCENE_W(ws->w)); }
+        s.agents[0].busy = false; fake_ms += 55; scene_take(); assert(!SCENE_W(bs->w) && !SCENE_W(ws->w));
+        s.agents[0].busy = true; fake_ms += 55; scene_take(); assert(SCENE_W(ws->w) && !SCENE_W(bs->w));
+        #undef SCENE_W
     }
     // CODEX'S SCENES: the same three, on the same clocks. Working on the face (status on the lower arc),
     // listening and sending on VOICE by the recipient's engine (pane on the face is Claude), quiet holds them.

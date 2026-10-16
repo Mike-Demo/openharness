@@ -23,6 +23,7 @@ static const ht_pet_scene_t *scene_of(const ht_pet_t *pet, pod_scene_t which)
 {
     switch (which) {
     case POD_SCENE_WORK: return pet->working_scene;
+    case POD_SCENE_WORK_ALT: return pet->working_alt ? pet->working_alt : pet->working_scene;
     case POD_SCENE_RELAX: return pet->relaxing_scene;
     case POD_SCENE_LISTEN: return pet->listening_scene;
     case POD_SCENE_SEND: return pet->sending_scene;

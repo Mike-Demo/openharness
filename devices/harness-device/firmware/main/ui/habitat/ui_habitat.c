@@ -243,6 +243,7 @@ static EXT_RAM_BSS_ATTR struct {
     uint8_t status_phase;
     unsigned bell_unread;     // the bell's count at the last home render, to see a notice arrive
     uint32_t notice_ms;       // the face clock when it last went up, 0 = none since boot (the pet's alert bubble)
+    ht_focus_working_pick_t working_pick;   // which working scene the shown agent's pet plays (Claude: chef or builder)
     uint32_t timer_at;      // when the working line's elapsed text next changes (ms() clock), 0 = never (elapsed.h)
     uint32_t pet_next_ms;   // when the pet's (or the voice screen's listening scene's) drawn frame next changes (clock_ms), 0 = never
     int start_x, start_y, last_x, last_y;
@@ -1198,6 +1199,8 @@ static void render_home(ht_scene_t *f)
     }
     if (visit.available) f_.hint = "";
     bool focus_face = character.id == HT_CHARACTER_FOCUS;
+    // Chef or builder: drawn once as the working scene starts showing for this agent, kept while it shows.
+    if (focus_face) ht_focus_pick_working(&s.working_pick, &f_, recap, a ? a->id : "", esp_random);
     if (again && focus_face) {
         s.notice_ms = (clock - ht_focus_alert_pop_ms(&f_)) | 1;
         f_.notice_ms = bell ? s.notice_ms : 0;

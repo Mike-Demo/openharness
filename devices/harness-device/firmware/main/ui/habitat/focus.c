@@ -207,13 +207,28 @@ static const ht_pet_t *pet_for(const ht_character_face_t *f)
 /*
  * THE WORKING SCENE: a pet with one (Claude's cooking Clawd) plays it, large, in place of the small
  * pet and the centred working line, while it is working on a plain working line — not asking, not a
- * recap, not the listening meter, not held. NULL otherwise.
+ * recap, not the listening meter, not held. NULL otherwise. A pet with a second one (Claude's builder,
+ * owner 2026-10-16: mockup/clawd_build.py) plays that instead when the face says so (f->working_alt).
  */
 static const ht_pet_scene_t *working_scene(const ht_character_face_t *f, const char *recap)
 {
     const ht_pet_t *pet = pet_for(f);
     if (!pet || !pet->working_scene || pet_holds(f) || f->mood == HT_CHARACTER_LISTENING) return NULL;
-    return pet_state(f, recap) == HT_PET_WORKING ? pet->working_scene : NULL;
+    if (pet_state(f, recap) != HT_PET_WORKING) return NULL;
+    return f->working_alt && pet->working_alt ? pet->working_alt : pet->working_scene;
+}
+void ht_focus_pick_working(ht_focus_working_pick_t *p, ht_character_face_t *f, const char *recap, const char *agent,
+                           uint32_t (*rnd)(void))
+{
+    f->working_alt = false;
+    const ht_pet_t *pet = pet_for(f);
+    bool shown = working_scene(f, recap) != NULL;
+    if (shown && (!p->shown || strncmp(p->agent, agent ? agent : "", sizeof p->agent - 1))) {
+        p->alt = pet && pet->working_alt && (rnd() & 1u);
+        snprintf(p->agent, sizeof p->agent, "%s", agent ? agent : "");
+    }
+    p->shown = shown;
+    f->working_alt = shown && p->alt;
 }
 /*
  * THE RELAXING SCENE (owner, 2026-10-09: mockup/relaxing.html): the resting face of an agent with nothing to show —

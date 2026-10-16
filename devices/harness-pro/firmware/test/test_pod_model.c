@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "pod/pod_model.h"
+#include "pod/home/ph.h"   // ph_room_scene, ph_card_scene: the scene a working agent plays
 
 static int checks;
 #define CHECK(c) do { assert(c); checks++; } while (0)
@@ -1037,7 +1038,45 @@ static void pod_model_test_step_total_and_fresh(void) {
     CHECK(pod_model_find(&M, "a3")->step_total == 1);
 }
 
+// Chef or builder (owner, 2026-10-16): a turn draws once as it starts (pod_model_random) and keeps it to its end, through
+// activity, steps and a question; the room and the Home card play the same scene. No source (host default): always the chef.
+static uint32_t rnd_n;
+static uint32_t rnd_count(void) { return rnd_n++; }
+static void pod_model_test_work_alt(void) {
+    fresh();
+    const pod_agent_t *a = pod_model_find(&M, "a1");
+    pod_model_turn(&M, "a1", "started", "", 0, 1000);
+    CHECK(a->state == POD_WORKING && !a->work_alt && ph_room_scene(&M, a) == POD_SCENE_WORK && ph_card_scene(&M, a) == POD_SCENE_WORK);
+    pod_model_turn(&M, "a1", "done", "", 3, 1500);
+    pod_model_random(rnd_count);
+    rnd_n = 1;
+    pod_model_turn(&M, "a1", "started", "", 0, 2000);
+    CHECK(a->work_alt && rnd_n == 2 && ph_room_scene(&M, a) == POD_SCENE_WORK_ALT && ph_card_scene(&M, a) == POD_SCENE_WORK_ALT);
+    pod_model_turn(&M, "a1", "activity", "Reading files", 2, 2100);
+    pod_model_turn(&M, "a1", "verb", "Infusing", 2, 2200);
+    pod_model_turn(&M, "a1", "step", "Read · a.c", 3, 2300);
+    pod_model_question(&M, "a1", "Delete the build folder?");
+    CHECK(ph_room_scene(&M, a) == POD_SCENE_ASK);
+    pod_model_question_close(&M, "a1");
+    pod_model_turn(&M, "a1", "activity", "Writing", 4, 2400);
+    CHECK(a->work_alt && rnd_n == 2 && ph_room_scene(&M, a) == POD_SCENE_WORK_ALT);   // one draw for the whole turn
+    pod_model_turn(&M, "a1", "done", "", 5, 2500);
+    pod_model_turn(&M, "a1", "started", "", 0, 3000);
+    CHECK(!a->work_alt && rnd_n == 3);   // the next turn draws again: both come up
+    rnd_n = 1;
+    pod_model_turn(&M, "a2", "started", "", 0, 3000);   // Codex has no builder: a drawn builder plays its one WORK
+    const pod_agent_t *b = pod_model_find(&M, "a2");
+    CHECK(b->work_alt && ph_room_scene(&M, b) == POD_SCENE_WORK && ph_card_scene(&M, b) == POD_SCENE_WORK);
+    // The room draws the builder at exactly 2x, as the chef (its 273 px gets the wider square).
+    for (int k = 0; k < 2; k++) {
+        ht_scene_t s; ht_scene_clear(&s, 0);
+        ph_room_pet(&s, &M, a, k ? POD_SCENE_WORK_ALT : POD_SCENE_WORK, 380, 566, 0, 0);
+        CHECK(s.count == 2 && s.runs[0].radius == 16 && s.runs[1].radius == 16);
+    }
+    pod_model_random(NULL);
+}
 int main(void) {
+    pod_model_test_work_alt();
     pod_model_test_states();
     pod_model_test_stale_busy();
     pod_model_test_library_vs_turn_order();

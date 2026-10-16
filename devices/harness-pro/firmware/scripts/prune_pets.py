@@ -3,8 +3,10 @@
 
     scripts/prune_pets.py <pets.c>      rewrites in place, prints the bytes removed; a second run removes 0.
 
-Pod plays only each pet's idle and asking small loops and its work, relax, listen and send scenes (pod_pet.c). So:
-  * alert_scene becomes NULL; whatever only it reached (scenes, overlays, frame arrays) goes; relaxing_scene stays;
+Pod plays only each pet's idle and asking small loops and its work (both: working_alt too), relax, listen and send
+scenes (pod_pet.c). So:
+  * alert_scene becomes NULL; whatever only it reached (scenes, overlays, frame arrays) goes; relaxing_scene and
+    working_alt (Claude's builder) stay;
   * the small frames only the WORKING / DONE loops use go (codex), the kept frames are renumbered, and the
     WORKING / DONE rows (never read) become {0,0}.
 The file is one C statement per line. Anything else unexpected stops the run before the file is touched.
@@ -42,11 +44,12 @@ def main(path):
 
     # 1. ht_pets: the alert scene becomes NULL (the relax scene stays), and each pet's small frames shrink to what idle/asking play.
     row = lines[pets[0]]
-    ent = re.findall(r'\{"(\w+)",\d+,\d+,NULL,(\w+)_loops,(\w+)_step_ms,&\w+,&\w+,&\w+,(\w+),(&\w+|NULL),(\d+),(&\w+|NULL)\}', row)
+    ent = re.findall(r'\{"(\w+)",\d+,\d+,NULL,(\w+)_loops,(\w+)_step_ms,&\w+,&\w+,&\w+,(\w+),(&\w+|NULL),(\d+),(&\w+|NULL),(&\w+|NULL)\}', row)
     if len(ent) != row.count('{"'):
         fail("ht_pets row has an unexpected shape")
-    for eng, _, _, frames, alert, steps, relax in ent:
-        if alert not in ("NULL", f"&{eng}_alert") or relax not in ("NULL", f"&{eng}_relax") or frames != eng + "_frames":
+    for eng, _, _, frames, alert, steps, relax, alt in ent:
+        if alert not in ("NULL", f"&{eng}_alert") or relax not in ("NULL", f"&{eng}_relax") or frames != eng + "_frames" \
+                or not (alt == "NULL" or alt.startswith(f"&{eng}_")):
             fail(f"{eng}: unexpected scene names")
         loops_i = stmts[eng + "_loops"]
         m = re.fullmatch(r"(static const ht_pet_step_t \w+_loops\[HT_PET_STATES\]\[HT_PET_STEPS\] = )\{(.*)\};", lines[loops_i])
