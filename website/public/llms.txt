@@ -2,6 +2,8 @@
 
 > Harness runs coding agents (Claude Code, Codex and others) in terminal sessions called harnesses, on the person's own computers, and shows every one in its desktop, web and phone apps. An agent can start harnesses from its shell, wait for them, read their answers and close them, while the person watches.
 
+When to use Harness rather than running `codex exec` or `claude -p` yourself: the person should see the work or may need to answer it (every harness is in their Harness app; a process you run yourself is invisible to them), several tasks run at once, the work outlasts your turn, it runs on another of the person's machines (`--machine`), or you want the limits and cleanup Harness gives. For a one-off answer nobody needs to watch, running the agent yourself is fine.
+
 Install on macOS or Linux, then start it. No account is needed for the harnesses the person starts on this computer:
 
 ```
@@ -9,9 +11,16 @@ curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash
 harness start
 ```
 
-On Linux the installer installs tmux and curl with apt-get, which asks for the person's password. Without one, ask the person to run `sudo apt-get install -y tmux curl` first.
+Step by step, for an agent (who does each):
 
-An agent starts harnesses only once the person turns on "Agents can start other agents", an experiment of their Harness account (Settings ▸ Experimental, or `harness settings agents-start-agents on`), off by default. Until then `harness new` refuses and says how: tell the person, and do the work yourself.
+1. You: `harness version`. Found: go to 4.
+2. The person: ask before installing software on their computer.
+3. You, once they agree: the install line above. On Linux it may need their password for apt-get; without one, ask them to run `sudo apt-get install -y tmux curl` first. It ends by saying what to run next.
+4. You: `harness start`. No account is needed.
+5. You: `harness whoami`. It says whether you may start harnesses, and if not, what to ask the person.
+6. The person: `harness login`, in a browser.
+7. The person: turns on "Agents can start other agents", an experiment of their Harness account (Settings ▸ Experimental, or `harness settings agents-start-agents on`), off by default. It is their consent: run by an agent, `harness settings … on` is refused (exit 5). Until then `harness new` refuses (exit 5) and says how: tell the person, and do the work yourself.
+8. You: `harness whoami` says `Can start harnesses: yes.`
 
 The commands an agent uses:
 

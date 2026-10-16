@@ -75,22 +75,63 @@
     work yourself, and a quick parallel search or edit inside one task with your own sub-agents (Claude Code's Agent
     tool, Codex sub-agents): they are cheaper and faster. Close each harness once you have its answer.</p>
 
+  <h2 id="when">Harness, or running <code>codex</code> yourself</h2>
+  <p>If Codex or Claude Code is installed, you can run it yourself for a one-off answer
+    (<code>codex exec "&lt;task&gt;"</code>, <code>claude -p "&lt;task&gt;"</code>). Use Harness instead when:</p>
+  <div class="table">
+  <table>
+    <thead><tr><th>The task</th><th>Why Harness</th></tr></thead>
+    <tbody>
+      <tr><td>The person should see the work, or may need to answer it</td><td>Every harness is in their Harness
+        app, where they can watch it, answer its questions or stop it. A process you run yourself is invisible to
+        them, and its questions go unanswered.</td></tr>
+      <tr><td>Several tasks at once</td><td><code>harness wait &lt;name&gt;,&lt;name&gt;</code> waits for all of
+        them, or the first with <code>--any</code>.</td></tr>
+      <tr><td>Work that takes longer than your turn</td><td>A harness keeps running after your turn ends, and its
+        answer stays there to read.</td></tr>
+      <tr><td>Another of the person's machines</td><td><code>harness new --machine &lt;machine&gt;</code>: no SSH,
+        once that machine runs Harness signed in to the person's account.</td></tr>
+      <tr><td>Cleaning up after yourself</td><td>Limits on how many you start, and Harness closes what you leave
+        behind.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
   <h2 id="install">Install</h2>
   <pre><code>curl -fsSL https://harness.autonomous.ai/cli/install.sh | bash
 harness start</code></pre>
+  <h3 id="install-steps">Install, step by step, for an agent</h3>
+  <div class="table">
+  <table>
+    <thead><tr><th>Step</th><th>Who</th><th>How</th></tr></thead>
+    <tbody>
+      <tr><td>1. Is it there already?</td><td>You</td><td><code>harness version</code>. Found: skip to step 4.</td></tr>
+      <tr><td>2. Ask before installing</td><td>The person</td><td>It installs software on their computer: ask
+        them first.</td></tr>
+      <tr><td>3. Install</td><td>You, once they agree</td><td><code>curl -fsSL
+        https://harness.autonomous.ai/cli/install.sh | bash</code>. On Linux it may need their password for
+        <code>apt-get</code>; without one, ask them to run <code>sudo apt-get install -y tmux curl</code> first. It
+        ends by saying what to run next.</td></tr>
+      <tr><td>4. Start Harness here</td><td>You</td><td><code>harness start</code>. No account is needed.</td></tr>
+      <tr><td>5. See what you may do</td><td>You</td><td><code>harness whoami</code>. It says whether you may start
+        harnesses, and if not, what to ask the person.</td></tr>
+      <tr><td>6. Sign in</td><td>The person</td><td><code>harness login</code>, in a browser. Needed for agents to
+        start harnesses, and for other machines.</td></tr>
+      <tr><td>7. Let agents start agents</td><td>The person</td><td>Settings ▸ Experimental ▸ Agents can start
+        other agents, or <code>harness settings agents-start-agents on</code> in their own terminal. It is their
+        consent: run by an agent, it is refused (exit 5).</td></tr>
+      <tr><td>8. Check</td><td>You</td><td><code>harness whoami</code> says <code>Can start harnesses: yes.</code></td></tr>
+    </tbody>
+  </table>
+  </div>
   <p>macOS and Linux. <code>harness start</code> starts Harness on this computer. No account is needed for the
     harnesses the person starts on this computer; <code>harness login</code> signs in, which the person needs for
     their other machines, the phone app, and what they let agents do. The agents you start must be installed and
     signed in to their own providers: <code>claude</code> for Claude Code, <code>codex</code> for Codex.</p>
   <p>An agent starts harnesses only once the person turns on <strong>Agents can start other agents</strong>, an
-    experiment of their Harness account (Settings ▸ Experimental, or <code>harness settings agents-start-agents
-    on</code>), off by default. Until then <code>harness new</code> refuses and says how: tell the person, and do the
-    work yourself.</p>
-  <p>On Linux the installer installs tmux and curl with <code>apt-get</code>, which asks for the person's password.
-    Without one, ask the person to run <code>sudo apt-get install -y tmux curl</code> first.</p>
-  <p>Ask the person before you install software on their computer. To check whether Harness is already there:
-    <code>harness version</code>. The agent commands below are new: if <code>harness ps</code> is an unknown command,
-    run <code>harness update</code>.</p>
+    experiment of their Harness account, off by default. Until then <code>harness new</code> refuses (exit 5) and
+    says how: tell the person, and do the work yourself. The agent commands are new: if <code>harness whoami</code>
+    is an unknown command, run <code>harness update</code>.</p>
 
   <h2 id="skill">Add the skill</h2>
   <p>The <code>harness</code> skill tells an agent when to use Harness and how. It comes as a plugin for Claude Code

@@ -152,7 +152,8 @@ describe('harness ps', () => {
     const rows = lines.filter((l) => /^(h\d+|old\d|lead) /.test(l))
     expect(rows).toHaveLength(15)
     expect(rows.slice(0, 2).map((l) => l.split(' ')[0])).toEqual(['old1', 'old2'])
-    expect(lines).toContain('and 6 more: harness ps --all')
+    // What is left out, and that the command for it lists the stopped ones too.
+    expect(lines).toContain('and 6 more, none of them yours: harness ps --all (lists every one, and those stopped this week)')
     // Programs get every row.
     const json = harness(d)
     expect(await psCommand(['--json'], json.deps)).toBe(EXIT.ok)

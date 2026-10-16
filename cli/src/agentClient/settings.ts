@@ -10,6 +10,15 @@
  */
 import { AGENT_SETTING_NAMES, type AgentSettings } from '../lib/agentSettings.js'
 import { daemonUnreachableText } from '../lib/daemonState.js'
+import { outsideCaller } from './model.js'
+
+/** A refusal, as the agent verbs exit (commands.ts `EXIT.refused`): not a failure to retry. */
+const REFUSED = 5
+
+/** Said to an agent that tries to turn a setting on: the person's consent is theirs to give. */
+export const settingsOnlyThePerson = (name: string): string =>
+  `Only the person turns this on: it is their consent to what agents may do. Ask them to run \`harness settings ${name} on\` `
+  + 'in their own terminal, or to turn it on in Harness Settings ▸ Experimental.'
 
 export const SETTINGS_USAGE = `Usage: harness settings [<name> on|off]
 
@@ -31,6 +40,8 @@ export const SETTINGS_SIGNED_OUT = 'Signed out: these are experiments of your ac
 export interface SettingsDeps {
   /** This computer's daemon's port (lib/daemonState.ts `daemonPort`). */
   port: number
+  /** Who runs it, by what its shell says (model.ts `outsideCaller`): an agent may not turn a setting on. */
+  env?: NodeJS.ProcessEnv
   fetch?: typeof fetch
   out?: (line: string) => void
   err?: (line: string) => void
@@ -48,6 +59,9 @@ export async function settingsCommand(argv: readonly string[], deps: SettingsDep
     const key = AGENT_SETTING_NAMES[name]
     if (!key || (value !== 'on' && value !== 'off') || rest.length) { err(SETTINGS_USAGE); return 2 }
     change = { [key]: value === 'on' }
+    // An agent refused a start would otherwise turn on the setting that refused it, and the person's say would be its
+    // own. Its shell says it is one (Claude Code, Codex, AI_AGENT), in a Harness pane or not. Turning one off is safe.
+    if (value === 'on' && outsideCaller(deps.env ?? process.env, '')) { err(settingsOnlyThePerson(name)); return REFUSED }
   }
   let answer: Answer
   try {

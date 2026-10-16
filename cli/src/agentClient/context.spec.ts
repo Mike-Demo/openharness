@@ -26,12 +26,12 @@ describe('the context block', () => {
 
   it('the switch off: the person turns it on, and how; checked before the limits', () => {
     const c = buildContext(input({ switchOn: false, check: { reason: 'DEPTH', message: 'x' } }))
-    expect(formatContext(c).split('\n')[1]).toBe('Can start harnesses: no. The person has not turned on "Agents can start other agents". Ask them to run: harness settings agents-start-agents on')
+    expect(formatContext(c).split('\n')[1]).toBe('Can start harnesses: no. The person has not turned on "Agents can start other agents". Ask them to run, in their own terminal: harness settings agents-start-agents on')
     expect(c.canStart).toMatchObject({ ok: false, reason: 'SWITCH_OFF', fixBy: 'person' })
   })
 
   it('signed out: sign in first', () => {
-    expect(lines({ signedIn: false, switchOn: false })[1]).toBe('Can start harnesses: no. This computer is signed out of Harness, and starting is the account\'s choice. Ask the person to run: harness login, then harness settings agents-start-agents on')
+    expect(lines({ signedIn: false, switchOn: false })[1]).toBe('Can start harnesses: no. This computer is signed out of Harness, and starting is the account\'s choice. Ask the person to run, in their own terminal: harness login, then harness settings agents-start-agents on')
   })
 
   it('each limit, in its own words', () => {
