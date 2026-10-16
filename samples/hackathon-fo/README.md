@@ -24,18 +24,21 @@ worked, and **Stuck?** for when it didn't.
    Harness into Applications and open it. (Linux: download the AppImage, `chmod +x` it, then open it.)
 2. Sign in with **Continue with Google**, **Continue with Apple** or **Continue with email**. Your browser opens a
    sign-in page. When you're done, go back to the app.
-3. Install the **CLI** too (you need it for Sample 2 and for terminal use):
+3. On first run the app installs everything else for you: the `harness` command-line tool
+   (`~/.local/bin/harness`), tmux, and the background daemon, which it starts. Nothing to install by hand. Check in a
+   new terminal:
 
    ```bash
-   curl -fsSL https://harness.autonomous.ai/install.sh | bash
-   harness login      # same account as the app
-   harness start      # runs the background daemon on this machine
+   harness --version   # the CLI the app installed
+   harness status      # the daemon is running and signed in to your account
    ```
 
-**You should see:** the app opens your workspace. `harness start` prints a table with `status ● started` and `local api
+**You should see:** the app opens your workspace; `harness status` shows `status ● running` and `local api
 http://127.0.0.1:18473`.
 
-**Stuck?** Every machine on the team must sign in to **the same account** to see each other. To replay the in-app
+**Stuck?** `harness: command not found`: open a new terminal (the app adds `~/.local/bin` to your PATH), or run
+`~/.local/bin/harness`. `harness status` says signed out: run `harness login` with the same account as the app.
+Every machine on the team must sign in to **the same account** to see each other. To replay the in-app
 guide: Help ▸ Welcome Tour.
 
 ## 2. Run your first agent
