@@ -1,37 +1,35 @@
 'use client';
-import { useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import Link from 'next/link';
-import { CommunityError } from '@/lib/community/client';
-import { describeNotification, markNotificationsRead, readNotifications, type HubNotification } from '@/lib/community/notifications';
+import { Bell } from 'lucide-react';
 import { Header, SignIn } from '../components/Header';
-import styles from '../community.module.css';
+import { NotificationRow, NotificationSkeleton } from './NotificationRow';
+import { useNotifications, type NotificationsState } from './useNotifications';
+import community from '../community.module.css';
+import styles from './notifications.module.css';
 
-const day = (createdAt: string) => new Date(createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+const subtitle = (state: NotificationsState) => state.status !== 'ready' || !state.items.length ? 'Comments, replies and forks of your work.'
+  : state.unread ? `${state.unread} new` : 'You’re all caught up.';
 
-/** The reader's notifications, latest first; opening the page marks them read (what was new stays bold here). */
+/** A message in place of the list: no notifications yet, signed out, or a failed read. */
+function Placeholder({ title, children }: { title: string; children: ReactNode }) {
+  return <div className={styles.placeholder}><span className={styles.placeholderIcon} aria-hidden><Bell /></span><h2>{title}</h2>{children}</div>;
+}
+
+function Body({ state, retry }: ReturnType<typeof useNotifications>) {
+  if (state.status === 'loading') return <NotificationSkeleton />;
+  if (state.status === 'signedOut') return <Placeholder title="Sign in to see your notifications"><SignIn action="see your notifications" /></Placeholder>;
+  if (state.status === 'failed') return <Placeholder title="Your notifications could not be loaded"><p role="alert">Check your connection and try again.</p><button type="button" className={styles.retry} onClick={retry}>Try again</button></Placeholder>;
+  if (!state.items.length) return <Placeholder title="No notifications yet"><p>When someone comments on, replies to or forks your work, you’ll see it here.</p><Link className={community.textLink} href="/hub">Explore the Hub</Link></Placeholder>;
+  const now = new Date();
+  return <ul className={styles.list}>{state.items.map(item => <NotificationRow key={item.id} item={item} now={now} />)}</ul>;
+}
+
+/** The reader's notifications, latest first. */
 export default function NotificationsPage() {
-  const [items, setItems] = useState<HubNotification[] | null>(null), [signedOut, setSignedOut] = useState(false), [error, setError] = useState('');
-  useEffect(() => {
-    let live = true;
-    readNotifications().then(({ notifications, unread }) => {
-      if (!live) return;
-      setItems(notifications);
-      if (unread) void markNotificationsRead().catch(() => { /* They stay unread for next time. */ });
-    }, (e: unknown) => {
-      if (!live) return;
-      if (e instanceof CommunityError && e.status === 401) setSignedOut(true);
-      else setError('Your notifications could not be loaded.');
-    });
-    return () => { live = false; };
-  }, []);
-  return <><Header /><main className={`${styles.wrap} ${styles.publish}`}>
-    <h1>Notifications</h1>
-    {signedOut && <SignIn action="see your notifications" />}
-    {error && <p className={styles.error} role="alert">{error}</p>}
-    {items && !items.length && <p className={styles.notice}>When someone comments on, replies to or forks your work, you will see it here.</p>}
-    {items?.map(item => {
-      const { text, href } = describeNotification(item);
-      return <Link key={item.id} href={href} className={`${styles.notification} ${item.read ? '' : styles.unread}`}><span>{text}</span><small>{day(item.createdAt)}</small></Link>;
-    })}
+  const notifications = useNotifications();
+  return <><Header /><main className={`${community.wrap} ${styles.inbox}`}>
+    <header className={styles.head}><h1>Notifications</h1><p>{subtitle(notifications.state)}</p></header>
+    <Body {...notifications} />
   </main></>;
 }
