@@ -129,15 +129,20 @@ describe('community navigation', () => {
   it('reads a page opened at its slug, then names the publication by its id and shows its own address', async () => {
     const id = '0f8fad5b-d9cb-469f-a165-70867728950e', slug = 'an-older-title-0f8fad5b';
     window.history.replaceState(null, '', `/hub/${slug}?comments=1`);
-    request.mockResolvedValueOnce({ harness: { ...sample, id, example: false }, social: { ...emptySocial, signedIn: true } });
-    render(<Detail id={slug} initial={null} />);
-    await screen.findByTitle('Orbit output');
-    expect(request).toHaveBeenCalledWith(`harnesses/${slug}?files=viewer`);
-    expect(window.location.pathname + window.location.search).toBe('/hub/orbit-0f8fad5b?comments=1');
-    request.mockResolvedValueOnce({ liked: true, likes: 1 });
-    fireEvent.click(screen.getByRole('button', { name: 'Like harness' }));
-    await waitFor(() => expect(request).toHaveBeenLastCalledWith(`harnesses/${id}/like`, expect.anything()));
-    window.history.replaceState(null, '', '/');
+    try {
+      request.mockResolvedValueOnce({ harness: { ...sample, id, example: false }, social: { ...emptySocial, signedIn: true } });
+      render(<Detail id={slug} initial={null} />);
+      await screen.findByTitle('Orbit output');
+      expect(request).toHaveBeenCalledWith(`harnesses/${slug}?files=viewer`);
+      // The address moves in an effect after the page draws.
+      await waitFor(() => expect(window.location.pathname + window.location.search).toBe('/hub/orbit-0f8fad5b?comments=1'));
+      request.mockResolvedValueOnce({ liked: true, likes: 1 });
+      fireEvent.click(screen.getByRole('button', { name: 'Like harness' }));
+      await waitFor(() => expect(request).toHaveBeenLastCalledWith(`harnesses/${id}/like`, expect.anything()));
+    } finally {
+      // The next test reads the address: leave none behind, passed or failed.
+      window.history.replaceState(null, '', '/');
+    }
   });
   it('says so when a drawn page cannot load its likes and actions, and retries', async () => {
     const id = '0f8fad5b-d9cb-469f-a165-70867728950e';
