@@ -1602,11 +1602,16 @@ async function resetCommand(): Promise<void> {
   process.exit(0)
 }
 
-/** Call the running daemon's control API: over its Windows pipe when it has one, else localhost. Exits with a friendly message if it's not up. */
+/** One call to the running daemon's control API: over its Windows pipe when it has one, else localhost. Throws as `fetch` does when it is not up. */
+function daemonRequest(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response> {
+  return localDaemonCall(env.ADAPTER_DATA_DIR, env.PORT, method, path, body, { tcpPort: daemonPort() })
+}
+
+/** Call the running daemon's control API (`daemonRequest`). Exits with a friendly message if it's not up. */
 async function daemonCall(method: 'GET' | 'POST', path: string, body?: unknown): Promise<{ res: Response; json: Record<string, unknown> }> {
   let res: Response
   try {
-    res = await localDaemonCall(env.ADAPTER_DATA_DIR, env.PORT, method, path, body, { tcpPort: daemonPort() })
+    res = await daemonRequest(method, path, body)
   } catch (error) {
     console.error(`\n  ✗ ${error instanceof PipeUnproven ? error.message : daemonUnreachableText((error as { cause?: unknown }).cause ?? error)}\n`)
     process.exit(1)
@@ -1783,11 +1788,7 @@ async function remotePasswordSetCommand(json: boolean, stdin: boolean): Promise<
   }
   let result: { fingerprint: string } | null = null
   try {
-    const res = await fetch(`http://127.0.0.1:${daemonPort()}/api/remote-password/set`, {
-      method: 'POST',
-      headers: { 'x-adapter-local': '1', 'content-type': 'application/json' },
-      body: JSON.stringify({ password }),
-    })
+    const res = await daemonRequest('POST', '/api/remote-password/set', { password })
     if (res.ok) {
       const body = (await res.json().catch(() => null)) as { fingerprint?: unknown } | null
       if (typeof body?.fingerprint === 'string') result = { fingerprint: body.fingerprint }
@@ -1812,10 +1813,7 @@ async function remotePasswordSetCommand(json: boolean, stdin: boolean): Promise<
 async function remotePasswordClearCommand(json: boolean): Promise<void> {
   let cleared = false
   try {
-    const res = await fetch(`http://127.0.0.1:${daemonPort()}/api/remote-password/clear`, {
-      method: 'POST',
-      headers: { 'x-adapter-local': '1' },
-    })
+    const res = await daemonRequest('POST', '/api/remote-password/clear')
     if (res.ok) cleared = true
   } catch { /* fall back to the disk-backed store below */ }
   if (!cleared) {
@@ -1833,7 +1831,7 @@ async function remotePasswordClearCommand(json: boolean): Promise<void> {
 async function remotePasswordStatusCommand(json: boolean): Promise<void> {
   let status: { hasPassword: boolean; fingerprint: string | null; setAt: number | null } | null = null
   try {
-    const res = await fetch(`http://127.0.0.1:${daemonPort()}/api/remote-password/status`, { headers: { 'x-adapter-local': '1' } })
+    const res = await daemonRequest('GET', '/api/remote-password/status')
     if (res.ok) {
       const body = (await res.json().catch(() => null)) as { hasPassword?: unknown; fingerprint?: unknown; setAt?: unknown } | null
       if (typeof body?.hasPassword === 'boolean') {
@@ -1995,11 +1993,7 @@ async function linkMachineWithPassword(
  *  (and rewrites it whole), so the write has to go through it; with no daemon, the file is written directly. */
 async function trustLinkedMachine(peer: LinkedPeer): Promise<void> {
   try {
-    const res = await fetch(`http://127.0.0.1:${daemonPort()}/api/link/trust-peer`, {
-      method: 'POST',
-      headers: { 'x-adapter-local': '1', 'content-type': 'application/json' },
-      body: JSON.stringify(peer),
-    })
+    const res = await daemonRequest('POST', '/api/link/trust-peer', peer)
     if (res.ok) return
   } catch { /* fall back to the disk-backed store below */ }
   const store = new E2eeStore()
@@ -2044,11 +2038,7 @@ async function linkUnlinkCommand(machineId: string | undefined): Promise<void> {
 /** Ask the running daemon to remove a trust-group member; false when there is no daemon or no match. */
 async function daemonGroupRemove(selector: string): Promise<boolean> {
   try {
-    const res = await fetch(`http://127.0.0.1:${daemonPort()}/api/group/remove`, {
-      method: 'POST',
-      headers: { 'x-adapter-local': '1', 'content-type': 'application/json' },
-      body: JSON.stringify({ selector }),
-    })
+    const res = await daemonRequest('POST', '/api/group/remove', { selector })
     return res.ok
   } catch {
     return false
@@ -2074,10 +2064,10 @@ async function groupCommand(sub: string | undefined, arg: string | undefined, js
   }
   if (sub === 'sync') {
     try {
-      const res = await fetch(`http://127.0.0.1:${daemonPort()}/api/group/sync`, { method: 'POST', headers: { 'x-adapter-local': '1' } })
+      const res = await daemonRequest('POST', '/api/group/sync')
       if (!res.ok) throw new Error(String(res.status))
     } catch (error) {
-      console.error(`\n  ✗ ${daemonUnreachableText((error as { cause?: unknown }).cause ?? error)}\n`)
+      console.error(`\n  ✗ ${error instanceof PipeUnproven ? error.message : daemonUnreachableText((error as { cause?: unknown }).cause ?? error)}\n`)
       process.exit(1)
     }
     console.log('\n  ✓ Comparing with every reachable member now.\n')
