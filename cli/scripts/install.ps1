@@ -132,6 +132,18 @@ function Get-HarnessManifests {
   }
 }
 
+function Get-HarnessSha256([string]$Path) {
+  # A file's SHA-256 as lowercase hex, computed by .NET. Not Get-FileHash: in Windows PowerShell 5.1 that is a script
+  # function which module autoload has to find, and a PSModulePath handed on by PowerShell 7 (a pwsh 7 window, CI)
+  # makes autoload load 7's Microsoft.PowerShell.Utility instead, where it does not exist: "The term 'Get-FileHash'
+  # is not recognized" (CI run 38826134075). Every other command here is a compiled cmdlet 5.1 has from the start.
+  $stream = [IO.File]::OpenRead((Get-Item -LiteralPath $Path).FullName)
+  try {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+  } finally { $stream.Dispose() }
+}
+
 function Save-HarnessVerified {
   # Download (or copy, for a local manifest), then keep the file only if its size and SHA-256 are the manifest's.
   # The manifest is the trust: the downloaded bytes are not, until they match it.
@@ -149,7 +161,7 @@ function Save-HarnessVerified {
     if ($null -ne $Size -and "$Size" -ne '' -and [int64]$Size -ne $length) {
       throw "$Source is $length bytes, but the manifest says ${Size}: the download is incomplete, or is not the published file."
     }
-    $got = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+    $got = Get-HarnessSha256 $Destination
     if ($got -ne $Sha256.ToLowerInvariant()) { throw "$Source failed its checksum (expected $Sha256, got $got): it is not the published file." }
   } catch {
     Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
@@ -208,7 +220,7 @@ function Move-HarnessFile {
 function Test-HarnessSameFile([string]$Source, [string]$Destination) {
   if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) { return $false }
   if ((Get-Item -LiteralPath $Source).Length -ne (Get-Item -LiteralPath $Destination).Length) { return $false }
-  return (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash -eq (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
+  return (Get-HarnessSha256 $Source) -eq (Get-HarnessSha256 $Destination)
 }
 
 function Copy-HarnessFile {
@@ -339,7 +351,7 @@ function Install-HarnessCli {
   New-Item -ItemType Directory -Force -Path $cliRoot | Out-Null
   $target = Join-Path $cliRoot $version
   $installed = Join-Path $target 'cli.js'
-  $current = (Test-Path -LiteralPath $installed -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $target 'notify.mjs') -PathType Leaf) -and ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ieq [string]$Entry.cli.sha256)
+  $current = (Test-Path -LiteralPath $installed -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $target 'notify.mjs') -PathType Leaf) -and ((Get-HarnessSha256 $installed) -ieq [string]$Entry.cli.sha256)
   if (-not $current) {
     Write-Host "  Downloading Harness $version..."
     $staging = New-HarnessStaging $cliRoot 'cli'

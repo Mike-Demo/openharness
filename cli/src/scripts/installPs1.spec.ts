@@ -39,6 +39,11 @@ describe('install.ps1, as written', () => {
     expect(source).toContain("$old = Join-Path $bin 'harness.cmd'")
   })
 
+  it('uses no command that module autoload must find: Get-FileHash is not recognized under a PowerShell 7 PSModulePath', () => {
+    const code = source.split(/\r?\n/).filter((line) => !line.trimStart().startsWith('#'))
+    expect(code.filter((line) => /Get-FileHash|Expand-Archive|New-TemporaryFile|Format-Hex|Import-PowerShellDataFile/i.test(line))).toEqual([])
+  })
+
   it('never installs hn or tmux on Windows', () => {
     expect(source).not.toMatch(/harness-tui|tmux/i)
   })
@@ -55,11 +60,40 @@ afterAll(() => {
   }
 })
 
+/**
+ * The PSModulePath Windows PowerShell 5.1 starts with:
+ * - `default`: none given, so 5.1 builds its own (a person's PowerShell window, a cmd window);
+ * - `inherited`: whatever this process has. Under a PowerShell 7 step (CI) that puts 7's modules first;
+ * - `powershell7`: that CI shape on any computer, with a stand-in for 7's Microsoft.PowerShell.Utility first. Like
+ *   7's own, it lists Get-FileHash among its cmdlets and nests the Utility DLL, which 5.1 finds in its own GAC. 5.1's
+ *   autoload loads it for the first Utility cmdlet used, and Get-FileHash, a script function only 5.1's own module
+ *   defines, is then "not recognized" (CI run 38826134075; the same with pwsh 7.6.7's real module on the VM).
+ */
+type ModulePath = 'default' | 'inherited' | 'powershell7'
+let powershell7Modules: string | undefined
+function powershellEnv(modulePath: ModulePath, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  const key = Object.keys(env).find((name) => name.toLowerCase() === 'psmodulepath')
+  if (modulePath !== 'inherited' && key) delete env[key]
+  if (modulePath === 'powershell7') {
+    if (!powershell7Modules) {
+      powershell7Modules = mkdtempSync(join(tmpdir(), 'harness-ps7-modules-'))
+      scratch.push(powershell7Modules)
+      const module = join(powershell7Modules, 'Microsoft.PowerShell.Utility')
+      mkdirSync(module)
+      writeFileSync(join(module, 'Microsoft.PowerShell.Utility.psd1'), "@{ ModuleVersion = '7.0.0.0'; CompatiblePSEditions = @('Core'); PowerShellVersion = '3.0'; NestedModules = @('Microsoft.PowerShell.Commands.Utility.dll'); CmdletsToExport = @('Add-Type', 'ConvertFrom-Json', 'Get-FileHash', 'Invoke-WebRequest', 'New-Object', 'Select-Object', 'Start-Sleep', 'Write-Host') }\r\n")
+    }
+    const system = join(process.env.SystemRoot!, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules')
+    env.PSModulePath = `${powershell7Modules};${join(process.env.ProgramFiles!, 'WindowsPowerShell', 'Modules')};${system}`
+  }
+  return { ...env, ...extra }
+}
+
 /** Run [script] in Windows PowerShell 5.1 with the installer dot-sourced in library mode. */
-function ps(script: string, env: NodeJS.ProcessEnv = {}): { status: number | null; stdout: string; stderr: string } {
+function ps(script: string, env: NodeJS.ProcessEnv = {}, modulePath: ModulePath = 'default'): { status: number | null; stdout: string; stderr: string } {
   const text = `$ErrorActionPreference = 'Stop'; . '${installer}'; ${script}`
   const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', Buffer.from(text, 'utf16le').toString('base64')], {
-    encoding: 'utf8', env: { ...process.env, HARNESS_INSTALL_LIBRARY: '1', ...env }, timeout: 120_000,
+    encoding: 'utf8', env: powershellEnv(modulePath, { HARNESS_INSTALL_LIBRARY: '1', ...env }), timeout: 120_000,
   })
   return { status: run.status, stdout: run.stdout.trim(), stderr: run.stderr }
 }
@@ -103,9 +137,12 @@ describe.runIf(windows)('install.ps1 building blocks, in Windows PowerShell 5.1'
     const file = join(dir, 'payload.bin')
     writeFileSync(file, 'harness')
     const sha = 'a'.repeat(64) // a valid shape, not this file's digest
-    const real = ps(`(Get-FileHash -LiteralPath '${file}' -Algorithm SHA256).Hash.ToLowerInvariant()`).stdout
+    const real = createHash('sha256').update('harness').digest('hex')
     const out = join(dir, 'out.bin')
     expect(ps(`Save-HarnessVerified -Source '${file}' -Destination '${out}' -Sha256 '${real}' -Size 7; 'ok'`).stdout).toBe('ok')
+    // Also with PowerShell 7's modules first on PSModulePath, as a PowerShell 7 window or CI hands it on.
+    expect(ps(`Save-HarnessVerified -Source '${file}' -Destination '${out}' -Sha256 '${real}' -Size 7; 'ok'`, {}, 'powershell7').stdout).toBe('ok')
+    expect(ps(`Get-HarnessSha256 '${file}'`, {}, 'powershell7').stdout).toBe(real)
     expect(thrown(`Save-HarnessVerified -Source '${file}' -Destination '${out}' -Sha256 '${real}' -Size 8`)).toContain('7 bytes, but the manifest says 8')
     expect(thrown(`Save-HarnessVerified -Source '${file}' -Destination '${out}' -Sha256 '${sha}' -Size 7`)).toContain('failed its checksum')
     expect(thrown(`Save-HarnessVerified -Source '${file}' -Destination '${out}' -Sha256 'nope' -Size 7`)).toContain('no valid SHA-256')
@@ -226,9 +263,9 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
     return home
   }
 
-  function install(home: string, manifest: string, subkey: string, extra: string[] = ['-NoService']) {
+  function install(home: string, manifest: string, subkey: string, extra: string[] = ['-NoService'], modulePath: ModulePath = 'default') {
     return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', installer, '-Manifest', manifest, ...extra], {
-      encoding: 'utf8', env: { ...process.env, USERPROFILE: home, HARNESS_INSTALL_ENV_KEY: subkey }, timeout: 300_000,
+      encoding: 'utf8', env: powershellEnv(modulePath, { USERPROFILE: home, HARNESS_INSTALL_ENV_KEY: subkey }), timeout: 300_000,
     })
   }
 
@@ -301,10 +338,11 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
     const home = profile()
     const subkey = freshKey()
     const manifest = build(platform())
-    expect(install(home, manifest, subkey).status).toBe(0)
+    // This process's own PSModulePath, as it is: a PowerShell 7 one in CI.
+    expect(install(home, manifest, subkey, ['-NoService'], 'inherited').status).toBe(0)
     const kept = ['bin\\harness.exe', 'bin\\harness-launch.exe', 'cli\\notify.mjs'].map((name) => join(home, '.harness', name))
     const before = kept.map(ticks)
-    const again = install(home, manifest, subkey)
+    const again = install(home, manifest, subkey, ['-NoService'], 'inherited')
     expect(again.status, again.stdout).toBe(0)
     expect(again.stdout).not.toContain('Downloading')
     expect(kept.map(ticks)).toEqual(before)
@@ -340,6 +378,14 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
     expect(readdirSync(bin).filter(aside)).toEqual([])
   })
 
+  it('installs when PowerShell 7\'s modules come first on PSModulePath, as a PowerShell 7 window hands it on', () => {
+    const home = profile()
+    const subkey = freshKey()
+    const run = install(home, build(platform()), subkey, ['-NoService'], 'powershell7')
+    expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0)
+    expect(spawnSync(join(home, '.harness', 'bin', 'harness.exe'), ['version'], { encoding: 'utf8' }).stdout.trim()).toBe('9.8.7')
+  })
+
   it('says, in a sentence, which step failed, and points nothing at a CLI it did not verify', () => {
     const home = profile()
     const subkey = freshKey()
@@ -355,7 +401,7 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
     // The throwaway PATH key as well: the install must fail before PATH, but if it ever did not, it lands there.
     const subkey = freshKey()
     const text = `$env:HARNESS_INSTALL_MANIFEST = '${missing}'; Get-Content -Raw -LiteralPath '${installer}' | Invoke-Expression; Write-Output "after $LASTEXITCODE"`
-    const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(text, 'utf16le').toString('base64')], { encoding: 'utf8', env: { ...process.env, USERPROFILE: profile(), HARNESS_INSTALL_ENV_KEY: subkey }, timeout: 120_000 })
+    const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(text, 'utf16le').toString('base64')], { encoding: 'utf8', env: powershellEnv('default', { USERPROFILE: profile(), HARNESS_INSTALL_ENV_KEY: subkey }), timeout: 120_000 })
     expect(run.stdout).toContain('The step that failed: Reading the release manifests.')
     expect(run.stdout.trim().endsWith('after 1')).toBe(true)
   })
@@ -412,7 +458,7 @@ describe.runIf(windows)('install.ps1, installing for real from a local manifest'
     const manifest = build(platform())
     const text = `Get-Content -Raw -LiteralPath '${installer}' | Invoke-Expression; Write-Output "after $LASTEXITCODE"`
     const run = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Restricted', '-EncodedCommand', Buffer.from(text, 'utf16le').toString('base64')], {
-      encoding: 'utf8', env: { ...process.env, USERPROFILE: home, HARNESS_INSTALL_ENV_KEY: subkey, HARNESS_INSTALL_MANIFEST: manifest }, timeout: 300_000,
+      encoding: 'utf8', env: powershellEnv('default', { USERPROFILE: home, HARNESS_INSTALL_ENV_KEY: subkey, HARNESS_INSTALL_MANIFEST: manifest }), timeout: 300_000,
     })
     expect(run.stdout.trim().endsWith('after 0'), `${run.stdout}\n${run.stderr}`).toBe(true)
     // The command is a program, never a .ps1, so a Restricted PowerShell runs it.
