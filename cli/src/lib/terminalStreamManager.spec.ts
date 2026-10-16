@@ -770,6 +770,41 @@ describe('TerminalStreamManager', () => {
       && frame.payload.reason === 'heartbeat timeout')).toBe(true)
   })
 
+  // A host that lost its backend link closes its remote streams without telling anyone; the client
+  // only found out after 15 s of silence and three ignored resyncs, then gave up (2026-10-16). A
+  // client that asks is now told at its next heartbeat.
+  describe('a heartbeat or resync for a stream this connection does not hold', () => {
+    const errors = () => sent.filter((frame) => frame.type === 'terminal_error')
+
+    it('is answered with TERMINAL_STREAM_NOT_FOUND when the client asks', async () => {
+      await manager.handleFrame('web-1', 'terminal_alive', { streamId: 'gone-1', reportMissing: true })
+      await manager.handleFrame('web-1', 'terminal_resync', { streamId: 'gone-2', attempt: 1, reportMissing: true })
+      expect(errors().map((frame) => [frame.connId, frame.payload.code, frame.payload.streamId])).toEqual([
+        ['web-1', 'TERMINAL_STREAM_NOT_FOUND', 'gone-1'],
+        ['web-1', 'TERMINAL_STREAM_NOT_FOUND', 'gone-2'],
+      ])
+    })
+
+    it('stays silent for a client that does not ask, as every older client', async () => {
+      await manager.handleFrame('web-1', 'terminal_alive', { streamId: 'gone-1' })
+      await manager.handleFrame('web-1', 'terminal_resync', { streamId: 'gone-1', attempt: 1 })
+      expect(errors()).toEqual([])
+    })
+
+    it('counts a stream held by another connection as missing for this one, and leaves it alone', async () => {
+      await manager.handleFrame('web-1', 'terminal_open', {
+        requestId: 'open-1', protocolVersion: 3, agentId: 'agent-1', cols: 100, rows: 30,
+      })
+      const streamId = sent.findLast((frame) => frame.type === 'terminal_ready')?.payload.streamId as string
+      await manager.handleFrame('web-2', 'terminal_alive', { streamId, reportMissing: true })
+      expect(errors().at(-1)).toMatchObject({
+        connId: 'web-2',
+        payload: { code: 'TERMINAL_STREAM_NOT_FOUND', streamId },
+      })
+      expect(stream.closed).toBe(false)
+    })
+  })
+
   // Node's clock keeps running while a Mac sleeps, so a lid closed for forty minutes reached the next
   // sweep as forty minutes without `terminal_alive` and closed every stream at the wake — measured
   // 2026-09-28 as `[terminal-stream] closed` on every local terminal the moment the lid opened.

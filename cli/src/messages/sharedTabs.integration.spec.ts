@@ -279,7 +279,8 @@ describe('shared tabs across three accounts, every piece real but the backend', 
     })
     expect(relay.unauthorized).toEqual([carol.id])
     expect(carol.asks).toContainEqual({ force: true, failedToken: 'stale-carol' })
-    expect(carol.heard).toContainEqual({ sharedTabId: A, ready: true })
+    // The ready notice lands a turn after the socket is admitted; asserting it at once failed CI under load (#1378).
+    await until(() => expect(carol.heard).toContainEqual({ sharedTabId: A, ready: true }))
   })
 
   it('3. Bob adds bob/api and Carol adds carol/web: both appear in every member\'s roster', async () => {
