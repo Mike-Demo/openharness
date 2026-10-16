@@ -378,6 +378,71 @@ void main() {
     );
 
     test(
+      'heartbeats and resyncs ask the daemon to report a stream it no longer has',
+      () {
+        fakeAsync((async) {
+          final s = session(
+            disposeAtEnd: false,
+            resync: const Duration(seconds: 30),
+          );
+          s.open();
+          async.flushMicrotasks();
+          final streamId = _streamId();
+          s.handleFrame('terminal_ready', {
+            'requestId': wire.last('terminal_open')['requestId'],
+            'agentId': 'a',
+            'protocolVersion': TerminalSession.protocolVersion,
+            'streamId': streamId,
+          });
+          s.handleBinary(_keyframe(streamId));
+          async.flushMicrotasks();
+
+          async.elapse(const Duration(seconds: 5));
+          expect(wire.last('terminal_alive'), {
+            'streamId': streamId,
+            'reportMissing': true,
+          });
+
+          s.handleBinary(_output(streamId, 2, 'gap'));
+          async.flushMicrotasks();
+          expect(wire.last('terminal_resync')['reportMissing'], isTrue);
+          s.dispose();
+        });
+      },
+    );
+
+    test('a stream the daemon no longer has is reopened in place at once', () async {
+      final s = session();
+      final opening = s.open();
+      final streamId = await ready(s);
+      await opening;
+      await s.handleBinary(_keyframe(streamId));
+
+      await s.handleFrame('terminal_error', {
+        'streamId': streamId,
+        'code': 'TERMINAL_STREAM_NOT_FOUND',
+      });
+      await until(() => wire.of('terminal_open').length == 2);
+
+      expect(s.status, TerminalSessionStatus.opening);
+    });
+
+    test('a missing-stream report about another stream is ignored', () async {
+      final s = session();
+      final opening = s.open();
+      await ready(s);
+      await opening;
+
+      await s.handleFrame('terminal_error', {
+        'streamId': _streamId(),
+        'code': 'TERMINAL_STREAM_NOT_FOUND',
+      });
+
+      expect(wire.of('terminal_open'), hasLength(1));
+      expect(s.status, isNot(TerminalSessionStatus.error));
+    });
+
+    test(
       'heartbeats keep a live stream alive, and a failed one is a lost stream',
       () {
         fakeAsync((async) {
@@ -658,6 +723,7 @@ void main() {
         'streamId': streamId,
         'attempt': 1,
         'reason': 'TERMINAL_KEYFRAME_TIMEOUT',
+        'reportMissing': true,
       });
 
       await s.handleBinary(_keyframe(streamId, seq: 5));

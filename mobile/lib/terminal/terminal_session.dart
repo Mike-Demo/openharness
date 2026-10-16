@@ -1049,6 +1049,14 @@ class TerminalSession extends ChangeNotifier {
         // TERMINAL_PASTE_FAILED already is, since it may mean the pty is in an unknown state.
         // `_fail` itself resolves any in-flight upload (see `_abortActiveUpload`), so there is
         // nothing extra to do here for TERMINAL_PASTE_IMAGE_FAILED/TERMINAL_PASTE_FILE_FAILED.
+        //
+        // The daemon no longer holds this stream (it closed it while its link to the backend was
+        // down, say) and said so because this session asked (`reportMissing`). Reopen in place now
+        // rather than waiting out the heartbeat silence and three resyncs (2026-10-16).
+        if (errorCode == 'TERMINAL_STREAM_NOT_FOUND') {
+          unawaited(_recoverByReopen(reason: 'TERMINAL_STREAM_NOT_FOUND'));
+          return true;
+        }
         _fail(errorCode, payload['message']?.toString());
         return true;
       case 'terminal_transport_error':
@@ -2095,7 +2103,11 @@ class TerminalSession extends ChangeNotifier {
   Future<void> _sendHeartbeat() async {
     if (!acceptsInput) return;
     final generation = _generation;
-    final sent = await send('terminal_alive', {'streamId': streamId});
+    final sent = await send('terminal_alive', {
+      'streamId': streamId,
+      // Ask the daemon to say so if it no longer holds this stream (CLI `reportMissing`).
+      'reportMissing': true,
+    });
     if (!sent && _isCurrent(generation)) {
       transportLost('Terminal heartbeat was not sent');
       return;
@@ -2176,6 +2188,7 @@ class TerminalSession extends ChangeNotifier {
       'streamId': currentStream,
       'attempt': _resyncAttempts,
       'reason': errorCode,
+      'reportMissing': true,
     });
     if (!_isCurrent(generation) ||
         streamId != currentStream ||
