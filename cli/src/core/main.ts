@@ -199,6 +199,7 @@ import { createDevicesLink } from './devicesLink.js'
 import { CORE_EXIT_STOP, CORE_EXIT_UPDATE, PROBE_COMMAND } from '../harnessd/protocol.js'
 import { localSocketListenPath, localSocketPath, refuseServedDataFolder, servedFolderDeps, type LocalSocketServer } from '../lib/localSocket.js'
 import { ensureDaemonToken } from '../lib/windows/pipeAuth.js'
+import { claimDataFolder } from '../lib/windows/dataFolderClaim.js'
 import { saveDaemonPort } from '../lib/daemonEndpoint.js'
 import { publishHookRoute } from '../lib/hookRoutes.js'
 import { BackendSocket, isLocalClientId } from '../backendSocket.js'
@@ -495,6 +496,10 @@ async function runForeground(session: AuthSession | null): Promise<void> {
   // registry, its viewers, its panes. Just after the update is listened for, never before it
   // (startupOrder.spec.ts).
   await refuseServedDataFolder(localSocketPath(env.ADAPTER_DATA_DIR, env.PORT), 1_000, servedFolderDeps(env.ADAPTER_DATA_DIR))
+  // Windows: each start listens on a pipe of a new name, which never meets a second core on this folder as the
+  // fixed Unix socket does, and the ask above cannot see two starts at once. The fixed claim, held while this core
+  // runs, refuses the second the same way (lib/windows/dataFolderClaim.ts).
+  const dataFolderClaim = process.platform === 'win32' ? await claimDataFolder(env.ADAPTER_DATA_DIR) : null
 
   // harnessd's master saw this core crash again and again: start nothing that could do it again. The
   // master's updater runs on, and a published fix still lands (`enterSafeMode`).
@@ -2684,7 +2689,9 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     ['the hook connections', () => (hookServer as unknown as { closeAllConnections?: () => void }).closeAllConnections?.()],
     ['Share', () => ports.sharing?.stop()],
     ['the local websocket', () => localWsServer.close()], ['the hook server', () => hookServer.close()],
-    ['the local socket', () => localSocket?.close()], ['Codex activity', () => nativeControls.close()],
+    // The claim just before the socket: a successor that saw the socket go must find the folder free.
+    ['the data folder claim', () => dataFolderClaim?.release()], ['the local socket', () => localSocket?.close()],
+    ['Codex activity', () => nativeControls.close()],
     // The serial ports, the lane and the voice router's worker: a port held through the handoff makes the
     // next daemon's dial, and esptool, fail as if the hardware had died.
     ['the devices', () => ports.devices?.stop()],
@@ -2752,6 +2759,7 @@ async function runForeground(session: AuthSession | null): Promise<void> {
     // The data folder's socket first: a successor waiting for this core to leave (lib/localSocket.ts) can
     // start as soon as it is gone, whatever the clients below take to close.
     deadline.at('the local socket')
+    dataFolderClaim?.release()
     await localSocket?.close()
     deadline.at('the local websocket')
     await localWsServer.close()

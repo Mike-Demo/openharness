@@ -370,7 +370,7 @@ async function inspectHermesKind(sessionId: string, knownHome?: string): Promise
 }
 
 export interface HookServerOptions {
-  /** Also serve on this Unix socket (see lib/localSocket.ts). Null or absent: TCP only. */
+  /** Also serve on this Unix socket, or with pipeToken the Windows pipe (see lib/localSocket.ts). Null or absent: TCP only. */
   socketPath?: string | null
   /** Windows: the daemon's token. When given, `socketPath` is a pipe whose every request proves it (lib/localSocket.ts). */
   pipeToken?: Buffer | null

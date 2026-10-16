@@ -204,7 +204,8 @@ function listenAuthenticated(handler: http.RequestListener, path: string, token:
   })
 }
 
-const alreadyServing = (path: string): Error =>
+/** What a start finds when another daemon serves its data folder: `EADDRINUSE`, as the bind it spares would have. */
+export const alreadyServing = (path: string): Error =>
   Object.assign(new Error(`A Harness daemon is already serving ${path}`), { code: 'EADDRINUSE' })
 
 /**

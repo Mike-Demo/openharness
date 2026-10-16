@@ -175,6 +175,16 @@ describe('the core\'s start-up order (core/main.ts)', () => {
     expect(exiting).toBeLessThan(source.indexOf('\n  await ', loaded))
   })
 
+  it('on Windows, claims the data folder once no daemon serves it, before reading or listening, and gives it up with the socket', () => {
+    const source = code(SOURCE)
+    const claimed = source.indexOf("const dataFolderClaim = process.platform === 'win32' ? await claimDataFolder(env.ADAPTER_DATA_DIR) : null")
+    expect(claimed).toBeGreaterThan(source.indexOf('await refuseServedDataFolder('))
+    expect(claimed).toBeLessThan(source.indexOf('registry.load()'))
+    expect(claimed).toBeLessThan(source.indexOf('await startHookServer('))
+    // In the update's teardown and in the shutdown, beside the local socket: a successor may start once both are gone.
+    expect(source.match(/dataFolderClaim\?\.release\(\)/g)).toHaveLength(2)
+  })
+
   it('only swaps in the full restart handler once everything it tears down exists', () => {
     // `bootHandoff` hands the machine over without finishing start-up; the full handoff
     // (core/updateHandoff.ts) tears down two dozen subsystems, handed to it here as its teardown, and may
