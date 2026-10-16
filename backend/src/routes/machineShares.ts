@@ -6,8 +6,9 @@
  *   machine's own daemon from the policy it keeps (cli services/sharedMachines.ts), which reads the members
  *   back to know whose keys to trust.
  * - `GET /api/machine-shares`: the machines shared with the person asking (also in `GET /api/machines`).
- * - `POST|DELETE /api/machine-shares/:machineId/add`: add a machine shared with your domain, or take it
- *   back out of your list. An address the owner named needs no adding.
+ * - `POST|DELETE /api/machine-shares/:machineId/add`: what an older app calls to add a machine shared with
+ *   its domain, or take it back out. Nothing needs adding any more: a domain share is used as one by email
+ *   is (lib/machineAccess.ts), so these change no one's access.
  */
 import type { FastifyInstance } from 'fastify'
 import type { MachineShare } from '@prisma/client'

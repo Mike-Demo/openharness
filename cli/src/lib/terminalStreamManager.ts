@@ -639,8 +639,19 @@ export class TerminalStreamManager {
 
   private alive(connId: string, payload: FramePayload): void {
     const state = this.streamFor(connId, payload)
-    if (!state) return
+    if (!state) { this.reportMissing(connId, payload); return }
     state.expiresAt = this.now() + HEARTBEAT_TIMEOUT_MS
+  }
+
+  /**
+   * Tell a client that asked (`reportMissing`) that the stream it names is gone. A host that lost its
+   * backend link closes its remote streams without notice, and the client used to learn it only after
+   * 15 s of silence and three resyncs this manager ignored, then gave up on the pane (2026-10-16). Opt-in,
+   * so an older client keeps the silence its own recovery was built around.
+   */
+  private reportMissing(connId: string, payload: FramePayload): void {
+    if (payload.reportMissing !== true || typeof payload.streamId !== 'string') return
+    this.sendError(connId, 'TERMINAL_STREAM_NOT_FOUND', { streamId: payload.streamId, message: 'no live terminal stream' })
   }
 
   private ack(connId: string, payload: FramePayload): void {
@@ -1010,11 +1021,10 @@ export class TerminalStreamManager {
 
   private async resyncRequested(connId: string, payload: FramePayload): Promise<void> {
     const state = this.streamFor(connId, payload)
-    if (state) {
-      state.resyncs++
-      this.diagnostic(state, 'resync_requested', { attempt: payload.attempt })
-      await this.sendKeyframe(state, 'resync')
-    }
+    if (!state) { this.reportMissing(connId, payload); return }
+    state.resyncs++
+    this.diagnostic(state, 'resync_requested', { attempt: payload.attempt })
+    await this.sendKeyframe(state, 'resync')
   }
 
   private async closeRequested(connId: string, payload: FramePayload): Promise<void> {

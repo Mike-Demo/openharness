@@ -1369,7 +1369,9 @@ impl App {
             }
             // This computer first, then the ones that are up.
             app.fleet.machines.sort_by_key(|m| (!m.local, !m.online(), m.name.to_lowercase()));
-            let ids: Vec<String> = app.fleet.machines.iter().filter(|m| m.online() && matches!(m.reach, Reach::Unknown | Reach::Error(_))).map(|m| m.id.clone()).collect();
+            let ids: Vec<String> = app.fleet.machines.iter()
+                .filter(|m| m.online() && (matches!(m.reach, Reach::Unknown | Reach::Error(_)) || (m.reach == Reach::NeedsLink && app.fleet.shares.contains_key(&m.id))))
+                .map(|m| m.id.clone()).collect();
             for id in ids { app.connect(&id) }
             for machine in app.fleet.machines.iter_mut() { if !machine.online() && machine.reach == Reach::Unknown { machine.reach = Reach::Offline } }
             crate::workspace_controls::refresh_workspace(app);
@@ -1499,7 +1501,10 @@ impl App {
                     agent.activity = crate::activity::Activity::default();
                     agent.activity.unknown = unknown;
                 }
-                let needs_link = error.code == "NO_PEER_LINK";
+                // A machine shared with this account links by its key, never a password: refused, it only
+                // means one of the two daemons has not read the sharing yet (the desktop app keeps dialling
+                // and gets in). Seen 2026-10-16: hn took it for "not linked", stopped, and showed `?` for good.
+                let needs_link = error.code == "NO_PEER_LINK" && !self.fleet.shares.contains_key(&machine_id);
                 // Its owner stopped sharing it: no reconnect brings it back. Say so on its panes and in
                 // the status line, and read the list again, which takes it (and them) away.
                 if error.code == "NOT_YOUR_MACHINE" {
@@ -1524,7 +1529,9 @@ impl App {
                     }
                 }
                 if let Some(machine) = self.fleet.machine_mut(&machine_id) {
-                    machine.reach = if needs_link { Reach::NeedsLink } else if machine.online() { Reach::Error(error.to_string()) } else { Reach::Offline };
+                    machine.reach = if needs_link { Reach::NeedsLink }
+                        else if error.code == "NO_PEER_LINK" { Reach::Connecting }
+                        else if machine.online() { Reach::Error(error.to_string()) } else { Reach::Offline };
                 }
                 if machine_id == self.fleet.local_id && !crate::local::is_local(&machine_id) && matches!(error.code.as_str(), "DAEMON_UNREACHABLE" | "HEARTBEAT_TIMEOUT" | "DISCONNECTED") {
                     self.daemon_down = true;
@@ -7217,6 +7224,28 @@ mod recovery_tests {
         }
         assert!(app.links["test-peer"].link.is_none());
         assert!(app.links["test-peer"].retry_at.is_none(), "no reconnect is scheduled");
+    }
+
+    // Seen 2026-10-16: a machine shared with this account was refused once (its daemon had not read
+    // the sharing yet) and hn showed it `?`, "not linked", for good, while the desktop app got in.
+    #[tokio::test]
+    async fn a_shared_machine_refused_before_the_sharing_is_read_keeps_dialling() {
+        let mut app = fixture();
+        app.fleet.shares.insert("test-peer".into(), crate::fleet::MachineShare { owner: "Dee".into(), email: "dee@acme.io".into(), team: false });
+        app.on_machine("test-peer".into(), 1, MachineEvent::Failed(RpcError::new("NO_PEER_LINK", "")));
+        assert_eq!(app.fleet.machines[0].reach, Reach::Connecting, "a shared machine is never asked for a password");
+        assert!(app.links["test-peer"].link.is_none());
+        assert!(app.links["test-peer"].retry_at.is_some(), "it dials again");
+        for id in [1, 2] {
+            assert!(matches!(app.panes[&id].phase, Phase::Connecting(_)), "pane {id}: {:?}", app.panes[&id].phase);
+        }
+
+        // The account's own machine still needs its password, and is not dialled again by itself.
+        let mut app = fixture();
+        app.on_machine("test-peer".into(), 1, MachineEvent::Failed(RpcError::new("NO_PEER_LINK", "")));
+        assert_eq!(app.fleet.machines[0].reach, Reach::NeedsLink);
+        assert!(app.links["test-peer"].retry_at.is_none());
+        assert!(matches!(&app.panes[&1].phase, Phase::Card { title, .. } if title == "This machine is not linked here"));
     }
 
     #[tokio::test]

@@ -981,6 +981,8 @@ class AppNotifier extends ChangeNotifier {
   );
 
   final Map<String, Timer> _offlineRetryTimers = {};
+  final Map<TerminalPane, Timer> _paneRetryTimers = {};
+  final Map<TerminalPane, int> _paneRetryAttempts = {};
 
   /// One reload per machine, owed after this computer's daemon was too slow to answer its list while
   /// still on the socket — the error strip says "retrying", and this is the retry.
@@ -1375,6 +1377,10 @@ class AppNotifier extends ChangeNotifier {
   /// Who stopped sharing [machineId] with this account, and its name, if they did.
   ({String name, String owner})? sharingEnded(String machineId) =>
       _sharingEnded[machineId];
+
+  /// The "stopped sharing" message [lastError] shows, and for which machine: taken down once that
+  /// machine is shared again, rather than left saying something no longer true.
+  ({String machineId, String text})? _sharingEndedError;
 
   void _noteSharingEnded(Machine machine) {
     final share = machine.machineShare;
@@ -3911,6 +3917,18 @@ class AppNotifier extends ChangeNotifier {
   }
 
   static const offlineRetryInterval = Duration(seconds: 5);
+
+  /// Waits before each automatic reattach of a pane whose stream died while its machine stayed
+  /// reachable; the last one repeats. A pane used to get one reopen and then sit on Reconnect until
+  /// someone clicked it, in whatever tab it was (2026-10-16).
+  static const paneRetryDelays = <Duration>[
+    Duration(seconds: 1),
+    Duration(seconds: 2),
+    Duration(seconds: 4),
+    Duration(seconds: 8),
+    Duration(seconds: 16),
+    Duration(seconds: 30),
+  ];
   static const localDaemonReconnectDelay = Duration(seconds: 1);
   static const agentSyncInterval = Duration(seconds: 60);
 
@@ -7937,6 +7955,14 @@ class AppNotifier extends ChangeNotifier {
     }
     final visible = machines.map((machine) => machine.machineId).toSet();
     _sharingEnded.removeWhere((id, _) => visible.contains(id));
+    // Seen 2026-10-16: "Tuan stopped sharing Mac Auto with you." stayed up after Tuan shared it again.
+    final ended = _sharingEndedError;
+    if (ended != null &&
+        !machinesAreStale &&
+        visible.contains(ended.machineId)) {
+      _sharingEndedError = null;
+      if (_lastError == ended.text) _lastError = null;
+    }
     for (final entry in machineStates.entries) {
       if (!visible.contains(entry.key)) {
         // A shared machine that left the list was taken back by its owner (a fresh list says so).
@@ -8328,6 +8354,7 @@ class AppNotifier extends ChangeNotifier {
     _slowReloadTimers.clear();
     _offlinePollsInFlight.clear();
     _offlineRecoveryInFlight.clear();
+    _cancelPaneRetries();
   }
 
   void _startAgentSyncTimer(String machineId) {
@@ -16391,7 +16418,7 @@ class AppNotifier extends ChangeNotifier {
       resyncTimeout: const Duration(seconds: 15),
     );
     pane.session = terminal;
-    terminal.addListener(notifyListeners);
+    terminal.addListener(_onSessionChanged);
     notifyListeners();
     // Wait for the pane's actual measured viewport before asking the daemon to open anything.
     // Sending the 80x24 fallback here used to make the daemon spawn the remote TTY (and render its
@@ -16410,7 +16437,7 @@ class AppNotifier extends ChangeNotifier {
     final terminal = pane.session;
     pane.session = null;
     if (terminal == null) return;
-    terminal.removeListener(notifyListeners);
+    terminal.removeListener(_onSessionChanged);
     try {
       if (sendClose) await terminal.close();
     } finally {
@@ -17978,6 +18005,79 @@ class AppNotifier extends ChangeNotifier {
       // could only ever promise restoration to one of them.
       unawaited(_reattachPane(pane, intent: paneIntent));
     }
+    // A load is also when a pane that could not be attached before (agents not listed yet) can be.
+    _schedulePaneRetries();
+  }
+
+  /// Every session change repaints, and may mean a pane's stream just died.
+  void _onSessionChanged() {
+    notifyListeners();
+    _schedulePaneRetries();
+  }
+
+  /// Keep one timer for each pane whose stream died while its machine stays reachable, in whichever
+  /// tab it is, and none for any other. Sessions notify on state changes, not on output, so the walk
+  /// is cheap; an app with every terminal live holds no timer.
+  void _schedulePaneRetries() {
+    if (_disposed) return;
+    for (final pane in allPanes) {
+      if (!_paneRetryWanted(pane)) {
+        _paneRetryTimers.remove(pane)?.cancel();
+        if (pane.session?.status == TerminalSessionStatus.controlling) {
+          _paneRetryAttempts.remove(pane);
+        }
+        continue;
+      }
+      if (_paneRetryTimers.containsKey(pane)) continue;
+      final attempts = _paneRetryAttempts[pane] ?? 0;
+      final delay = paneRetryDelays[min(attempts, paneRetryDelays.length - 1)];
+      _paneRetryTimers[pane] = Timer(delay, () {
+        _paneRetryTimers.remove(pane);
+        if (!_paneRetryWanted(pane)) return;
+        _paneRetryAttempts[pane] = attempts + 1;
+        appLog.info(
+          'terminal',
+          'reattach machine=${pane.machineId} agent=${pane.agentId} attempt=${attempts + 1}',
+        );
+        final session = pane.session!;
+        // A sweep reopen is never a gesture. It must not take the terminal on the strength of an
+        // earlier click whose open failed, and only its first attempt may redial the machine's link:
+        // a forced redial knocks every other pane on that machine over too.
+        session.takeover = false;
+        unawaited(session.reopen(redial: attempts == 0));
+      });
+    }
+    _paneRetryTimers.removeWhere((pane, timer) {
+      if (allPanes.contains(pane)) return false;
+      timer.cancel();
+      return true;
+    });
+    _paneRetryAttempts.removeWhere((pane, _) => !allPanes.contains(pane));
+  }
+
+  /// A dead stream on a machine that is up and can open terminals politely. Offline machines are left
+  /// to the offline/online path, and `takenOver` panes to a person. A dead watcher is included, unlike
+  /// in [_paneNeedsAttach]: the reopen is polite, so it comes back as a watcher and takes nothing.
+  bool _paneRetryWanted(TerminalPane pane) {
+    final session = pane.session;
+    final machine = machineStates[pane.machineId];
+    return pane.agentId != null &&
+        session != null &&
+        !session.closedHere &&
+        (session.status == TerminalSessionStatus.error ||
+            session.status == TerminalSessionStatus.closed) &&
+        machine != null &&
+        machine.nodeOnline == true &&
+        machine.terminalNoTakeoverAvailable &&
+        _canAttachPane(pane);
+  }
+
+  void _cancelPaneRetries() {
+    for (final timer in _paneRetryTimers.values) {
+      timer.cancel();
+    }
+    _paneRetryTimers.clear();
+    _paneRetryAttempts.clear();
   }
 
   /// Whether this tile is showing something that is not a working terminal.
@@ -18914,6 +19014,10 @@ class AppNotifier extends ChangeNotifier {
           _lastError =
               '${machine.machine.machineShare!.owner} stopped sharing $name with you.';
           _lastErrorRetryable = false;
+          _sharingEndedError = (
+            machineId: machine.machine.machineId,
+            text: _lastError!,
+          );
           unawaited(refreshMachines());
         } else {
           _lastError = machineSelectErrorText(code, name);
@@ -19261,7 +19365,7 @@ class AppNotifier extends ChangeNotifier {
     )..session = session;
     panes.add(pane);
     focusedPaneId = pane.id;
-    session.addListener(notifyListeners);
+    session.addListener(_onSessionChanged);
     return pane;
   }
 
@@ -19375,7 +19479,7 @@ class AppNotifier extends ChangeNotifier {
     _stopAllAgentSyncTimers();
     _clearAllTurnActivity();
     for (final pane in allPanes) {
-      pane.session?.removeListener(notifyListeners);
+      pane.session?.removeListener(_onSessionChanged);
       pane.session?.dispose();
     }
     for (final swarm in swarms) {

@@ -63,7 +63,7 @@ import { apiCommand, apiUsage } from './lib/apiCommand.js'
 import { connectionsCommand, connectionsUsage } from './lib/connectors/command.js'
 import { remoteCommand } from './remoteCommand.js'
 import { tuiCommand } from './tui/index.js'
-import { newCommand, type NewMachine } from './lib/newCommand.js'
+import { machineChoices, newCommand, type MachineRow, type NewMachine } from './lib/newCommand.js'
 import { gridSetupCommand } from './lib/gridSetupCommand.js'
 import { WebSocket as NewCommandSocket } from 'ws'
 import { describeMasterStatus, readStatusFile } from './harnessd/master.js'
@@ -2293,6 +2293,14 @@ async function ownedMachines(): Promise<NewMachine[]> {
   }))
 }
 
+/** What `--machine` resolves among (`harness new`, `ps`, `show`, `wait`, `close`): the account's machines, then the
+ *  ones other accounts share with it that it may use (lib/newCommand.ts `machineChoices`). */
+async function usableMachines(): Promise<NewMachine[]> {
+  const { session, headers } = await controlPlaneAuth()
+  const data = await requestJson<{ machines?: MachineRow[]; sharedMachines?: MachineRow[] }>('GET', '/api/machines', undefined, headers)
+  return machineChoices(data, session.machineId ?? null)
+}
+
 /** True when `id` names this machine — accepts the short prefix the list prints, not just the full id. */
 function matchesMachineId(machineId: string, id: string): boolean {
   return machineId === id || machineId.startsWith(id)
@@ -2548,7 +2556,7 @@ switch (cmd) {
     whoamiCommand(rest, { machines: ownedMachines }).then(code => { process.exitCode = code }).catch(onError)
     break
   case 'ps':
-    psCommand(rest, { machines: ownedMachines }).then(code => { process.exitCode = code }).catch(onError)
+    psCommand(rest, { machines: usableMachines }).then(code => { process.exitCode = code }).catch(onError)
     break
   case 'settings':
     settingsCommand(rest, { port: daemonPort() }).then(code => { process.exitCode = code }).catch(onError)
@@ -2559,13 +2567,13 @@ switch (cmd) {
     break
   }
   case 'show':
-    showCommand(rest, { machines: ownedMachines }).then(code => { process.exitCode = code }).catch(onError)
+    showCommand(rest, { machines: usableMachines }).then(code => { process.exitCode = code }).catch(onError)
     break
   case 'wait':
-    waitCommand(rest, { machines: ownedMachines }).then(code => { process.exitCode = code }).catch(onError)
+    waitCommand(rest, { machines: usableMachines }).then(code => { process.exitCode = code }).catch(onError)
     break
   case 'close':
-    closeCommand(rest, { machines: ownedMachines }).then(code => { process.exitCode = code }).catch(onError)
+    closeCommand(rest, { machines: usableMachines }).then(code => { process.exitCode = code }).catch(onError)
     break
   case 'orchestrator':
     orchestratorCommand(rest).then(code => { process.exitCode = code }).catch(onError)
@@ -2676,7 +2684,7 @@ switch (cmd) {
       port: daemonPort(),
       localMachineId: wantedDaemonIdentity(),
       daemonRunning: isDaemonRunning, unreachable: () => daemonUnreachableText(),
-      listMachines: ownedMachines,
+      listMachines: usableMachines,
       connect: (url) => new NewCommandSocket(url),
       output: (line) => console.log(line),
       error: (line) => console.error(line),
