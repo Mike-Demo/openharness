@@ -43,6 +43,7 @@ and the person's view of it.
 ## The agent's side
 
 ```
+harness whoami                                      # who and where you are, whether you may start, your limits (2026-10-15-agent-experience.md)
 harness ps [--all]                                  # the harnesses here: state, who started each, what each is about
 harness new [agent] [--machine <name>] [folder] --name N -- <task>   # exists; now knows when an agent runs it
 harness show <name> [--chars N]                     # its state, the last ask and the answer
@@ -53,7 +54,8 @@ harness close <name> [--now]                        # save its screen and stop i
 
 Text by default, for agents as much as people: they read it as well, and it is a third of JSON's size (`ps` on
 the owner's Mac, 21 harnesses: 5.8 KB of text, 16.2 KB of JSON). `--json` for programs. Every error says what to run next.
-`wait` exits 0 idle, 3 needs the person, 4 stopped or gone, 124 timed out. A harness the caller closed itself is
+`wait` exits 0 idle, 3 needs the person, 4 stopped or gone, 124 timed out. A refusal (limits, the person's
+setting, a harness the caller did not start) exits 5, and every verb ends with `Next:` (2026-10-15-agent-experience.md). A harness the caller closed itself is
 `closed (you closed it)` and exits 0 (`close` notes it in the ledger): a Codex lead that closed its harness and then
 waited on it, as it had queued, was told it had failed (October 12).
 
@@ -359,9 +361,9 @@ A close of a harness already closed, the same conversation, is answered closed (
 a window closing a tab closes its panes one at a time, and the starter's close had already taken the next pane's
 harness with it; that pane's close was answered `AGENT_CHANGED` and shown as "Could not confirm that it stopped".
 
-Agents are told too: `harness show` on an idle harness of theirs ends with `Close it once you have what you need:
-harness close kid`, and `harness ps` ends with `You have 2 harnesses of your own open, 1 idle. Close each once you have
-its answer: harness close <name>.` (the MCP tools name `harness_close` instead). `wait` on one Harness closed says where
+Agents are told too: `harness show` on an idle harness of theirs ends with `Next: harness close <name>  (once you
+have what you need)`, and an agent's `harness ps` ends with `Next: harness show <name>  (read its answer, then close
+it: harness close <name>)`; the MCP tools name `harness_close` instead (2026-10-15-agent-experience.md). `wait` on one Harness closed says where
 its answer still is: `kid: stopped · it was stopped; its answer is kept: harness show kid`.
 
 Not covered: harnesses an agent started on another machine when its starter closes (each machine's cleanup sees only

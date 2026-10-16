@@ -65,6 +65,12 @@ class ProductMeasurement extends ChangeNotifier {
   final DateTime Function() _now;
   final String Function() _receipt;
   bool signedOutSharing = false, choiceLoaded = false;
+
+  /// Which build reports: `{surface, release, platform, channel}`, as backend
+  /// `ProductUsageContext` takes it. Sent with the account's reports only, so the totals split by
+  /// release and by platform; a `development` build's reports are not kept. Null: no context.
+  Map<String, String>? context;
+  String? _coverageDay;
   bool _disposed = false;
   Object? _account;
   bool? _enabled;
@@ -143,7 +149,30 @@ class ProductMeasurement extends ChangeNotifier {
     _days.removeWhere((key, _) => key.startsWith('$channel:'));
     _pending.remove(channel);
     _active.removeWhere((_, value) => value == channel);
+    if (channel == 'ui') _coverageDay = null;
   }
+
+  /// Sends what the account has queued before a sign-out discards it ([account]): a step ended by
+  /// signing out, and why. At most [within]; what is still queued then is lost as before.
+  Future<void> sendBeforeSignOut({
+    Duration within = const Duration(seconds: 2),
+  }) async {
+    final watch = Stopwatch()..start();
+    for (var round = 0; round < 3; round++) {
+      if (_disposed || !sharing || !_queued('ui') || watch.elapsed >= within) {
+        return;
+      }
+      try {
+        await flush().timeout(within - watch.elapsed);
+      } on TimeoutException {
+        return;
+      }
+    }
+  }
+
+  bool _queued(String channel) =>
+      _pending.containsKey(channel) ||
+      _days.keys.any((key) => key.startsWith('$channel:'));
 
   /// [elapsed] is time the flow already ran before it could be counted; it lands in the duration.
   void Function(ProductOutcome) begin(
@@ -262,6 +291,12 @@ class ProductMeasurement extends ChangeNotifier {
     );
     final counters = _days.putIfAbsent('$channel:$day', () => {});
     counters[metric] = min(1000, (counters[metric] ?? 0) + 1);
+    // One collector day per app run and UTC day: the backend shows a release or platform split
+    // only above a floor of these.
+    if (channel == 'ui' && context != null && _coverageDay != day) {
+      _coverageDay = day;
+      counters['health_${surface}_collector_days'] = 1;
+    }
     _schedule();
   }
 
@@ -330,6 +365,7 @@ class ProductMeasurement extends ChangeNotifier {
           'day': key.split(':')[1],
           'counters': batch,
           if (channel == 'setup') 'consent': true else 'revision': _revision,
+          if (channel == 'ui' && context != null) 'context': context,
         };
         _pending[channel] = report;
       }

@@ -228,6 +228,118 @@ void main() {
     expect(counters(), isEmpty);
   });
 
+  test(
+    'a sign-in after a failed try on another button is retried and switched',
+    () async {
+      onboarding.attempted(ProductFlow.signInGoogle, ProductOutcome.cancelled);
+      onboarding.attempted(ProductFlow.signInEmail, ProductOutcome.ok);
+      onboarding.signedIn(ProductFlow.signInEmail, Duration.zero);
+      await signIn();
+      await usage.flush();
+      expect(
+        counters('ui_phone_sign_in_'),
+        allOf(
+          containsPair('ui_phone_sign_in_retried', 1),
+          containsPair('ui_phone_sign_in_switched', 1),
+        ),
+      );
+    },
+  );
+
+  test('a first sign-in that works is neither retried nor switched', () async {
+    onboarding.attempted(ProductFlow.signInApple, ProductOutcome.ok);
+    onboarding.signedIn(ProductFlow.signInApple, Duration.zero);
+    await signIn();
+    await usage.flush();
+    expect(
+      counters('ui_phone_sign_in_'),
+      isNot(contains('ui_phone_sign_in_retried')),
+    );
+    expect(
+      counters('ui_phone_sign_in_'),
+      isNot(contains('ui_phone_sign_in_switched')),
+    );
+    expect(
+      counters('ui_phone_sign_in_'),
+      containsPair('ui_phone_sign_in_ok', 1),
+    );
+  });
+
+  test('a sign-out sends the step it ended before the queue goes', () async {
+    signedInHere();
+    onboarding.start(ProductFlow.computerWait);
+    await signIn();
+    await usage.flush();
+    onboarding.mark(ProductFlow.computerWait, OnboardingMark.notYou);
+    onboarding.reset();
+    await usage.sendBeforeSignOut();
+    usage.account(null);
+    expect(counters(), containsPair('ui_phone_computer_wait_not_you', 1));
+    expect(counters(), containsPair('ui_phone_computer_wait_cancelled', 1));
+  });
+
+  test('without sending first, a sign-out loses what was queued', () async {
+    signedInHere();
+    onboarding.start(ProductFlow.computerWait);
+    await signIn();
+    await usage.flush();
+    onboarding.mark(ProductFlow.computerWait, OnboardingMark.notYou);
+    usage.account(null);
+    await usage.flush();
+    expect(counters(), isNot(contains('ui_phone_computer_wait_not_you')));
+  });
+
+  test(
+    'the build context rides the account reports, with one collector day',
+    () async {
+      usage.context = {
+        'surface': 'phone',
+        'release': '1.0.3',
+        'platform': 'ios',
+        'channel': 'production',
+      };
+      signedInHere();
+      onboarding.start(ProductFlow.computerWait);
+      await signIn();
+      onboarding.end(ProductFlow.computerWait, ProductOutcome.ok);
+      await usage.flush();
+      expect(reports, isNotEmpty);
+      for (final report in reports) {
+        expect(report['context'], usage.context);
+      }
+      expect(counters(), containsPair('health_phone_collector_days', 1));
+    },
+  );
+
+  test('signed-out setup reports never carry the build context', () async {
+    final setup = <Map<String, dynamic>>[];
+    final guest =
+        ProductMeasurement(
+            surface: 'phone',
+            automatic: false,
+            now: () => DateTime.utc(2026, 10, 14, 12),
+            sendSetup: (r) async {
+              setup.add(r);
+              return {'accepted': true};
+            },
+          )
+          ..context = {
+            'surface': 'phone',
+            'release': '1.0.3',
+            'platform': 'android',
+            'channel': 'production',
+          };
+    addTearDown(guest.dispose);
+    await guest.setSignedOutSharing(true);
+    guest.begin(ProductFlow.signInGoogle)(ProductOutcome.ok);
+    await guest.flush();
+    expect(setup.single.containsKey('context'), isFalse);
+    expect(
+      (setup.single['counters'] as Map).keys,
+      isNot(contains('health_phone_collector_days')),
+    );
+  });
+
   test('every mark is in the backend vocabulary under each step it names', () {
     final vocabulary = File('../backend/src/types/productUsage.ts')
         .readAsStringSync();

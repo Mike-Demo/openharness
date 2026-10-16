@@ -1,3 +1,4 @@
+import '../core/app_version.dart';
 import '../core/test_run.dart';
 import '../measurement/onboarding_measurement.dart';
 import '../measurement/product_measurement.dart';
@@ -1126,7 +1127,33 @@ class AppNotifier extends ChangeNotifier {
               sendSetupMeasurement(this.config.apiBaseUrl, report),
         );
     addListener(_syncProductMeasurement);
+    unawaited(_measurementContext());
     _initDeviceLog();
+  }
+
+  /// Which build this phone's reports come from ([ProductMeasurement.context]): the public release
+  /// and the OS family, nothing that tells one phone from another. A debug build reports as
+  /// `development`, which the backend does not keep. Not the web, which has no such context.
+  Future<void> _measurementContext() async {
+    if (kIsWeb || kUnderTest) return;
+    var release = 'unknown';
+    try {
+      release = await runningAppVersion();
+    } catch (_) {}
+    if (_disposed) return;
+    productMeasurement.context = {
+      'surface': 'phone',
+      // The backend refuses a whole report whose release is not a plain x.y.z.
+      'release': RegExp(r'^(0|[1-9]\d{0,2})(\.(0|[1-9]\d{0,2})){2}$').hasMatch(release)
+          ? release
+          : 'unknown',
+      'platform': switch (defaultTargetPlatform) {
+        TargetPlatform.iOS => 'ios',
+        TargetPlatform.android => 'android',
+        _ => 'other',
+      },
+      'channel': kReleaseMode ? 'production' : 'development',
+    };
   }
 
   void _syncProductMeasurement() {
@@ -1744,8 +1771,13 @@ class AppNotifier extends ChangeNotifier {
   void Function(ProductOutcome) _measureSignIn(ProductFlow method) {
     final finish = productMeasurement.beginEach([ProductFlow.signIn, method]);
     final watch = Stopwatch()..start();
+    var done = false;
     return (outcome) {
       finish(outcome);
+      // Called again by each attempt's `finally`: only its first outcome is the attempt's.
+      if (done) return;
+      done = true;
+      onboardingMeasurement.attempted(method, outcome);
       if (outcome == ProductOutcome.ok) {
         onboardingMeasurement.signedIn(method, watch.elapsed);
       }
@@ -1970,6 +2002,13 @@ class AppNotifier extends ChangeNotifier {
   /// Everything a sign-out does, whoever asked for it. [reason] is what the welcome screen says
   /// ([signedOutReason]): null when the person chose it.
   Future<void> _endSession({String? reason}) async {
+    // Chosen by the person, the sign-out is itself a step's end ("Not you? Sign out"): end the steps
+    // it abandons, then send what is queued while the session can still send it — the queue goes
+    // with the account.
+    if (reason == null) {
+      onboardingMeasurement.reset();
+      await productMeasurement.sendBeforeSignOut();
+    }
     // Signing out takes this phone's key out of the account's devices, while the sign-in still works
     // to say so. Best effort, and brief.
     if (_deviceLog case final log?) {

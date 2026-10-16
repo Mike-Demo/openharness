@@ -1,5 +1,4 @@
 import 'core/app_version.dart';
-import 'measurement/setup_usage_choice.dart';
 
 import 'dart:async';
 
@@ -17,6 +16,8 @@ import 'package:flutter_web_plugins/url_strategy.dart';
 import 'core/crash_log.dart';
 import 'core/desktop_window.dart';
 import 'core/linux_app_image.dart';
+import 'settings/settings_screen.dart';
+import 'settings/settings_section.dart';
 import 'screens/login_screen.dart';
 import 'state/app_state.dart';
 import 'stats/stats_lifecycle.dart';
@@ -269,6 +270,18 @@ class _RootShellState extends ConsumerState<RootShell>
   Future<void> runAppMenuAction(String action) async {
     if (!mounted) return;
     switch (action) {
+      case 'settings':
+        final app = ref.read(appStateProvider);
+        await _menuDialog(
+          () => showSettingsScreen(
+            context,
+            app,
+            initialSection: kIsWeb
+                ? SettingsSection.privacy
+                : SettingsSection.experimental,
+            source: 'setup_menu',
+          ),
+        );
       case 'checkForUpdates':
         final app = ref.read(appStateProvider);
         await _menuDialog(() => checkForUpdatesAndShowResult(context, app));
@@ -420,13 +433,6 @@ class _RootShellState extends ConsumerState<RootShell>
             if (app.deviceConflict != null && deviceBands)
               DeviceConflictNoticeBand(notifier: app),
             Expanded(child: framed),
-            if (!kIsWeb &&
-                !home &&
-                (touring ||
-                    signInStep ||
-                    app.status == AppStatus.preparingEnvironment ||
-                    app.status == AppStatus.unauthenticated))
-              SetupUsageChoice(measurement: app.productMeasurement),
           ],
         );
       },

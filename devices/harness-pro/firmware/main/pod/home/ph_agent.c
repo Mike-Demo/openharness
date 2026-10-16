@@ -16,6 +16,8 @@
 #define C(rgb) ht_rgb(rgb)
 #define ELL "\xe2\x80\xa6"
 enum { PET_SIDE = 260,   // the 1x square: at 2x it is 520, wide enough for every pet's WORK and RELAX scenes at exactly 2x
+       ALT_SIDE = 280,   // ... but Claude's builder (WORK_ALT): its sweat drop flies off left while the hammer is out right, 273 px
+                         // across, so 546 at 2x; a 560 square keeps it at exactly 2x (pixel art has no zoom between 1x and 2x)
        STATUS_CY = 636, BUBBLE_TOP = 96, TAIL = 22, GAP = 30 };
 
 // The pet, 2x, its feet on `foot`, centred on cx. An engine with no pet: its 72 px logo or the ">_" outline. Returns the top of what is drawn.
@@ -27,13 +29,14 @@ int ph_room_pet(ht_scene_t *s, const pod_model_t *m, const pod_agent_t *a, pod_s
 int ph_room_pet_z(ht_scene_t *s, const pod_model_t *m, const pod_agent_t *a, pod_scene_t scene, int cx, int foot, uint32_t now_ms, uint32_t started_ms,
                   unsigned zoom8)
 {
-    int h = pod_pet_ink_h(a->engine, scene, PET_SIDE, zoom8);
+    const int side = scene == POD_SCENE_WORK_ALT ? ALT_SIDE : PET_SIDE;
+    int h = pod_pet_ink_h(a->engine, scene, side, zoom8);
     if (!h) {
         ph_card_art(s, cx, foot - 40, 72, m, a, PH_ROOM_BG, now_ms);
         return foot - 80;
     }
     int cy = foot - h / 2;
-    pod_pet_draw(s, cx - PET_SIDE / 2, cy - PET_SIDE / 2, PET_SIDE, a->engine, scene, now_ms, started_ms, zoom8);
+    pod_pet_draw(s, cx - side / 2, cy - side / 2, side, a->engine, scene, now_ms, started_ms, zoom8);
     return foot - h;
 }
 

@@ -24,7 +24,7 @@ export function dailyProductHealth(rows: Row[], now: Date) {
     if (readable.has(row.metric)) {
       const c = days.get(day) ?? {}; c[row.metric] = (c[row.metric] ?? 0) + row.value; days.set(day, c)
     } else {
-      const m = /^breakdown:(release|platform):(cli|desktop):([^:]+):(.+)$/.exec(row.metric)
+      const m = /^breakdown:(release|platform):(cli|desktop|phone):([^:]+):(.+)$/.exec(row.metric)
       if (!m || !allowed.has(m[4])) continue
       const context = cleanUsageContext({ surface: m[2], release: m[1] === 'release' ? m[3] : 'unknown',
         platform: m[1] === 'platform' ? m[3] : 'other', channel: 'production' })
@@ -36,7 +36,8 @@ export function dailyProductHealth(rows: Row[], now: Date) {
   }
   const daily = [...days].sort(([a], [b]) => a.localeCompare(b)).map(([day, c]) => ({
     day, complete: day < today,
-    coverage: { cli: c.health_cli_collector_days ?? null, desktopSessions: c.health_desktop_collector_days ?? null },
+    coverage: { cli: c.health_cli_collector_days ?? null, desktopSessions: c.health_desktop_collector_days ?? null,
+      phoneSessions: c.health_phone_collector_days ?? null },
     requestReconciliation: PRODUCT_USAGE_ACTIONS.map(action => {
       const starts = c[`${action}_requests`] ?? null
       const outcomes = ['ok', 'failed', 'pending', 'unknown'].reduce((sum, outcome) => sum + (c[`${action}_${outcome}`] ?? 0), 0)

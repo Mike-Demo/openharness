@@ -11,12 +11,13 @@ static int checks;
 
 static const char *const engines[] = {"claude", "codex", "muse"};
 static const pod_scene_t scenes[] = {POD_SCENE_REST, POD_SCENE_WORK, POD_SCENE_ASK,
-                                     POD_SCENE_RELAX, POD_SCENE_LISTEN, POD_SCENE_SEND};
+                                     POD_SCENE_RELAX, POD_SCENE_LISTEN, POD_SCENE_SEND, POD_SCENE_WORK_ALT};
+enum { NSCENES = sizeof scenes / sizeof scenes[0] };
 
 static void pet_test_runs_constant(void)
 {
     for (unsigned e = 0; e < 3; e++)
-        for (unsigned k = 0; k < 6; k++) {
+        for (unsigned k = 0; k < NSCENES; k++) {
             if (!pod_pet_has(engines[e], scenes[k])) continue;
             unsigned want = pod_pet_runs(engines[e], scenes[k]);
             CHECK(want >= 1 && want <= 40);
@@ -128,7 +129,7 @@ static void pet_test_inside_box(void)
 {
     static const int sides[] = {270, 230, 132, 260};
     for (unsigned e = 0; e < 4; e++)
-        for (unsigned k = 0; k < 6; k++)
+        for (unsigned k = 0; k < NSCENES; k++)
             for (unsigned si = 0; si < 4; si++) {
                 const char *eng = e < 3 ? engines[e] : "cursor";
                 int side = sides[si], x = 37, y = 91;
@@ -438,7 +439,7 @@ static void pet_test_extent_cache(void)
     for (int pass = 0; pass < 2; pass++) {
         unsigned before = pod_pet_extent_scans();
         for (unsigned e = 0; e < 4; e++)
-            for (unsigned k = 0; k < 6; k++)
+            for (unsigned k = 0; k < NSCENES; k++)
                 for (unsigned zi = 0; zi < 2; zi++) {
                     ht_scene_t s; ht_scene_clear(&s, 0);
                     pod_pet_draw(&s, 0, 0, 260, all[e], scenes[k], 100, 0, zi ? 16u : 8u);
@@ -451,7 +452,7 @@ static void pet_test_ink_h_matches_draw(void)
 {
     static const char *const all[] = {"claude", "codex", "muse", "fo"};
     for (unsigned e = 0; e < 4; e++)
-        for (unsigned k = 0; k < 6; k++)
+        for (unsigned k = 0; k < NSCENES; k++)
             for (unsigned zi = 0; zi < 2; zi++) {
                 unsigned zoom = zi ? 16u : 8u;
                 if (!pod_pet_has(all[e], scenes[k])) continue;
@@ -461,9 +462,39 @@ static void pet_test_ink_h_matches_draw(void)
                 if (scenes[k] != POD_SCENE_SEND) CHECK(h >= h2 - 4 && h <= h2 + 4);   // (SEND plays once from its start: not a loop's union)
             }
 }
+// THE BUILDER (owner, 2026-10-16): WORK_ALT is Claude's second working scene, still pixel art (pod_cell, its frames as
+// stored); a pet without one plays its WORK. Its widest props frame is wider than a byte (pod_types.h HT_CELL_COLS_MAX).
+static void pet_test_work_alt(void)
+{
+    const ht_pet_t *p = pod_pet_for("claude");
+    CHECK(p && p->working_alt && p->working_alt != p->working_scene && p->working_alt->steps == 32);
+    for (unsigned e = 1; e < 3; e++) CHECK(!pod_pet_for(engines[e])->working_alt && pod_pet_has(engines[e], POD_SCENE_WORK_ALT));
+    const ht_pet_scene_t *b = p->working_alt;
+    bool wide = false, bodies = false;
+    for (unsigned i = 0; i < b->steps; i++) wide |= b->overlay->frames[b->overlay->loop[i]].cols > 255;
+    CHECK(wide);
+    CHECK(pod_pet_runs("claude", POD_SCENE_WORK_ALT) == pod_pet_runs("claude", POD_SCENE_WORK));
+    for (unsigned i = 0; i < b->steps; i++) {
+        ht_scene_t s; ht_scene_clear(&s, 0);
+        pod_pet_draw(&s, 0, 0, 270, "claude", POD_SCENE_WORK_ALT, i * POD_PH_ANIM_MS, 0, 16);
+        CHECK(s.count == 2 && s.runs[0].text[1] == 0 && s.runs[1].text[1] == 0);   // pod_cell, not pod_cell_smooth
+        bodies |= frame_of(&s) == &b->frames[b->loop[i]];
+        CHECK(frame_of(&s) == &b->frames[0] || frame_of(&s) == &b->frames[1]);
+        CHECK(s.runs[1].bitmap.asset == &b->overlay->frames[b->overlay->loop[i]]);
+    }
+    CHECK(bodies);
+    // codex has none: WORK_ALT draws exactly its WORK
+    ht_scene_t w, a; ht_scene_clear(&w, 0); ht_scene_clear(&a, 0);
+    pod_pet_draw(&w, 0, 0, 270, "codex", POD_SCENE_WORK, 500, 0, 8);
+    pod_pet_draw(&a, 0, 0, 270, "codex", POD_SCENE_WORK_ALT, 500, 0, 8);
+    CHECK(w.count == a.count && !memcmp(w.runs, a.runs, sizeof w.runs[0] * (size_t)w.count));
+    CHECK(pod_pet_next_beat_ms("claude", POD_SCENE_WORK_ALT, 0, 0) >= 1 && pod_pet_ink_h("claude", POD_SCENE_WORK_ALT, 260, 8) > 0);
+    CHECK(pod_pet_ink_h("claude", POD_SCENE_WORK_ALT, 260, 8) != pod_pet_ink_h("claude", POD_SCENE_WORK, 260, 8));
+}
 int main(void)
 {
     pet_test_pruned();
+    pet_test_work_alt();
     pet_test_runs_constant();
     pet_test_draw_2x();
     pet_test_ink_h_matches_draw();

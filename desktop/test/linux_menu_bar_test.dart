@@ -89,6 +89,17 @@ void main() {
     fail('no tappable widget for $key');
   }
 
+  testWidgets('Settings remains reachable before the workspace is enabled', (
+    tester,
+  ) async {
+    await swarmMenuBus.send('update', {'enabled': false});
+    await pumpBar(tester);
+    await tap(tester, 'menu-bar-harness');
+    await tap(tester, 'menu-bar-settings');
+    expect(appActions, ['settings']);
+    expect(swarmCalls, isEmpty);
+  });
+
   testWidgets('stays off the screen when not visible', (tester) async {
     await tester.pumpWidget(
       MaterialApp(

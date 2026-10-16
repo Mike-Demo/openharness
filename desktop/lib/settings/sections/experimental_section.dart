@@ -1,15 +1,19 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 import '../../shared/widgets/section_scaffold.dart';
 import '../../shared/widgets/setting_row.dart';
 import '../experimental_features.dart';
+import '../../state/app_state.dart';
+import 'privacy_section.dart' show ProductUsageSetting;
 
 class ExperimentalSection extends StatefulWidget {
-  const ExperimentalSection({super.key, this.store});
+  const ExperimentalSection({super.key, this.store, this.notifier});
 
   final ExperimentalFeaturesStore? store;
+  final AppNotifier? notifier;
 
   @override
   State<ExperimentalSection> createState() => _ExperimentalSectionState();
@@ -44,6 +48,8 @@ class _ExperimentalSectionState extends State<ExperimentalSection> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             spacing: 10,
             children: [
+              if (!kIsWeb && widget.notifier != null)
+                ProductUsageSetting(notifier: widget.notifier!, compact: true),
               if (!preferences.loaded ||
                   (preferences.error != null &&
                       preferences.errorFeature == null))

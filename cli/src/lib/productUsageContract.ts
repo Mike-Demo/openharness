@@ -34,8 +34,11 @@ export const PRODUCT_USAGE_LONG_FLOWS = ['computer_wait', 'first_message'] as co
 export const PRODUCT_USAGE_LONG_MEASURES = ['1m_to_5m', '5m_to_15m', '15m_to_1h', 'over_1h'] as const
 /** What happened on the way through a phone onboarding step, at most once per step per sign-in.
  * `resumed`: the step started in an app run that did not sign in (reopened mid-step), so it is not a
- * new person; the rest are the step's own ways out or walls. */
-export const PRODUCT_USAGE_ONBOARDING_MARKS = ['ui_phone_computer_wait_resumed', 'ui_phone_computer_wait_not_you',
+ * new person; the rest are the step's own ways out or walls. The sign_in marks are counted with a
+ * sign-in that went through: `retried`, an attempt before it in this app run failed or was
+ * cancelled; `switched`, it used another button than the first one tried. */
+export const PRODUCT_USAGE_ONBOARDING_MARKS = ['ui_phone_sign_in_retried', 'ui_phone_sign_in_switched',
+  'ui_phone_computer_wait_resumed', 'ui_phone_computer_wait_not_you',
   'ui_phone_computer_wait_link_shared', 'ui_phone_session_open_resumed', 'ui_phone_session_open_blocked_password',
   'ui_phone_session_open_blocked_offline', 'ui_phone_first_message_resumed'] as const
 export const PRODUCT_USAGE_ONBOARDING_METRICS = [...PRODUCT_USAGE_ONBOARDING_MARKS,

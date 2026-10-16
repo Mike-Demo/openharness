@@ -6,9 +6,9 @@ import { releaseBucket } from '../types/productHealthContract.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 
 const contextSchema = z.strictObject({
-  surface: z.enum(['cli', 'desktop']),
+  surface: z.enum(['cli', 'desktop', 'phone']),
   release: z.string().max(11).refine(v => v === 'unknown' || releaseBucket(v) === v),
-  platform: z.enum(['macos', 'linux', 'windows', 'other']),
+  platform: z.enum(['macos', 'linux', 'windows', 'ios', 'android', 'other']),
   channel: z.enum(['production', 'development']),
 })
 
@@ -20,12 +20,19 @@ export const productUsageReportSchema = z.strictObject({
 })
 const feedbackSchema = z.strictObject({ id: z.uuid(), answer: z.enum(PRODUCT_FEEDBACK) })
 const choiceSchema = z.strictObject({ enabled: z.boolean() })
-export const setupUsageSchema = z.strictObject({
-  schemaVersion: z.literal(1), consent: z.literal(true), id: z.uuid(),
+const setupFields = {
+  schemaVersion: z.literal(1), id: z.uuid(),
   day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   counters: z.partialRecord(z.enum(PRODUCT_USAGE_SETUP_METRICS), z.number().int().min(1).max(1000))
     .refine(c => Object.keys(c).length > 0 && Object.keys(c).length <= 32),
-})
+}
+export const setupUsageSchema = z.union([
+  // Older native clients (including the phone) still require explicit opt-in.
+  z.strictObject({ ...setupFields, consent: z.literal(true) }),
+  // Desktop defaults on with a persistent Settings opt-out. Do not call that consent.
+  z.strictObject({ ...setupFields, sharing: z.literal('default') })
+    .refine(report => Object.keys(report.counters).every(key => key.startsWith('setup_desktop_'))),
+])
 
 export async function productUsageRoutes(app: FastifyInstance): Promise<void> {
   // A process-wide budget bounds untrusted pre-sign-in counts without collecting IPs or cookies.
@@ -79,6 +86,7 @@ export async function productUsageRoutes(app: FastifyInstance): Promise<void> {
     catch (error) {
       // A fixed category can diagnose delivery without exposing database errors or report contents.
       const storageCode = (error as { code?: unknown } | null)?.code
+      if (storageCode === 'USAGE_BUSY') return sendError(reply, 'Usage measurement busy', 'USAGE_BUSY', 429)
       const code = storageCode === 'P2034' || storageCode === 'P2002' ? 'USAGE_WRITE_CONFLICT'
         : storageCode === 'P2028' ? 'USAGE_TRANSACTION_FAILED' : 'USAGE_UNAVAILABLE'
       return sendError(reply, 'Usage report unavailable', code, 503)

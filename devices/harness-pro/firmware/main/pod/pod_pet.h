@@ -3,7 +3,10 @@
 #include "pets.h"
 #include "pod_draw.h"
 
-typedef enum { POD_SCENE_REST, POD_SCENE_WORK, POD_SCENE_ASK, POD_SCENE_RELAX, POD_SCENE_LISTEN, POD_SCENE_SEND } pod_scene_t;
+// WORK_ALT: the pet's second working scene (ht_pet_t.working_alt, Claude's builder), WORK for a pet without one. Which of
+// the two an agent plays is drawn once as its turn starts (pod_agent_t.work_alt); ph_room_scene and ph_card_scene pick.
+typedef enum { POD_SCENE_REST, POD_SCENE_WORK, POD_SCENE_ASK, POD_SCENE_RELAX, POD_SCENE_LISTEN, POD_SCENE_SEND,
+               POD_SCENE_WORK_ALT } pod_scene_t;
 
 // The engine's pet, or NULL when it has none (the player then shows its mark on a pale rounded box).
 const ht_pet_t *pod_pet_for(const char *engine);

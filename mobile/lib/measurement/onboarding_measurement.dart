@@ -3,6 +3,12 @@ import 'product_measurement.dart';
 /// Mirrors `PRODUCT_USAGE_ONBOARDING_MARKS` in backend/src/types/productUsage.ts, with the steps
 /// each is listed under there ([flows]); another pairing would reject the whole report.
 enum OnboardingMark {
+  /// A sign-in went through after an attempt in this app run failed or was cancelled.
+  retried('retried', {ProductFlow.signIn}),
+
+  /// A sign-in went through on another button than the first one tried in this app run.
+  switched('switched', {ProductFlow.signIn}),
+
   /// The step started in an app run that did not sign in: reopened mid-step, not a new start.
   resumed('resumed', {
     ProductFlow.computerWait,
@@ -51,6 +57,19 @@ class OnboardingMeasurement {
   final _marks = <(ProductFlow, OnboardingMark)>{};
   final _marked = <(ProductFlow, OnboardingMark)>{};
   bool _signedInThisRun = false;
+  ProductFlow? _firstMethod;
+  bool _troubled = false;
+
+  /// A sign-in attempt by [method] ended with [outcome]. Kept in RAM for this app run only: before
+  /// an account there is nobody's choice to ask, so it is counted — as [OnboardingMark.retried] or
+  /// [OnboardingMark.switched] — only with a sign-in that goes through ([signedIn]).
+  void attempted(ProductFlow method, ProductOutcome outcome) {
+    _firstMethod ??= method;
+    if (outcome == ProductOutcome.failed ||
+        outcome == ProductOutcome.cancelled) {
+      _troubled = true;
+    }
+  }
 
   /// A sign-in by [method] went through after [took]. Counted under the account's own sharing — a
   /// far larger group than the signed-out opt-in — as `sign_in` and the button, both ok.
@@ -58,6 +77,12 @@ class OnboardingMeasurement {
     _signedInThisRun = true;
     _signedIn[ProductFlow.signIn] = took;
     _signedIn[method] = took;
+    if (_troubled) _marks.add((ProductFlow.signIn, OnboardingMark.retried));
+    if (_firstMethod != null && _firstMethod != method) {
+      _marks.add((ProductFlow.signIn, OnboardingMark.switched));
+    }
+    _firstMethod = null;
+    _troubled = false;
     _admit();
   }
 
@@ -110,6 +135,8 @@ class OnboardingMeasurement {
     _seen.clear();
     _marked.clear();
     _signedInThisRun = false;
+    _firstMethod = null;
+    _troubled = false;
   }
 
   void _clearWaiting() {
