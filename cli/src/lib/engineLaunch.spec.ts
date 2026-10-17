@@ -1479,6 +1479,16 @@ describe('buildEngineLaunchArgv with installIfMissing', () => {
   const script = (install: EngineInstallRecipe, runtimeNode = '/nonexistent/harness-node'): string =>
     buildEngineLaunchArgv('opencode', { installIfMissing: install }, '/bin/zsh', runtimeNode)[4]
 
+  const scriptWithoutProcessRuntime = (install: EngineInstallRecipe): string => {
+    const original = Object.getOwnPropertyDescriptor(process, 'execPath')
+    try {
+      Object.defineProperty(process, 'execPath', { ...original, value: '/missing/process/node' })
+      return script(install, '/missing/runtime/node')
+    } finally {
+      if (original) Object.defineProperty(process, 'execPath', original)
+    }
+  }
+
   describe('the friendly install: plain lines and a bar on screen, the installer in a log', () => {
     let home = ''
     beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'harness-friendly-install-')); dirs.push(home) })

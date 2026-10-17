@@ -1268,7 +1268,7 @@ export function buildEngineInstallationArgv(engine: AgentEngine, recipe: EngineI
   return engineShellArgv(shell, [body, 'harness-native-install', engineBin(engine)])
 }
 
-function availabilityScript(recipe: EngineInstallRecipe | undefined, runtimeNode: string): string {
+function availabilityScript(recipe: EngineInstallRecipe | undefined): string {
   const names = recipe?.executable.names.map(shellSingleQuote).join(' ') ?? ''
   const paths = recipe ? engineInstallPaths(recipe).map(shellSingleQuote).join(' ') : ''
   const candidates = [names, paths].filter(Boolean).join(' ')
