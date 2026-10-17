@@ -97,31 +97,60 @@ export interface ProcessRow extends ProcessIdentity {
   entrypointFileKey?: string
 }
 
-const ARGV_TOKEN = /"[^"]*"|'[^']*'|\S+/g
+/**
+ * One lazy scanner for the token grammar every reader of a `ps`-style args string must share — the
+ * grammar `quoteArgvElement` writes when it re-serializes argv for a WSL interop relay: inside
+ * double quotes a backslash escapes exactly one following backslash or quote (`\\` reads back as
+ * `\`, `\"` as a literal quote that is never a boundary), single-quoted runs are literal, and a
+ * backslash anywhere else is a plain character, so a Windows path keeps its single backslashes.
+ *
+ * The regex grammar this replaces only stripped outer quotes, so it could not read that output
+ * back: a repaired row's doubled backslashes survived into the tokens (paths matched nothing),
+ * and a relayed prompt carrying `\"` re-split with flag text standing alone as its own token —
+ * prompt text alone enabled bypass mode and supplied resume ids (review cycles 2-4 in
+ * tmux.spec.ts). Laziness is the other half of the contract: discovery walks a prefix per
+ * candidate engine and must not tokenize a prompt suffix it will never read.
+ */
+/** One scanned token. `quoted` records that the token stood in quotes in the args string: most
+ * readers only need the text, but `resumeSessionId` must not bind an id that was quoted (the
+ * golden discovery record pins that: `claude --resume "0123…"` names no session). */
+interface ArgvToken {
+  text: string
+  quoted: boolean
+}
 
-function unquoteArgvToken(token: string): string {
-  const quoted = (token.startsWith('"') && token.endsWith('"')) || (token.startsWith("'") && token.endsWith("'"))
-  return quoted ? token.slice(1, -1) : token
+function* scanArgvTokens(args: string): Generator<ArgvToken> {
+  let index = 0
+  while (index < args.length) {
+    while (index < args.length && /\s/.test(args[index])) index++
+    if (index >= args.length) return
+    let token = ''
+    const quoted = args[index] === '"' || args[index] === "'"
+    if (quoted) {
+      const quote = args[index++]
+      while (index < args.length && args[index] !== quote) {
+        // A backslash pair inside double quotes is one literal character, never two token edges.
+        if (quote === '"' && args[index] === '\\' && (args[index + 1] === '\\' || args[index + 1] === '"')) index++
+        token += args[index++]
+      }
+      index++ // The closing quote, or one past the end of an unterminated token.
+    } else {
+      while (index < args.length && !/\s/.test(args[index])) token += args[index++]
+    }
+    yield { text: token, quoted }
+  }
 }
 
 export function argvTokens(args: string): string[] {
-  return (args.match(ARGV_TOKEN) ?? []).map(unquoteArgvToken)
+  return [...scanArgvTokens(args)].map((token) => token.text)
 }
 
-/** Discovery only needs a command prefix. Do not tokenize a shell script or
- * prompt suffix once per candidate engine. Keep the same token grammar as
- * argvTokens, but stop scanning as soon as the consumer has enough evidence. */
+/** Discovery only needs a command prefix: the same scanner as `argvTokens`, stopped as soon as
+ * the consumer has enough evidence. */
 function argvPrefix(args: string, nativeArgv?: readonly string[]): () => string | undefined {
   if (nativeArgv) { let index = 0; return () => nativeArgv[index++] }
-  const pattern = new RegExp(ARGV_TOKEN)
-  let done = false
-  return () => {
-    if (done) return undefined
-    const match = pattern.exec(args)
-    if (match) return unquoteArgvToken(match[0])
-    done = true // RegExp.exec resets lastIndex at EOF; never restart the prefix.
-    return undefined
-  }
+  const tokens = scanArgvTokens(args)
+  return () => tokens.next().value?.text
 }
 
 const ORI_FLAGS_WITH_VALUE = new Set(['--model', '--log-level', '--completions'])
@@ -1144,12 +1173,24 @@ const RESUME_ARGS: Partial<Record<RegisteredSession['engine'], { flags: readonly
  * with no confirmed bypass flag (`BYPASS_PERMISSION_FLAGS[engine] === null`) always read false — never
  * guess.
  */
+/**
+ * The tokens that are still options: a bare `--` ends the option section in every engine's CLI
+ * grammar, and everything after it is a positional — usually the first prompt — however
+ * flag-shaped. Reading a mode, a bypass flag or a resume id out of that tail lets relayed prompt
+ * text enable bypass mode or bind a session it never named (review cycles 5-6 in tmux.spec.ts),
+ * so every argv reader below scans only this prefix.
+ */
+function optionTokens(tokens: readonly string[]): readonly string[] {
+  const terminator = tokens.indexOf('--')
+  return terminator === -1 ? tokens : tokens.slice(0, terminator)
+}
+
 export function bypassPermissionActive(engine: RegisteredSession['engine'], args: string): boolean {
   const flags = BYPASS_PERMISSION_FLAGS[engine]
   if (!flags) return false
   // A named mode says exactly how much the engine approves on its own (`full` — the old
   // skip-everything flag — included); only an argv naming none falls back to the bare flag check.
-  const tokens = argvTokens(args)
+  const tokens = optionTokens(argvTokens(args))
   const mode = permissionModeFromTokens(engine, tokens)
   return mode ? permissionModeApproves(mode) : flagsInOrder(tokens, flags)
 }
@@ -1164,7 +1205,7 @@ export function bypassPermissionActive(engine: RegisteredSession['engine'], args
  * `bypassPermissionActive`; an engine with no mode table reads null.
  */
 export function permissionModeFromArgv(engine: RegisteredSession['engine'], args: string): string | null {
-  return permissionModeFromTokens(engine, argvTokens(args))
+  return permissionModeFromTokens(engine, optionTokens(argvTokens(args)))
 }
 
 function permissionModeFromTokens(engine: RegisteredSession['engine'], tokens: readonly string[]): string | null {
@@ -1192,26 +1233,31 @@ function flagsInOrder(tokens: readonly string[], want: readonly string[]): boole
 export function resumeSessionId(engine: RegisteredSession['engine'], args: string, nativeArgv?: readonly string[]): string | null {
   const spec = RESUME_ARGS[engine]
   if (!spec) return null
-  if (nativeArgv) {
-    if (spec.unless?.some(flag => nativeArgv.includes(flag))) return null
+  // Token scan only, over the option prefix: the flag must stand alone as its own token, with the
+  // id as the next token or after `=`. The regex over the raw string this replaces searched
+  // INSIDE quoted prompt arguments, so one prompt naming `--session <some other id>` supplied a
+  // false resume id that discovery bound a relaunch to (review cycle 6 in tmux.spec.ts). Kernel
+  // argv gets the same scan: its boundaries are exact, but a `--` tail is positional there too.
+  const scanned: ArgvToken[] = nativeArgv
+    ? nativeArgv.map((text) => ({ text, quoted: false }))
+    : [...scanArgvTokens(args)]
+  const terminator = scanned.findIndex((token) => token.text === '--')
+  const tokens = terminator === -1 ? scanned : scanned.slice(0, terminator)
+  if (spec.unless?.some((flag) => tokens.some((token) => token.text === flag))) return null
+  for (let index = 0; index < tokens.length; index++) {
+    // A quoted token is text, not an option: a quoted flag names nothing, and a quoted id does
+    // not bind (`claude --resume "0123…"` in the golden discovery record). The equals form needs
+    // no such guard: quotes inside an unquoted token stay literal in its text and fail the id
+    // pattern themselves.
+    if (tokens[index].quoted) continue
+    const token = tokens[index].text.toLowerCase()
     for (const flag of spec.flags) {
-      for (let index = 0; index < nativeArgv.length; index++) {
-        const token = nativeArgv[index]
-        const value = token.toLowerCase() === flag.toLowerCase() ? nativeArgv[index + 1]
-          : token.toLowerCase().startsWith(`${flag.toLowerCase()}=`) ? token.slice(flag.length + 1) : undefined
-        if (value && spec.id.test(value)) return value
-      }
+      const wanted = flag.toLowerCase()
+      const next = tokens[index + 1]
+      const value = token === wanted ? (next && !next.quoted ? next.text : undefined)
+        : token.startsWith(`${wanted}=`) ? tokens[index].text.slice(flag.length + 1) : undefined
+      if (value && spec.id.test(value)) return value
     }
-    return null
-  }
-  if (spec.unless) {
-    const tokens = argvTokens(args)
-    if (spec.unless.some((flag) => tokens.includes(flag))) return null
-  }
-  for (const flag of spec.flags) {
-    const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const value = new RegExp(`(?:^|\\s)${escaped}(?:=|\\s+)(\\S+)`, 'i').exec(args)?.[1]
-    if (value && spec.id.test(value)) return value
   }
   return null
 }
