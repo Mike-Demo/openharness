@@ -17,5 +17,5 @@ import 'runtime_platform.dart';
 final bool kViewerMode =
     kIsWeb ||
     const bool.fromEnvironment('HARNESS_VIEWER_MODE') ||
-    Platform.isIOS ||
-    Platform.isAndroid;
+    RuntimePlatform.isIOS ||
+    RuntimePlatform.isAndroid;
