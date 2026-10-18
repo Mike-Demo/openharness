@@ -655,7 +655,11 @@ class EnvironmentProvisioner {
 
       if (!_isMacOS && !_isLinux) {
         if (_isWindows) {
-          return _verifyWindows(emit, snapshot: () => state, install: install);
+          return await _verifyWindows(
+            emit,
+            snapshot: () => state,
+            install: install,
+          );
         }
         emit(
           step: EnvironmentStep.harness,
