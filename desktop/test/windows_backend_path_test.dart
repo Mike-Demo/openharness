@@ -346,7 +346,16 @@ void main() {
 
       expect(recorder.installFlags, everyElement(isFalse));
       expect(app.environmentReadiness.isReady, isTrue);
-      expect(app.status, AppStatus.unauthenticated);
+      // Upstream's signed-out continuation no longer stops at the login
+      // wall after setup: it proceeds into bootstrap and lands on the desk
+      // as a guest (covered by boot_flow_widget_test.dart). What this test
+      // owns is that Recheck left the setup flow — the app is bootstrapping
+      // on the strength of the ready result, not still preparing.
+      expect(app.status, AppStatus.bootstrapping);
+
+      // The bootstrap continuation arms the five-minute launch-claim expiry
+      // timer; run it out so the test does not leave it pending.
+      await tester.pump(const Duration(minutes: 5, seconds: 1));
     });
   });
 }
