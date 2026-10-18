@@ -806,7 +806,7 @@ class LocalCliDiscovery {
             : null,
         backendOnline: backendOnline,
         signedIn: body['signedIn'] is bool ? body['signedIn'] as bool : null,
-        agentProjects: _localAgentProjects(
+        agentProjects: localAgentProjects(
           body['sessions'],
           identity.environment,
           // The daemon may run inside WSL2 while the GUI runs on Windows: its session
