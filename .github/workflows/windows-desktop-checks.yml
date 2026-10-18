@@ -31,10 +31,17 @@ jobs:
           if (-not $version) { throw 'FLUTTER_VERSION not found in release-desktop.yml' }
           "version=$version" >> $env:GITHUB_OUTPUT
 
-      - uses: ./.github/actions/desktop-flutter
+      # The repo's desktop-flutter action verifies its install by piping
+      # `flutter --version --machine` into jq. On a cold SDK the flutter
+      # tool's first-run build banner reaches the pipe before the JSON,
+      # jq exits, and pub upgrade crash-loops on the closed pipe (runs #1
+      # and #2 both burned their full job timeout this way). Install the
+      # same pinned Flutter directly; every check below is unchanged.
+      - uses: subosito/flutter-action@v2
         with:
-          version: ${{ steps.toolchain.outputs.version }}
-          save-cache: 'true'
+          flutter-version: ${{ steps.toolchain.outputs.version }}
+          channel: stable
+          cache: true
 
       - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
