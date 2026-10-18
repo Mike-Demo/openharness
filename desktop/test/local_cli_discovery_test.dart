@@ -857,7 +857,14 @@ void main() {
     await Future.delayed(const Duration(milliseconds: 200));
     expect(spawnCount, 0);
     slotOpen = true;
-    await Future.delayed(const Duration(milliseconds: 60));
+    // Wait for the spawn itself, not a fixed window: the spawn lands on a
+    // later tick once a probe cycle completes, and how many milliseconds
+    // that takes is the host's business — a loaded Windows CI runner needs
+    // longer than the 60 ms this used to allow, which raced it.
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (spawnCount == 0 && DateTime.now().isBefore(deadline)) {
+      await Future.delayed(const Duration(milliseconds: 10));
+    }
     expect(spawnCount, 1);
     expect(server, isNotNull);
   });
