@@ -522,7 +522,10 @@ class _EnvironmentSetupScreenState extends State<EnvironmentSetupScreen> {
             ? widget.notifier.retryEnvironmentSetup
             : widget.notifier.startEnvironmentSetup;
       case EnvironmentSetupPhase.ready:
-        label = 'Continue';
+        // A Windows first run has not signed in yet — setup hands over to the
+        // sign-in step — so the button names that destination, as the
+        // Windows flow's own tests assert.
+        label = state.windowsHost ? 'Continue to sign in' : 'Continue';
         action = widget.notifier.continueAfterEnvironmentSetup;
       case EnvironmentSetupPhase.waitingForTerminal:
         label = 'Recheck now';
