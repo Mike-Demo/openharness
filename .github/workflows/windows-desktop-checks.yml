@@ -14,7 +14,7 @@ permissions:
 jobs:
   windows-desktop:
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     defaults:
       run:
         shell: pwsh
@@ -34,6 +34,7 @@ jobs:
       - uses: ./.github/actions/desktop-flutter
         with:
           version: ${{ steps.toolchain.outputs.version }}
+          save-cache: 'true'
 
       - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
