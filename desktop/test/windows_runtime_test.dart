@@ -40,6 +40,23 @@ void main() {
       expect(await runtime.listDistros(), ['Ubuntu', 'docker']);
     });
 
+    test(
+      'a runner that only throws surfaces ProcessException, not a TypeError',
+      () async {
+        // A throw-only seam produces a Future<Never> at runtime; the bounded
+        // probe path must still deliver the ProcessException to the handlers
+        // that translate it ("not installed", "no distros"), not a TypeError
+        // from the timeout wrapper.
+        final runtime = WslRuntime(
+          runProcess: (executable, arguments, {environment}) async =>
+              throw const ProcessException('harness', [], 'No such file'),
+        );
+
+        expect(await runtime.listDistros(), isEmpty);
+        expect(await runtime.available(), isFalse);
+      },
+    );
+
     test('Docker Desktop distributions are recognised by name', () {
       for (final name in const [
         'docker-desktop',

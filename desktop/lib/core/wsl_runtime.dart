@@ -90,8 +90,14 @@ class WslRuntime {
     if (_injected && _runProcess != Process.run) {
       // An injected runner cannot be killed, but the deadline still binds:
       // a seam that never answers must surface as the same bounded 124 the
-      // owned path reports, not as a caller that waits forever.
-      return _runProcess(executable, arguments).timeout(
+      // owned path reports, not as a caller that waits forever. The async
+      // hop is load-bearing: a seam whose body only throws produces a
+      // Future<Never> at runtime, and Future.timeout would reject the
+      // ProcessResult onTimeout against it with a TypeError (which then
+      // escapes the ProcessException handling in the callers above).
+      Future<ProcessResult> guarded() async =>
+          _runProcess(executable, arguments);
+      return guarded().timeout(
         effective,
         onTimeout: () => ProcessResult(
           0,
