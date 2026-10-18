@@ -1,0 +1,203 @@
+{
+  "boltSlidesVersion": 1,
+  "deck": {
+    "title": "OpenHarness for Windows",
+    "transition": "fade",
+    "font": "space",
+    "accent": "#4682B4"
+  },
+  "slides": [
+    {
+      "id": "s1",
+      "position": 0,
+      "layout": "cover",
+      "props": {
+        "kicker": "Open source · A port",
+        "title": "OpenHarness for ==Windows==",
+        "subtitle": "The AI agent command center, now on Windows.",
+        "foot": "github.com/Mike-Demo/openharness"
+      },
+      "background": { "type": "color", "color": "var(--bg)" },
+      "animation": "cascade",
+      "transition": null,
+      "nav": null,
+      "notes": "Open the hook: OpenHarness gives you one command center for every AI coding agent you run. This deck is about bringing it to Windows.",
+      "status": "none"
+    },
+    {
+      "id": "s2",
+      "position": 1,
+      "layout": "contrast",
+      "props": {
+        "kicker": "The gap",
+        "title": "Two platforms supported. One left out.",
+        "left": {
+          "label": "Ships today",
+          "title": "Mac & Linux",
+          "points": [
+            "Open-source command center for running AI agents across machines",
+            "Harness Pro desk screen — 720×720 touch display for watching agents",
+            "$299, shipping Nov 30"
+          ]
+        },
+        "right": {
+          "label": "Left out",
+          "title": "Windows",
+          "points": [
+            "No daemon, no desk screen support",
+            "A large share of working developers can't run the stack",
+            "Watching agents means reaching for a second machine"
+          ]
+        }
+      },
+      "background": { "type": "color", "color": "var(--bg)" },
+      "animation": "cascade",
+      "transition": null,
+      "nav": null,
+      "notes": "Frame the problem: OpenHarness and the Harness Pro desk screen both ship Mac and Linux only. Windows developers are structurally excluded.",
+      "status": "none"
+    },
+    {
+      "id": "s3",
+      "position": 2,
+      "layout": "statement",
+      "props": {
+        "kicker": "The approach",
+        "title": "==Full hosting== on Windows — via WSL2.",
+        "body": "The real OpenHarness daemon, running natively on Windows machines through WSL2. Not a stripped-down viewer."
+      },
+      "background": { "type": "color", "color": "var(--bg)" },
+      "animation": "cascade",
+      "transition": null,
+      "nav": null,
+      "notes": "Key design decision: this is not a thin client or dashboard pointed at a Mac. The daemon itself runs on Windows, under WSL2.",
+      "status": "none"
+    },
+    {
+      "id": "s4",
+      "position": 3,
+      "layout": "bigNumber",
+      "props": {
+        "kicker": "The work",
+        "value": "12",
+        "caption": "commits covering platform detection, process & terminal handling, and the security-sensitive launch paths — contributed back upstream as draft PR #1389",
+        "foot": "Draft pull request #1389 · github.com/Mike-Demo/openharness"
+      },
+      "background": { "type": "color", "color": "var(--bg)" },
+      "animation": "cascade",
+      "transition": null,
+      "nav": null,
+      "notes": "Scope of the port in one number. Emphasize that all of it goes back upstream as draft PR #1389 — it is a contribution, not a private fork.",
+      "status": "none"
+    },
+    {
+      "id": "s5",
+      "position": 4,
+      "layout": "statGrid",
+      "props": {
+        "kicker": "Verification so far",
+        "title": "Where the tests stand — honestly.",
+        "stats": [
+          {
+            "value": "247",
+            "label": "Specs passed",
+            "caption": "Targeted test suite, green"
+          },
+          {
+            "value": "Clean",
+            "label": "Typecheck",
+            "caption": "No type errors across the port"
+          },
+          {
+            "value": "0",
+            "label": "Failures forced",
+            "caption": "Remaining failures are documented and deliberately left unforced"
+          }
+        ]
+      },
+      "background": { "type": "color", "color": "var(--bg)" },
+      "animation": "cascade",
+      "transition": null,
+      "nav": null,
+      "notes": "Be straight here: 247 targeted specs pass and typecheck is clean. The remaining failures are documented and deliberately left unforced. A full on-Windows test run is the next verification step — it has not happened yet.",
+      "status": "none"
+    },
+    {
+      "id": "s6",
+      "position": 5,
+      "layout": "bento",
+      "props": {
+        "kicker": "The port",
+        "title": "What the Windows build brings.",
+        "tiles": [
+          {
+            "k": "01",
+            "title": "WSL2 hosting",
+            "body": "The full daemon runs on Windows hardware — agents live where you work.",
+            "variant": "accent"
+          },
+          {
+            "k": "02",
+            "title": "Platform detection",
+            "body": "Windows identified cleanly at startup; the right code paths load."
+          },
+          {
+            "k": "03",
+            "title": "Process & terminal",
+            "body": "Agent spawning and terminal I/O handled the Windows-native way."
+          },
+          {
+            "k": "04",
+            "title": "Secure launch paths",
+            "body": "Security-sensitive launch flows ported first, not last."
+          },
+          {
+            "k": "05",
+            "title": "Upstream by design",
+            "body": "All 12 commits open as draft PR #1389 against the parent project."
+          }
+        ]
+      },
+      "background": { "type": "color", "color": "var(--bg)" },
+      "animation": "cascade",
+      "transition": null,
+      "nav": null,
+      "notes": "Walk the tiles quickly. Land on the last one: everything is a pull request, not a fork.",
+      "status": "none"
+    },
+    {
+      "id": "s7",
+      "position": 6,
+      "layout": "statement",
+      "props": {
+        "kicker": "Status",
+        "title": "Draft PR open upstream — in ==active hardening==.",
+        "body": "Draft pull request #1389 is live against the parent project. Next milestone: a full on-Windows test run."
+      },
+      "background": { "type": "color", "color": "var(--bg)" },
+      "animation": "fade",
+      "transition": null,
+      "nav": null,
+      "notes": "Set expectations: this is a draft, under active review and hardening. The full on-Windows run is the gate before it leaves draft.",
+      "status": "none"
+    },
+    {
+      "id": "s8",
+      "position": 7,
+      "layout": "cover",
+      "props": {
+        "kicker": "Try it · Contribute",
+        "title": "Run your agents on ==Windows==.",
+        "subtitle": "Star, review, or test the port — the PR is open.",
+        "foot": "github.com/Mike-Demo/openharness"
+      },
+      "background": { "type": "gradient", "from": "#06080d", "to": "#0d1826", "angle": 160 },
+      "animation": "cascade",
+      "transition": "zoom",
+      "nav": null,
+      "notes": "Close with the call to action: the repo and the draft PR are public — reviews and Windows test runs are exactly the help wanted.",
+      "status": "none"
+    }
+  ],
+  "boltSlidesId": "11011050-f9d6-4d43-8a9e-3e43af51bbaf"
+}
