@@ -1104,7 +1104,14 @@ class EnvironmentProvisioner {
       isWindows: _isWindows,
     );
     final wsl =
-        _wslRuntime ?? WslRuntime(runProcess: _runWasInjected ? _run : null);
+        _wslRuntime ??
+        WslRuntime(
+          runProcess: _runWasInjected ? _run : null,
+          // The provisioner's bound is the contract every other platform's
+          // probes honour; the WSL probes must fail a stalled check in the
+          // same time, not in WslRuntime's longer standalone default.
+          probeTimeout: probeTimeout,
+        );
 
     emit(
       step: EnvironmentStep.harness,
@@ -1115,15 +1122,24 @@ class EnvironmentProvisioner {
     // The supported Windows runtime is WSL2, and the pieces are checked in the
     // order a person would: is WSL there, is there a distro the app may use, is
     // the CLI in it, is tmux in it.
-    final wslAvailable = await wsl.available();
-    final usable = wslAvailable ? await wsl.usableDistros() : const <String>[];
-    final dockerOnly = wslAvailable && usable.isEmpty
-        ? await wsl.dockerOnlyDistros()
-        : const <String>[];
-
+    final bool wslAvailable;
+    final List<String> usable;
+    final List<String> dockerOnly;
     WslHarnessProbe probe = const WslHarnessProbe.notFound();
-    if (usable.isNotEmpty) {
-      probe = await wsl.findHarness(distros: usable);
+    try {
+      wslAvailable = await wsl.available();
+      usable = wslAvailable ? await wsl.usableDistros() : const <String>[];
+      dockerOnly = wslAvailable && usable.isEmpty
+          ? await wsl.dockerOnlyDistros()
+          : const <String>[];
+      if (usable.isNotEmpty) {
+        probe = await wsl.findHarness(distros: usable);
+      }
+    } on TimeoutException {
+      // A WSL probe that never answers is a check that could not finish —
+      // the same recoverable timeout every other platform's probes produce —
+      // not evidence that WSL is missing.
+      throw const _EnvironmentProbeTimeout('WSL', EnvironmentStep.harness);
     }
 
     // A distro to install INTO: the one the CLI was found in, or — when it is

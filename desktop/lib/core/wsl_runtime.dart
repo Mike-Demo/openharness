@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -85,10 +86,21 @@ class WslRuntime {
     Duration? timeout,
     void Function(String line)? onOutput,
   }) async {
-    if (_injected && _runProcess != Process.run) {
-      return _runProcess(executable, arguments);
-    }
     final effective = timeout ?? _probeTimeout;
+    if (_injected && _runProcess != Process.run) {
+      // An injected runner cannot be killed, but the deadline still binds:
+      // a seam that never answers must surface as the same bounded 124 the
+      // owned path reports, not as a caller that waits forever.
+      return _runProcess(executable, arguments).timeout(
+        effective,
+        onTimeout: () => ProcessResult(
+          0,
+          124,
+          '',
+          'timed out after $effective; injected runner could not be terminated',
+        ),
+      );
+    }
     return runOwnedProcessBounded(
       executable: executable,
       arguments: arguments,
@@ -220,7 +232,21 @@ class WslRuntime {
     return Utf16LeProbeDecoder.decodeUtf16LeBytes(latin1.encode(s));
   }
 
-  Future<ProcessResult> _run(List<String> arguments) => _runBounded(arguments);
+  Future<ProcessResult> _run(List<String> arguments) async {
+    final result = await _runBounded(arguments);
+    // A bounded probe that hit its deadline reports the shell's 124
+    // convention. For the status probes that funnel through here that code
+    // can only mean the deadline — `wsl.exe --status` and `wsl -l` do not
+    // exit 124 themselves — and "did not answer" must never be read by the
+    // callers above as "not installed".
+    if (result.exitCode == 124) {
+      throw TimeoutException(
+        'wsl.exe ${arguments.join(' ')} did not answer in time',
+        _probeTimeout,
+      );
+    }
+    return result;
+  }
 
   /// Runs [command] with the distro's login shell, the way `harness` is used
   /// from a terminal. Arguments travel after `$0` so nothing has to be quoted:
