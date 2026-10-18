@@ -299,6 +299,8 @@ String _suggestedFolderName(
   final room = 64 - ending.length;
   if (prefix.length > room) prefix = prefix.substring(0, room);
   return '$prefix$ending';
+}
+
 Future<bool> _createExclusiveDirectory(String folder) async {
   if (!Platform.isWindows) {
     // Directory.create accepts existing directories; mkdir reserves exclusively.
