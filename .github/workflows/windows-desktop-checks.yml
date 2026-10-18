@@ -62,6 +62,41 @@ jobs:
         working-directory: desktop
         run: flutter test --concurrency 4
 
+  # The release build and the CLI typecheck verify on their own runner, in
+  # parallel with the checks above: a desktop test failure must not leave
+  # "does it build" and "does the CLI typecheck" unanswered, which is what
+  # happened on every run while they shared one job's step ladder.
+  windows-build-typecheck:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      # Same toolchain resolution as the checks job (and ci.yml).
+      - id: toolchain
+        run: |
+          $version = (Select-String -Path .github/workflows/release-desktop.yml -Pattern "FLUTTER_VERSION: '([^']+)'").Matches[0].Groups[1].Value
+          if (-not $version) { throw 'FLUTTER_VERSION not found in release-desktop.yml' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ steps.toolchain.outputs.version }}
+          channel: stable
+          cache: true
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Resolve desktop packages
+        working-directory: desktop
+        run: flutter pub get
+
       - name: Build Windows release
         working-directory: desktop
         run: flutter build windows --release
